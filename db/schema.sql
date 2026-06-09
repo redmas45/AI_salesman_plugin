@@ -29,11 +29,38 @@ CREATE TABLE IF NOT EXISTS products (
     FOREIGN KEY (category_id) REFERENCES categories(id)
 );
 
+CREATE TABLE IF NOT EXISTS catalog_source_products (
+    source_name         TEXT NOT NULL,
+    source_product_id   TEXT NOT NULL,
+    product_id          BIGINT NOT NULL,
+    name                TEXT NOT NULL,
+    brand               TEXT,
+    category            TEXT,
+    price               REAL,
+    stock               INTEGER,
+    image_url           TEXT,
+    raw_product         TEXT NOT NULL,
+    is_active           INTEGER DEFAULT 1,
+    last_seen_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_name, source_product_id)
+);
+
+CREATE TABLE IF NOT EXISTS catalog_sync_runs (
+    id                  SERIAL PRIMARY KEY,
+    source_name         TEXT NOT NULL,
+    source_count        INTEGER NOT NULL DEFAULT 0,
+    changed_count       INTEGER NOT NULL DEFAULT 0,
+    deactivated_count   INTEGER NOT NULL DEFAULT 0,
+    vectorized_count    INTEGER NOT NULL DEFAULT 0,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
 CREATE INDEX IF NOT EXISTS idx_products_price ON products(price);
 CREATE INDEX IF NOT EXISTS idx_products_color ON products(color);
 CREATE INDEX IF NOT EXISTS idx_products_rating ON products(rating DESC);
 CREATE INDEX IF NOT EXISTS idx_products_embedding ON products USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_catalog_source_products_source ON catalog_source_products(source_name, is_active);
 
 CREATE TABLE IF NOT EXISTS cart (
     id          SERIAL PRIMARY KEY,

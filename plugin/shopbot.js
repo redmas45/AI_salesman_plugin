@@ -7,6 +7,7 @@
 
   const ALLOWED_ACTIONS = new Set([
     "SHOW_PRODUCTS",
+    "SHOW_COMPARISON",
     "FILTER_PRODUCTS",
     "NAVIGATE_TO",
     "SORT_PRODUCTS",
@@ -307,6 +308,58 @@
         font-size: 14px;
         padding: 8px;
       }
+
+      .shopbot-comparison {
+        width: min(720px, calc(100vw - 32px));
+      }
+
+      .shopbot-compare-grid {
+        display: grid;
+        grid-template-columns: repeat(var(--shopbot-cols, 2), minmax(150px, 1fr));
+        gap: 10px;
+      }
+
+      .shopbot-compare-card {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #f8fafc;
+      }
+
+      .shopbot-compare-image {
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        object-fit: cover;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.1);
+      }
+
+      .shopbot-compare-title {
+        font-size: 14px;
+        line-height: 1.25;
+        font-weight: 700;
+        margin: 0;
+      }
+
+      .shopbot-compare-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        padding-top: 6px;
+        font-size: 12px;
+        color: #cbd5e1;
+      }
+
+      .shopbot-compare-row strong {
+        color: #f8fafc;
+        font-weight: 650;
+        text-align: right;
+      }
       
       .voice-tooltip {
         background: rgba(15, 23, 42, 0.85);
@@ -552,6 +605,15 @@
     return `₹${amount.toFixed(2)}`;
   }
 
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
   function productPath(product) {
     if (!product || !product.name) {
       return "";
@@ -563,22 +625,35 @@
     return handle ? `/products/${handle}` : "";
   }
 
+  async function fetchProductsByIds(productIds) {
+    const ids = (Array.isArray(productIds) ? productIds : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id));
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const url = `${config.apiUrl}/v1/products/by-ids?site_id=${encodeURIComponent(config.siteId)}&ids=${encodeURIComponent(ids.join(","))}`;
+    const response = await fetch(url, { mode: "cors" });
+    if (!response.ok) {
+      throw new Error(`Product fetch failed ${response.status}`);
+    }
+    const products = await response.json();
+    return Array.isArray(products) ? products : [];
+  }
+
   async function renderProducts(productIds) {
     if (!ui || !ui.results || !Array.isArray(productIds) || productIds.length === 0) {
       return;
     }
 
+    ui.results.classList.remove("shopbot-comparison");
+    ui.results.style.removeProperty("--shopbot-cols");
     ui.results.innerHTML = `<div class="shopbot-results-empty">Loading products...</div>`;
     ui.results.classList.add("visible");
 
     try {
-      const ids = productIds.map((id) => Number(id)).filter((id) => Number.isFinite(id));
-      const url = `${config.apiUrl}/v1/products/by-ids?site_id=${encodeURIComponent(config.siteId)}&ids=${encodeURIComponent(ids.join(","))}`;
-      const response = await fetch(url, { mode: "cors" });
-      if (!response.ok) {
-        throw new Error(`Product fetch failed ${response.status}`);
-      }
-      const products = await response.json();
+      const products = await fetchProductsByIds(productIds);
 
       if (!Array.isArray(products) || products.length === 0) {
         ui.results.innerHTML = `<div class="shopbot-results-empty">No matching products found.</div>`;
@@ -586,13 +661,13 @@
       }
 
       ui.results.innerHTML = products.map((product) => {
-        const image = normalizeText(product.image_url);
-        const title = normalizeText(product.name) || "Product";
-        const brand = normalizeText(product.brand);
-        const price = money(product.price);
+        const image = escapeHtml(normalizeText(product.image_url));
+        const title = escapeHtml(normalizeText(product.name) || "Product");
+        const brand = escapeHtml(normalizeText(product.brand));
+        const price = escapeHtml(money(product.price));
         const path = productPath(product);
         return `
-          <button class="shopbot-result-card" type="button" data-path="${path}">
+          <button class="shopbot-result-card" type="button" data-path="${escapeHtml(path)}">
             ${image ? `<img class="shopbot-result-image" src="${image}" alt="">` : `<div class="shopbot-result-image"></div>`}
             <span>
               <p class="shopbot-result-title">${title}</p>
@@ -617,6 +692,66 @@
         message: err && err.message,
       });
       ui.results.innerHTML = `<div class="shopbot-results-empty">Could not load product cards.</div>`;
+    }
+  }
+
+  async function renderComparison(productIds) {
+    if (!ui || !ui.results || !Array.isArray(productIds) || productIds.length === 0) {
+      return;
+    }
+
+    ui.results.innerHTML = `<div class="shopbot-results-empty">Building comparison...</div>`;
+    ui.results.classList.add("visible", "shopbot-comparison");
+
+    try {
+      const products = (await fetchProductsByIds(productIds)).slice(0, 4);
+      if (products.length < 2) {
+        await renderProducts(productIds);
+        return;
+      }
+
+      ui.results.style.setProperty("--shopbot-cols", String(products.length));
+      ui.results.innerHTML = `
+        <div class="shopbot-compare-grid">
+          ${products.map((product) => {
+            const image = escapeHtml(normalizeText(product.image_url));
+            const title = escapeHtml(normalizeText(product.name) || "Product");
+            const brand = escapeHtml(normalizeText(product.brand) || "N/A");
+            const category = escapeHtml(normalizeText(product.category_name) || "N/A");
+            const stock = escapeHtml(String(product.stock ?? "N/A"));
+            const rating = escapeHtml(`${product.rating ?? "N/A"} (${product.review_count ?? 0})`);
+            const price = escapeHtml(money(product.price));
+            const path = escapeHtml(productPath(product));
+            return `
+              <button class="shopbot-compare-card" type="button" data-path="${path}">
+                ${image ? `<img class="shopbot-compare-image" src="${image}" alt="">` : `<div class="shopbot-compare-image"></div>`}
+                <p class="shopbot-compare-title">${title}</p>
+                <div class="shopbot-compare-row"><span>Price</span><strong>${price}</strong></div>
+                <div class="shopbot-compare-row"><span>Brand</span><strong>${brand}</strong></div>
+                <div class="shopbot-compare-row"><span>Category</span><strong>${category}</strong></div>
+                <div class="shopbot-compare-row"><span>Rating</span><strong>${rating}</strong></div>
+                <div class="shopbot-compare-row"><span>Stock</span><strong>${stock}</strong></div>
+              </button>
+            `;
+          }).join("")}
+        </div>
+      `;
+
+      ui.results.querySelectorAll(".shopbot-compare-card").forEach((card) => {
+        card.addEventListener("click", () => {
+          const path = card.getAttribute("data-path");
+          if (path) {
+            window.location.href = path;
+          }
+        });
+      });
+    } catch (err) {
+      console.error("ShopBot comparison render failed", err);
+      logClientEvent("comparison_render_failed", {
+        name: err && err.name,
+        message: err && err.message,
+      });
+      ui.results.innerHTML = `<div class="shopbot-results-empty">Could not build comparison.</div>`;
     }
   }
 
@@ -677,7 +812,14 @@
         window.dispatchEvent(new CustomEvent("shopbot:action", { detail: action }));
         if (actionName === "SHOW_PRODUCTS") {
           renderProducts(params.product_ids);
+        } else if (actionName === "SHOW_COMPARISON") {
+          renderComparison(params.product_ids);
         }
+        return;
+      }
+
+      if (actionName === "SHOW_COMPARISON") {
+        renderComparison(params.product_ids);
         return;
       }
 

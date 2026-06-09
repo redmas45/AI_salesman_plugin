@@ -235,6 +235,7 @@ def validate_output(
         # Validate product IDs exist in DB (prevent hallucinated products)
         if action_type in (
             "SHOW_PRODUCTS",
+            "SHOW_COMPARISON",
             "SHOW_PRODUCT_DETAIL",
             "ADD_TO_CART",
             "REMOVE_FROM_CART",
@@ -275,11 +276,12 @@ def _validate_product_ids(
     action_type: str, params: dict, site_id: str, allowed_product_ids: list[int] | None = None
 ) -> dict | None:
     """Validate product actions and drop commands that target missing products."""
-    if action_type == "SHOW_PRODUCTS":
+    if action_type in ("SHOW_PRODUCTS", "SHOW_COMPARISON"):
         raw_ids = params.get("product_ids", [])
         if not isinstance(raw_ids, list):
             logger.warning(
-                "Guardrail | SHOW_PRODUCTS product_ids is not a list - skipping."
+                "Guardrail | %s product_ids is not a list - skipping.",
+                action_type,
             )
             return None
 
@@ -294,11 +296,14 @@ def _validate_product_ids(
 
         if len(valid_ids) != len(raw_ids):
             logger.warning(
-                "Guardrail | Removed %d invalid product IDs from SHOW_PRODUCTS.",
+                "Guardrail | Removed %d invalid product IDs from %s.",
                 len(raw_ids) - len(valid_ids),
+                action_type,
             )
         if not valid_ids:
             return None
+        if action_type == "SHOW_COMPARISON":
+            return {"product_ids": valid_ids[:4]}
         return {"product_ids": valid_ids}
 
     if action_type in (

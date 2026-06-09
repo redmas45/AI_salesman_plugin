@@ -6,7 +6,7 @@ Uses psycopg 3 thread-local connections.
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator
+from typing import Any, Generator
 from psycopg import sql
 
 import psycopg
@@ -172,6 +172,68 @@ def tenant_catalog_stats(site_id: str) -> dict:
             return dict(row) if row else {"total_products": 0, "active_products": 0, "missing_embeddings": 0}
     except Exception:
         return {"total_products": 0, "active_products": 0, "missing_embeddings": 0}
+
+
+def catalog_source_stats(site_id: str) -> list[dict[str, Any]]:
+    """Return per-source snapshot counts for a tenant."""
+    init_tenant_schema(site_id)
+    with get_db(site_id) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                source_name,
+                COUNT(*) AS total_products,
+                COUNT(*) FILTER (WHERE is_active = 1) AS active_products,
+                MAX(last_seen_at)::TEXT AS last_seen_at
+            FROM catalog_source_products
+            GROUP BY source_name
+            ORDER BY source_name
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def catalog_source_preview(site_id: str, source_name: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Return a small product preview from a source snapshot."""
+    init_tenant_schema(site_id)
+    with get_db(site_id) as conn:
+        rows = conn.execute(
+            """
+            SELECT product_id, name, brand, category, price, stock, image_url, is_active
+            FROM catalog_source_products
+            WHERE source_name = %s
+            ORDER BY last_seen_at DESC, name ASC
+            LIMIT %s
+            """,
+            (source_name, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def tenant_catalog_preview(site_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    """Return a small preview from the active vectorized catalog table."""
+    init_tenant_schema(site_id)
+    with get_db(site_id) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                p.id AS product_id,
+                p.name,
+                p.brand,
+                c.name AS category,
+                p.price,
+                p.stock,
+                p.image_url,
+                p.is_active,
+                CASE WHEN p.embedding IS NULL THEN 0 ELSE 1 END AS has_embedding
+            FROM products p
+            JOIN categories c ON p.category_id = c.id
+            ORDER BY p.is_active DESC, p.name ASC
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 # Cart Helpers

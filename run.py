@@ -13,7 +13,12 @@ from dotenv import load_dotenv, set_key
 import config
 
 from agent.ingestion import sanitize_site_id, sync_shopify_api, sync_web_crawl, sync_website_api
-from db.database import tenant_catalog_stats
+from db.database import (
+    catalog_source_preview,
+    catalog_source_stats,
+    tenant_catalog_preview,
+    tenant_catalog_stats,
+)
 
 load_dotenv()
 
@@ -291,9 +296,6 @@ def _run_shopify_existing_mode() -> str:
 def _run_shopify_api_mode() -> str:
     domain = _configured_or_ask("Shop domain", config.SHOPIFY_STORE_DOMAIN)
     site_id = _shopify_site_id(domain)
-    existing = _use_existing_catalog(site_id)
-    if existing:
-        return existing
 
     token = _resolve_shopify_access_token(domain)
     if not domain or not token:
@@ -305,6 +307,7 @@ def _run_shopify_api_mode() -> str:
         token,
         site_id=site_id,
         reconcile_missing=True,
+        source_name="shopify_api",
     )
 
 
@@ -313,9 +316,6 @@ def _run_shopify_crawl_mode() -> str:
     if not start_url:
         raise ValueError("Website URL is required.")
     site_id = _shopify_site_id(start_url)
-    existing = _use_existing_catalog(site_id)
-    if existing:
-        return existing
 
     max_pages = _configured_int("Max pages to crawl", config.WEBSITE_CRAWL_MAX_PAGES)
     max_depth = _configured_int("Max crawl depth", config.WEBSITE_CRAWL_MAX_DEPTH)
@@ -327,6 +327,7 @@ def _run_shopify_crawl_mode() -> str:
         max_depth=max_depth,
         site_id=site_id,
         reconcile_missing=True,
+        source_name="shopify_crawler",
     )
 
 
@@ -357,6 +358,7 @@ def _run_api_mode() -> str:
         headers=headers,
         site_id=site_id,
         reconcile_missing=True,
+        source_name="website_api",
     )
 
 
@@ -380,7 +382,49 @@ def _run_crawler_mode() -> str:
         max_depth=max_depth,
         site_id=site_id,
         reconcile_missing=True,
+        source_name="website_crawler",
     )
+
+
+def _view_catalog_data() -> None:
+    site_choice = _ask("Site type (shopify/website)", "shopify").lower().strip()
+    site_id = _shopify_site_id(config.SHOPIFY_STORE_DOMAIN or config.SHOPIFY_SITE_URL) if site_choice.startswith("shop") else _configured_site_id()
+    if not site_id:
+        print("No site_id configured.")
+        return
+
+    print(f"\nCatalog sources for {site_id}:")
+    rows = catalog_source_stats(site_id)
+    print("- live_catalog: current active catalog used by voice/RAG")
+    if not rows:
+        print("No source snapshots found yet.")
+    else:
+        for row in rows:
+            print(
+                f"- {row['source_name']}: {row['active_products']} active / "
+                f"{row['total_products']} total, last_seen={row['last_seen_at']}"
+            )
+
+    source = _ask("Source to preview", "live_catalog").strip()
+    limit = _ask_int("Rows to show", 10)
+    preview = (
+        tenant_catalog_preview(site_id, limit=limit)
+        if source == "live_catalog"
+        else catalog_source_preview(site_id, source, limit=limit)
+    )
+    if not preview:
+        print(f"No rows found for source={source}.")
+        return
+
+    print(f"\nPreview: {source}")
+    for item in preview:
+        active = "active" if item["is_active"] else "inactive"
+        vector = "vectorized" if item.get("has_embedding") else "not_vectorized"
+        print(
+            f"- [{item['product_id']}] {item['name']} | "
+            f"{item.get('brand') or 'Unknown'} | {item.get('category') or 'Products'} | "
+            f"price={item.get('price')} stock={item.get('stock')} | {active} | {vector}"
+        )
 
 
 def _print_menu() -> None:
@@ -392,6 +436,7 @@ def _print_menu() -> None:
     print("   b) Shopify crawler")
     print("2) Website API")
     print("3) Website crawler")
+    print("4) View data")
     print("0) Exit")
     print("=" * 54)
 
@@ -430,6 +475,8 @@ if __name__ == "__main__":
                 selected_site_id = _run_api_mode()
             elif choice in {"2b", "3"}:
                 selected_site_id = _run_crawler_mode()
+            elif choice == "4":
+                _view_catalog_data()
             else:
                 print("Invalid option.")
         except Exception as exc:

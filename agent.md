@@ -1,107 +1,185 @@
-# AI Salesman Hub — Operational Project Guide
+# AI Salesman Hub - Agent Guide
 
-## What this project does
+This file describes the current project behavior and operating assumptions.
 
-AI Salesman Hub is a voice-powered shopping assistant for Shopify-style stores.
+## Goal
 
-- It ingests a merchant catalog into a PostgreSQL tenant schema.
-- It runs a FastAPI backend with an AI pipeline (`STT -> guardrails -> RAG -> LLM -> TTS`).
-- A storefront widget (`shopbot.js`) sends voice + interaction events to the backend and executes UI actions (cart updates, product details, filtering).
+Build a voice shopping assistant that works across four catalog acquisition paths:
 
-The project has per-tenant isolation using PostgreSQL schemas and is designed to work with:
+- `1a` Shopify API: merchant shares Shopify API access.
+- `1b` Shopify crawler: merchant does not share API/catalog access; we crawl the storefront.
+- `2` Website API: a normal website provides product API access.
+- `3` Website crawler: a normal website provides no API; we crawl public pages.
 
-- Shopify API sync
-- Generic website crawler sync
-- Third-party website API sync
+These are separate use cases. Do not silently replace one path with another.
 
-## Core runtime path
+## Runtime Entry
 
-1. Operator picks a run mode in `run.py`.
-2. Ingestion functions in `agent/ingestion.py` normalize product data and call `_persist_catalog`.
-3. `_persist_catalog` calls `init_tenant_schema()` in `db/database.py`.
-4. `init_tenant_schema()` creates/activates tenant schema and applies `db/schema.sql`.
-5. Runtime APIs in `api/main.py` serve chat/audio/cart endpoints and plugin bootstrap.
-6. Conversation requests go through `agent/orchestrator.py` and use:
-   - `agent/stt.py` for speech input,
-   - `agent/rag.py` for retrieval,
-   - `agent/llm.py` for response synthesis,
-   - `agent/guardrails.py` for safety checks,
-   - `agent/tts.py` for speech output.
+Use:
 
-## Major directories and responsibilities
-
-- `agent/`
-  - `orchestrator.py`: Pipeline orchestration and action handling.
-  - `ingestion.py`: Product ingestion from Shopify API, crawler, and external product APIs.
-  - `llm.py`: LLM calls and response schema orchestration.
-  - `rag.py`: Vector generation + product retrieval.
-  - `rag.py`: Vector search + fallback SQL retrieval logic.
-  - `stt.py`: Speech-to-text.
-  - `tts.py`: Text-to-speech.
-  - `guardrails.py`: Input/output validation.
-  - `prompt.py`: LLM prompt assembly.
-
-- `api/`
-  - `main.py`: FastAPI routes for widget, chat/audio/cart, and OAuth install webhooks.
-  - `models.py`: Pydantic API models.
-  - `middleware.py`: Request-level middleware.
-
-- `db/`
-  - `database.py`: DB connection pooling, schema creation, tenant access context managers.
-  - `schema.sql`: Tenant schema tables (`products`, `categories`, `cart`, `user_profile`).
-  - `seed.py`: Optional seed helper for local test data.
-
-- `plugin/`
-  - `shopbot.js`: Storefront widget (recording, SSE/API calls, and UI action execution).
-  - `src/api.js`: Frontend API helper.
-
-- `run.py`
-  - CLI entrypoint for running ingestion flows and starting the backend server.
-
-- `scripts/`
-  - Operational helpers like forced sync, vectorization triggers, and other ad-hoc tasks.
-
-## Tenant identity and schema behavior
-
-Each tenant has a schema named `tenant_<site_id>`.
-
-- `run.py` and ingestion modes accept optional `Target site_id`.
-- If omitted, it is inferred from the store/domain URL and sanitized.
-- `db/database.py` sets `search_path` per tenant before every tenant-scoped query.
-- Ingress and storefront actions pass `site_id` explicitly via request form/body or env config.
-
-Recent fix in this repo:
-
-- URL-like site IDs now sanitize to SQL-safe identifiers (only lowercase letters, digits, underscore).
-- Schema creation and `search_path` now use `psycopg.sql.Identifier` to prevent invalid SQL identifier syntax and improve safety.
-
-## Key issue and fix that prompted this update
-
-Observed failure when running crawler mode:
-
-```
-CREATE SCHEMA IF NOT EXISTS tenant_https___demo.vercel.store
+```powershell
+python run.py
 ```
 
-This failed because dots in `site_id` produced invalid unquoted schema names.
+Current menu:
 
-Fix summary:
+```text
+1) Shopify
+   a) Shopify API
+   b) Shopify crawler
+2) Website API
+3) Website crawler
+4) View data
+0) Exit
+```
 
-- `agent/ingestion.py`
-  - `sanitize_site_id` now strips invalid characters and collapses repeats to underscores.
-  - Leading digits are prefixed with `site_` to keep schemas valid.
-- `db/database.py`
-  - `CREATE SCHEMA` and `SET search_path` now use safe quoted identifiers.
+Selecting `1 -> a` must run Shopify API ingestion.
 
-## Environment variables used at runtime
+Selecting `1 -> b` must run Shopify storefront crawler ingestion.
 
-- `GEMINI_API_KEY`
-- `SHOPIFY_CLIENT_ID`
-- `SHOPIFY_CLIENT_SECRET`
-- `SHOPIFY_STORE_DOMAIN`
-- `SHOPIFY_ACCESS_TOKEN`
-- `DATABASE_URL`
-- `AI_DEFAULT_SITE_ID`
-- `DEFAULT_SITE_ID`
-- `PUBLIC_API_URL`
-- `AI_PLUGIN_SCRIPT_URL`
+Selecting `4` shows source snapshots and live catalog data.
+
+## Data Model
+
+Each website gets its own PostgreSQL tenant schema:
+
+```text
+tenant_<site_id>
+```
+
+The active catalog used by RAG is:
+
+```text
+products
+categories
+```
+
+Source snapshots are:
+
+```text
+catalog_source_products
+catalog_sync_runs
+```
+
+Source names:
+
+```text
+shopify_api
+shopify_crawler
+website_api
+website_crawler
+```
+
+Use these snapshots to compare API ingestion quality against crawler ingestion quality.
+
+## Incremental Catalog Sync
+
+Do not wipe catalogs on every run.
+
+Expected behavior:
+
+- Insert new products.
+- Update changed products.
+- Mark missing products inactive.
+- Preserve embeddings for unchanged products.
+- Re-vectorize only rows whose content changed or became inactive.
+- Preserve cart/profile data.
+
+`embedding IS NULL` means the product needs vectorization.
+
+## AI Pipeline
+
+Main endpoint:
+
+```text
+POST /v1/shop
+```
+
+Pipeline:
+
+```text
+STT -> guardrails -> RAG -> LLM -> guardrails -> TTS -> widget response
+```
+
+Model config:
+
+```env
+STT_MODEL=gpt-4o-mini-transcribe
+STT_LANGUAGE=en
+LLM_MODEL=gpt-4.1
+TTS_MODEL=gpt-4o-mini-tts
+TTS_VOICE=alloy
+```
+
+Provider:
+
+```text
+OpenAI only for STT, LLM, and TTS.
+```
+
+Do not reintroduce Groq/Gemini keys or provider paths.
+
+## UI Actions
+
+Supported important actions:
+
+```text
+SHOW_PRODUCTS
+SHOW_COMPARISON
+FILTER_PRODUCTS
+NAVIGATE_TO
+ADD_TO_CART
+REMOVE_FROM_CART
+UPDATE_CART_QUANTITY
+SHOW_PRODUCT_DETAIL
+CLEAR_CART
+CHECKOUT
+```
+
+`SHOW_PRODUCTS` renders product cards in the injected widget.
+
+`SHOW_COMPARISON` renders a side-by-side comparison for 2 to 4 products.
+
+The widget implementation is:
+
+```text
+plugin/shopbot.js
+```
+
+## Shopify ScriptTag
+
+On startup, the backend can update Shopify ScriptTags for installed shops.
+
+The injected script should use the tenant site id:
+
+```text
+/shopbot.js?site=<site_id>
+```
+
+For current test Shopify site:
+
+```text
+/shopbot.js?site=pisszq_ay
+```
+
+## Important Files
+
+- `run.py`: CLI entrypoint and source selection.
+- `agent/ingestion.py`: Shopify API, website API, and crawler ingestion.
+- `db/schema.sql`: tenant tables.
+- `db/database.py`: tenant DB helpers and catalog inspection helpers.
+- `api/main.py`: FastAPI routes, `/shopbot.js`, `/v1/shop`, `/v1/client-log`.
+- `plugin/shopbot.js`: voice orb, product cards, comparison UI, cart actions.
+- `agent/orchestrator.py`: AI pipeline.
+- `agent/prompt.py`: LLM rules and examples.
+- `agent/guardrails.py`: input/output validation.
+
+## Debugging Notes
+
+If the browser only loads `/shopbot.js` and does not call `/v1/shop`, the issue is client-side recording or permissions.
+
+If logs show `/v1/client-log`, inspect the `CLIENT | ...` lines.
+
+If `/v1/shop` runs and STT succeeds, failures after that are in RAG/LLM/TTS.
+
+If products are found but UI does not move, inspect returned `ui_actions` and `plugin/shopbot.js` action handling.

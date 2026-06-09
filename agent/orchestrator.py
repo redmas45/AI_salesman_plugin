@@ -216,6 +216,7 @@ def run(
             "confidence": 1.0,
             "ui_actions": [],
         }
+    _promote_comparison_action(validated, safe_transcript)
     timings["guardrail_output_ms"] = _ms(t)
 
     print(f'🧠 LLM RESPONSE: "{validated["response_text"][:150]}"')
@@ -404,6 +405,7 @@ def run_stream(
             "confidence": 1.0,
             "ui_actions": [],
         }
+    _promote_comparison_action(validated, safe_transcript)
 
     # Inject variant_id for ADD_TO_CART actions so the frontend can hit Shopify's native Cart API
     final_actions = validated.get("ui_actions", [])
@@ -442,6 +444,25 @@ def run_stream(
 
 def _ms(since: float) -> float:
     return round((time.perf_counter() - since) * 1000, 1)
+
+
+def _promote_comparison_action(response: dict[str, Any], transcript: str) -> None:
+    text = (transcript or "").lower()
+    wants_comparison = any(
+        token in text
+        for token in ("compare", "comparison", "difference", "better", "versus", " vs ")
+    )
+    if not wants_comparison:
+        return
+
+    for action in response.get("ui_actions", []):
+        if action.get("action") == "SHOW_PRODUCTS":
+            product_ids = action.get("params", {}).get("product_ids", [])
+            if isinstance(product_ids, list) and len(product_ids) >= 2:
+                action["action"] = "SHOW_COMPARISON"
+                action["params"] = {"product_ids": product_ids[:4]}
+                response["intent"] = "product_compare"
+                return
 
 
 def _error_response(message: str, timings: dict) -> dict[str, Any]:

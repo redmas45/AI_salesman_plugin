@@ -582,17 +582,57 @@ def _vectorize(site_id: str) -> int:
     return len(rows)
 
 
-def _persist_catalog(site_id: str, products: list[dict[str, Any]], reconcile_missing: bool) -> int:
+def _persist_catalog(
+    site_id: str,
+    products: list[dict[str, Any]],
+    reconcile_missing: bool,
+    source_name: str,
+) -> int:
     init_tenant_schema(site_id)
 
     incoming_ids: list[int] = []
+    incoming_source_ids: list[str] = []
     changed = 0
     deactivated = 0
     with get_db(site_id) as conn:
         for product in products:
             product_id = int(product["id"])
             incoming_ids.append(product_id)
+            source_product_id = str(product_id)
+            incoming_source_ids.append(source_product_id)
             category_id = _ensure_category(conn, _first(product.get("category"), "Products"), site_id)
+            conn.execute(
+                """
+                INSERT INTO catalog_source_products
+                  (source_name, source_product_id, product_id, name, brand, category,
+                   price, stock, image_url, raw_product, is_active, last_seen_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (source_name, source_product_id) DO UPDATE SET
+                  product_id = EXCLUDED.product_id,
+                  name = EXCLUDED.name,
+                  brand = EXCLUDED.brand,
+                  category = EXCLUDED.category,
+                  price = EXCLUDED.price,
+                  stock = EXCLUDED.stock,
+                  image_url = EXCLUDED.image_url,
+                  raw_product = EXCLUDED.raw_product,
+                  is_active = EXCLUDED.is_active,
+                  last_seen_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    source_name,
+                    source_product_id,
+                    product_id,
+                    product["name"],
+                    product["brand"],
+                    _first(product.get("category"), "Products"),
+                    float(product["price"]),
+                    int(product.get("stock", 0)),
+                    product.get("image_url"),
+                    json.dumps(product, ensure_ascii=False),
+                    int(product.get("is_active", 1)),
+                ),
+            )
             row = conn.execute(
                 """
                 INSERT INTO products
@@ -670,6 +710,16 @@ def _persist_catalog(site_id: str, products: list[dict[str, Any]], reconcile_mis
                 changed += 1
 
         if reconcile_missing and incoming_ids:
+            conn.execute(
+                """
+                UPDATE catalog_source_products
+                SET is_active = 0
+                WHERE source_name = %s
+                  AND is_active = 1
+                  AND NOT (source_product_id = ANY(%s))
+                """,
+                (source_name, incoming_source_ids),
+            )
             result = conn.execute(
                 """
                 UPDATE products
@@ -683,16 +733,26 @@ def _persist_catalog(site_id: str, products: list[dict[str, Any]], reconcile_mis
             deactivated = result.rowcount
 
     vectorized = _vectorize(site_id)
+    with get_db(site_id) as conn:
+        conn.execute(
+            """
+            INSERT INTO catalog_sync_runs
+              (source_name, source_count, changed_count, deactivated_count, vectorized_count)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (source_name, len(incoming_ids), changed, deactivated, vectorized),
+        )
     logger.info(
-        "Catalog sync for %s: source=%s changed=%s deactivated=%s vectorized=%s",
+        "Catalog sync for %s/%s: source=%s changed=%s deactivated=%s vectorized=%s",
         site_id,
+        source_name,
         len(incoming_ids),
         changed,
         deactivated,
         vectorized,
     )
     print(
-        f"Catalog sync: {len(incoming_ids)} source products, "
+        f"Catalog sync ({source_name}): {len(incoming_ids)} source products, "
         f"{changed} changed/new, {deactivated} deactivated, {vectorized} vectorized"
     )
     return changed
@@ -704,6 +764,7 @@ def sync_shopify_api(
     *,
     site_id: str | None = None,
     reconcile_missing: bool = True,
+    source_name: str = "shopify_api",
 ) -> str:
     if not store_domain or not access_token:
         raise ValueError("Store domain and access token are required.")
@@ -728,7 +789,12 @@ def sync_shopify_api(
 
     if not normalized:
         raise RuntimeError("Shopify catalog sync returned no products.")
-    _persist_catalog(resolved_site_id, normalized, reconcile_missing=reconcile_missing)
+    _persist_catalog(
+        resolved_site_id,
+        normalized,
+        reconcile_missing=reconcile_missing,
+        source_name=source_name,
+    )
     return resolved_site_id
 
 
@@ -740,6 +806,7 @@ def sync_website_api(
     payload: dict[str, Any] | None = None,
     site_id: str | None = None,
     reconcile_missing: bool = True,
+    source_name: str = "website_api",
     timeout: int = 30,
 ) -> str:
     if not api_url:
@@ -781,7 +848,12 @@ def sync_website_api(
     if not normalized:
         raise RuntimeError("API response did not contain parseable products.")
 
-    _persist_catalog(resolved_site_id, normalized, reconcile_missing=reconcile_missing)
+    _persist_catalog(
+        resolved_site_id,
+        normalized,
+        reconcile_missing=reconcile_missing,
+        source_name=source_name,
+    )
     return resolved_site_id
 
 
@@ -792,6 +864,7 @@ def sync_web_crawl(
     max_depth: int = 3,
     site_id: str | None = None,
     reconcile_missing: bool = True,
+    source_name: str = "website_crawler",
     timeout: int = 12,
 ) -> str:
     if not start_url:
@@ -867,5 +940,10 @@ def sync_web_crawl(
     if stopped_by_limit:
         print(f"- Stopped by max_pages={max_pages}")
 
-    _persist_catalog(resolved_site_id, extracted_products, reconcile_missing=reconcile_missing)
+    _persist_catalog(
+        resolved_site_id,
+        extracted_products,
+        reconcile_missing=reconcile_missing,
+        source_name=source_name,
+    )
     return resolved_site_id
