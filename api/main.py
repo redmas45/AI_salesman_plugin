@@ -33,6 +33,11 @@ class ShopifySyncRequest(BaseModel):
     store_domain: Optional[str] = None
     access_token: Optional[str] = None
 
+
+class ClientLogRequest(BaseModel):
+    event: str
+    payload: dict[str, Any] = {}
+
 from api.models import (
     AddToCartRequest,
     CartItemResponse,
@@ -164,6 +169,18 @@ async def health():
             "embedding": config.EMBEDDING_MODEL,
         },
     )
+
+
+@app.post("/v1/client-log", tags=["Utility"])
+async def client_log(req: ClientLogRequest):
+    """Receive browser-side diagnostics from the injected widget."""
+    safe_event = str(req.event)[:80]
+    safe_payload = {
+        str(key)[:80]: str(value)[:300]
+        for key, value in (req.payload or {}).items()
+    }
+    logger.info("CLIENT | %s | %s", safe_event, safe_payload)
+    return {"status": "ok"}
 
 
 @app.post("/v1/shop", response_model=ShopResponse, tags=["Shopping Agent"])
@@ -712,8 +729,14 @@ async def serve_plugin(site: Optional[str] = None, site_id: Optional[str] = None
     with open(plugin_path, "r", encoding="utf-8") as f:
         js_code = f.read()
 
+    import os
+
     safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    safe_api = _safe_script_base_url(config.PUBLIC_API_URL) or _safe_script_base_url(config.VOICE_ORB_API_URL or "")
+    safe_api = (
+        _safe_script_base_url(os.environ.get("PUBLIC_API_URL", ""))
+        or _safe_script_base_url(config.PUBLIC_API_URL)
+        or _safe_script_base_url(config.VOICE_ORB_API_URL or "")
+    )
 
     js_code = js_code.replace('"__AI_PUBLIC_API_URL__"', json.dumps(safe_api))
     js_code = js_code.replace('"__AI_DEFAULT_SITE_ID__"', json.dumps(safe_site))

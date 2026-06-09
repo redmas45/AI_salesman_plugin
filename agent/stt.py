@@ -54,7 +54,9 @@ def _call_stt(audio_file: tuple, language: str) -> str:
             request["language"] = language
 
         response = client.audio.transcriptions.create(**request)
-        return (response.text or "").strip()
+        if isinstance(response, str):
+            return response.strip()
+        return (getattr(response, "text", "") or "").strip()
     except Exception as exc:
         if config.STT_MODEL != "gpt-4o-mini-transcribe":
             logger.warning(

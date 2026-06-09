@@ -241,6 +241,72 @@
         width: 320px;
         background: rgba(255, 255, 255, 0.95);
       }
+
+      .shopbot-results {
+        width: min(420px, calc(100vw - 32px));
+        max-height: min(520px, calc(100vh - 140px));
+        overflow: auto;
+        display: none;
+        flex-direction: column;
+        gap: 10px;
+        padding: 12px;
+        border-radius: 18px;
+        background: rgba(15, 23, 42, 0.92);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow: 0 20px 45px rgba(0, 0, 0, 0.28);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+      }
+
+      .shopbot-results.visible {
+        display: flex;
+      }
+
+      .shopbot-result-card {
+        display: grid;
+        grid-template-columns: 68px 1fr;
+        gap: 10px;
+        align-items: center;
+        width: 100%;
+        padding: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #f8fafc;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .shopbot-result-card:hover {
+        background: rgba(255, 255, 255, 0.14);
+      }
+
+      .shopbot-result-image {
+        width: 68px;
+        height: 68px;
+        object-fit: cover;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.1);
+      }
+
+      .shopbot-result-title {
+        font-size: 14px;
+        line-height: 1.3;
+        font-weight: 650;
+        margin: 0 0 4px;
+      }
+
+      .shopbot-result-meta {
+        font-size: 13px;
+        line-height: 1.25;
+        color: #cbd5e1;
+      }
+
+      .shopbot-results-empty {
+        color: #cbd5e1;
+        font-size: 14px;
+        padding: 8px;
+      }
       
       .voice-tooltip {
         background: rgba(15, 23, 42, 0.85);
@@ -306,6 +372,7 @@
     widget.id = "shopbot-widget";
     widget.className = "voice-orb-wrapper";
     widget.innerHTML = `
+      <div id="shopbot-results" class="shopbot-results"></div>
       <div id="shopbot-tooltip" class="voice-tooltip">
         <div id="shopbot-visualizer" class="visualizer" style="display: none; margin-bottom: 0.5rem;">
           <div class="visualizer-bar"></div><div class="visualizer-bar"></div>
@@ -324,6 +391,7 @@
       tooltip: document.getElementById("shopbot-tooltip"),
       message: document.getElementById("shopbot-message"),
       visualizer: document.getElementById("shopbot-visualizer"),
+      results: document.getElementById("shopbot-results"),
     };
   }
 
@@ -383,6 +451,15 @@
 
       // Otherwise, START recording
       try {
+        logClientEvent("mic_start_requested", {
+          site_id: config.siteId,
+          origin: window.location.origin,
+          secure_context: window.isSecureContext,
+          has_media_devices: Boolean(navigator.mediaDevices),
+          has_get_user_media: Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+          has_media_recorder: typeof MediaRecorder !== "undefined",
+        });
+
         if (!window.isSecureContext) {
           throw new Error("Browser microphone access requires HTTPS.");
         }
@@ -393,7 +470,25 @@
           throw new Error("MediaRecorder is unavailable in this browser.");
         }
 
+        if (navigator.permissions && navigator.permissions.query) {
+          try {
+            const permission = await navigator.permissions.query({ name: "microphone" });
+            logClientEvent("mic_permission_state", { state: permission.state });
+          } catch (permissionErr) {
+            logClientEvent("mic_permission_query_failed", {
+              name: permissionErr && permissionErr.name,
+              message: permissionErr && permissionErr.message,
+            });
+          }
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const tracks = stream.getAudioTracks();
+        logClientEvent("mic_stream_started", {
+          tracks: tracks.length,
+          first_track_label: tracks[0] && tracks[0].label,
+          first_track_state: tracks[0] && tracks[0].readyState,
+        });
 
         recorder = new MediaRecorder(stream);
         audioChunks = [];
@@ -404,6 +499,11 @@
 
         recorder.onstop = async () => {
           const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+          logClientEvent("mic_recording_stopped", {
+            chunks: audioChunks.length,
+            blob_size: audioBlob.size,
+            blob_type: audioBlob.type,
+          });
           stream.getTracks().forEach((track) => track.stop());
           await processAudioCallback(audioBlob);
         };
@@ -413,6 +513,15 @@
         setStatus("listening");
       } catch (err) {
         console.error("ShopBot microphone error", err && err.name, err && err.message, err);
+        logClientEvent("mic_error", {
+          name: err && err.name,
+          message: err && err.message,
+          secure_context: window.isSecureContext,
+          has_media_devices: Boolean(navigator.mediaDevices),
+          has_get_user_media: Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+          has_media_recorder: typeof MediaRecorder !== "undefined",
+          user_agent: navigator.userAgent,
+        });
         setStatus("error", getMicErrorMessage(err));
       }
     }
@@ -421,6 +530,95 @@
   }
 
   const config = resolveWidgetConfig();
+
+  function logClientEvent(event, payload = {}) {
+    try {
+      fetch(`${config.apiUrl}/v1/client-log`, {
+        method: "POST",
+        mode: "cors",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event, payload }),
+      }).catch(() => {});
+    } catch (_err) {
+      // Diagnostics must never block the widget.
+    }
+  }
+
+  function money(value) {
+    const amount = Number(value || 0);
+    if (!Number.isFinite(amount)) {
+      return "";
+    }
+    return `₹${amount.toFixed(2)}`;
+  }
+
+  function productPath(product) {
+    if (!product || !product.name) {
+      return "";
+    }
+    const handle = String(product.name)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return handle ? `/products/${handle}` : "";
+  }
+
+  async function renderProducts(productIds) {
+    if (!ui || !ui.results || !Array.isArray(productIds) || productIds.length === 0) {
+      return;
+    }
+
+    ui.results.innerHTML = `<div class="shopbot-results-empty">Loading products...</div>`;
+    ui.results.classList.add("visible");
+
+    try {
+      const ids = productIds.map((id) => Number(id)).filter((id) => Number.isFinite(id));
+      const url = `${config.apiUrl}/v1/products/by-ids?site_id=${encodeURIComponent(config.siteId)}&ids=${encodeURIComponent(ids.join(","))}`;
+      const response = await fetch(url, { mode: "cors" });
+      if (!response.ok) {
+        throw new Error(`Product fetch failed ${response.status}`);
+      }
+      const products = await response.json();
+
+      if (!Array.isArray(products) || products.length === 0) {
+        ui.results.innerHTML = `<div class="shopbot-results-empty">No matching products found.</div>`;
+        return;
+      }
+
+      ui.results.innerHTML = products.map((product) => {
+        const image = normalizeText(product.image_url);
+        const title = normalizeText(product.name) || "Product";
+        const brand = normalizeText(product.brand);
+        const price = money(product.price);
+        const path = productPath(product);
+        return `
+          <button class="shopbot-result-card" type="button" data-path="${path}">
+            ${image ? `<img class="shopbot-result-image" src="${image}" alt="">` : `<div class="shopbot-result-image"></div>`}
+            <span>
+              <p class="shopbot-result-title">${title}</p>
+              <span class="shopbot-result-meta">${brand ? `${brand} · ` : ""}${price}</span>
+            </span>
+          </button>
+        `;
+      }).join("");
+
+      ui.results.querySelectorAll(".shopbot-result-card").forEach((card) => {
+        card.addEventListener("click", () => {
+          const path = card.getAttribute("data-path");
+          if (path) {
+            window.location.href = path;
+          }
+        });
+      });
+    } catch (err) {
+      console.error("ShopBot product render failed", err);
+      logClientEvent("product_render_failed", {
+        name: err && err.name,
+        message: err && err.message,
+      });
+      ui.results.innerHTML = `<div class="shopbot-results-empty">Could not load product cards.</div>`;
+    }
+  }
 
   function executeUiActions(actions, transcript) {
     if (!Array.isArray(actions) || actions.length === 0) {
@@ -477,6 +675,14 @@
 
       if (!isShopifyStorefront()) {
         window.dispatchEvent(new CustomEvent("shopbot:action", { detail: action }));
+        if (actionName === "SHOW_PRODUCTS") {
+          renderProducts(params.product_ids);
+        }
+        return;
+      }
+
+      if (actionName === "SHOW_PRODUCTS") {
+        renderProducts(params.product_ids);
         return;
       }
 
@@ -553,7 +759,13 @@
         signal: controller.signal,
       });
 
-      if (!response.ok) throw new Error("API Error");
+      if (!response.ok) {
+        logClientEvent("shop_request_failed", {
+          status: response.status,
+          status_text: response.statusText,
+        });
+        throw new Error(`API Error ${response.status}`);
+      }
 
       const result = await response.json();
 
@@ -566,6 +778,10 @@
       callbacks.onResponse(result.response_text, result.audio_b64);
     } catch (err) {
       console.error(err);
+      logClientEvent("shop_request_error", {
+        name: err && err.name,
+        message: err && err.message,
+      });
       callbacks.onStatusChange("error");
     } finally {
       clearTimeout(timeoutId);

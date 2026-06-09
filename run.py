@@ -13,6 +13,7 @@ from dotenv import load_dotenv, set_key
 import config
 
 from agent.ingestion import sanitize_site_id, sync_shopify_api, sync_web_crawl, sync_website_api
+from db.database import tenant_catalog_stats
 
 load_dotenv()
 
@@ -272,12 +273,31 @@ def _run_server(host: str, port: int, site_id: str) -> None:
         print("\nShutting down Hub Server...")
 
 
+def _use_existing_catalog(site_id: str) -> str:
+    stats = tenant_catalog_stats(site_id)
+    active = int(stats.get("active_products") or 0)
+    total = int(stats.get("total_products") or 0)
+    if total == 0:
+        print(f"No existing catalog found for site_id={site_id}. Use an update/sync option first.")
+        return ""
+    print(f"Catalog ready for {site_id}: {active} products.")
+    return site_id
+
+
+def _run_shopify_existing_mode() -> str:
+    return _use_existing_catalog(_shopify_site_id(config.SHOPIFY_STORE_DOMAIN or config.SHOPIFY_SITE_URL))
+
+
 def _run_shopify_api_mode() -> str:
     domain = _configured_or_ask("Shop domain", config.SHOPIFY_STORE_DOMAIN)
+    site_id = _shopify_site_id(domain)
+    existing = _use_existing_catalog(site_id)
+    if existing:
+        return existing
+
     token = _resolve_shopify_access_token(domain)
     if not domain or not token:
         raise ValueError("Both domain and access token are required for Shopify API mode.")
-    site_id = _shopify_site_id(domain)
     return _run_with_animation(
         "Ingesting products from Shopify API",
         sync_shopify_api,
@@ -292,9 +312,13 @@ def _run_shopify_crawl_mode() -> str:
     start_url = _shopify_site_url()
     if not start_url:
         raise ValueError("Website URL is required.")
+    site_id = _shopify_site_id(start_url)
+    existing = _use_existing_catalog(site_id)
+    if existing:
+        return existing
+
     max_pages = _configured_int("Max pages to crawl", config.WEBSITE_CRAWL_MAX_PAGES)
     max_depth = _configured_int("Max crawl depth", config.WEBSITE_CRAWL_MAX_DEPTH)
-    site_id = _shopify_site_id(start_url)
     return _run_with_animation(
         "Crawling and ingesting website content",
         sync_web_crawl,
@@ -309,18 +333,7 @@ def _run_shopify_crawl_mode() -> str:
 def _run_api_mode() -> str:
     endpoint = _configured_or_ask("Product API endpoint URL", config.WEBSITE_API_URL)
     if not endpoint:
-        crawl_url = _configured_or_ask("Website crawler start URL", config.WEBSITE_CRAWL_URL)
-        if not crawl_url:
-            raise ValueError("Product API URL is empty and website crawler URL is not configured.")
-        return _run_with_animation(
-            "Product API empty - crawling and ingesting website content",
-            sync_web_crawl,
-            crawl_url,
-            max_pages=_configured_int("Max pages to crawl", config.WEBSITE_CRAWL_MAX_PAGES),
-            max_depth=_configured_int("Max crawl depth", config.WEBSITE_CRAWL_MAX_DEPTH),
-            site_id=_configured_site_id(),
-            reconcile_missing=True,
-        )
+        raise ValueError("WEBSITE_API_URL is empty. Use option 2b for crawler-only update.")
 
     method = _configured_or_ask("HTTP method", config.WEBSITE_API_METHOD or "GET").upper()
     if method not in {"GET", "POST"}:
@@ -347,6 +360,13 @@ def _run_api_mode() -> str:
     )
 
 
+def _run_existing_generic_mode() -> str:
+    site_id = _configured_site_id()
+    if not site_id:
+        raise ValueError("No generic site_id configured.")
+    return _use_existing_catalog(site_id)
+
+
 def _run_crawler_mode() -> str:
     start_url = _configured_or_ask("Website URL to crawl", config.WEBSITE_CRAWL_URL)
     max_pages = _configured_int("Max pages to crawl", config.WEBSITE_CRAWL_MAX_PAGES)
@@ -368,11 +388,10 @@ def _print_menu() -> None:
     print(" AI SALESMAN HUB RUN OPTIONS ".center(54, "="))
     print("=" * 54)
     print("1) Shopify")
-    print("   a) Shopify API ingest (recommended)")
-    print("   b) Shopify storefront crawl")
-    print("2) External website API ingest")
-    print("   If API URL is empty, falls back to website crawler.")
-    print("3) External website crawler only")
+    print("   a) Shopify API")
+    print("   b) Shopify crawler")
+    print("2) Website API")
+    print("3) Website crawler")
     print("0) Exit")
     print("=" * 54)
 
@@ -393,22 +412,23 @@ if __name__ == "__main__":
             print("Exiting without starting server.")
             raise SystemExit(0)
         try:
-            if choice == "1a":
-                selected_site_id = _run_shopify_api_mode()
-            elif choice == "1b":
-                selected_site_id = _run_shopify_crawl_mode()
-            elif choice == "1":
-                # Backward-compatible path for users typing 1 then a/b
-                subtype = _ask("Choose sub-mode", "a").lower()
+            if choice == "1":
+                subtype = _ask("Choose Shopify mode", "a").lower().strip()
                 if subtype in {"a", "1a"}:
                     selected_site_id = _run_shopify_api_mode()
                 elif subtype in {"b", "1b"}:
                     selected_site_id = _run_shopify_crawl_mode()
                 else:
-                    print("Invalid sub-option.")
+                    print("Invalid Shopify option.")
+            elif choice == "1a":
+                selected_site_id = _run_shopify_api_mode()
+            elif choice == "1b":
+                selected_site_id = _run_shopify_crawl_mode()
             elif choice == "2":
+                selected_site_id = _run_existing_generic_mode()
+            elif choice == "2a":
                 selected_site_id = _run_api_mode()
-            elif choice == "3":
+            elif choice in {"2b", "3"}:
                 selected_site_id = _run_crawler_mode()
             else:
                 print("Invalid option.")

@@ -155,6 +155,25 @@ def product_exists(site_id: str, product_id: int) -> bool:
     return row is not None
 
 
+def tenant_catalog_stats(site_id: str) -> dict:
+    """Return lightweight catalog stats for a tenant, or zeros if schema is missing."""
+    try:
+        init_tenant_schema(site_id)
+        with get_db(site_id) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_products,
+                    COUNT(*) FILTER (WHERE is_active = 1) AS active_products,
+                    COUNT(*) FILTER (WHERE embedding IS NULL) AS missing_embeddings
+                FROM products
+                """
+            ).fetchone()
+            return dict(row) if row else {"total_products": 0, "active_products": 0, "missing_embeddings": 0}
+    except Exception:
+        return {"total_products": 0, "active_products": 0, "missing_embeddings": 0}
+
+
 # Cart Helpers
 
 
