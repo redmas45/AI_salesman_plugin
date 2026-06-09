@@ -1,0 +1,12 @@
+{
+  "name": "shopbot-plugin",
+  "version": "1.0.0",
+  "description": "Voice Shopping Plugin",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "node build.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.1"
+  }
+}
