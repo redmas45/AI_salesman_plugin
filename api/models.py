@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class UIAction(BaseModel):
     action: Literal[
         "SHOW_PRODUCTS",
+        "SHOW_COMPARISON",
         "FILTER_PRODUCTS",
         "NAVIGATE_TO",
         "SORT_PRODUCTS",
@@ -29,12 +30,12 @@ class UIAction(BaseModel):
         params = self.params
         action = self.action
 
-        if action == "SHOW_PRODUCTS":
+        if action in ("SHOW_PRODUCTS", "SHOW_COMPARISON"):
             product_ids = params.get("product_ids")
             if not isinstance(product_ids, list) or not all(
                 isinstance(pid, int) for pid in product_ids
             ):
-                raise ValueError("SHOW_PRODUCTS requires product_ids: list[int]")
+                raise ValueError(f"{action} requires product_ids: list[int]")
 
         elif action in ("ADD_TO_CART", "SHOW_PRODUCT_DETAIL", "UPDATE_CART_QUANTITY"):
             if not isinstance(params.get("product_id"), int):

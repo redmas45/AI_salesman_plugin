@@ -72,6 +72,7 @@ MAX_UI_ACTIONS: int = 5
 # Valid UI Action Types
 VALID_UI_ACTIONS = {
     "SHOW_PRODUCTS",
+    "SHOW_COMPARISON",
     "FILTER_PRODUCTS",
     "NAVIGATE_TO",
     "SORT_PRODUCTS",
