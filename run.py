@@ -43,6 +43,9 @@ class TeeLogger:
     def flush(self):
         self.original_stream.flush()
 
+    def isatty(self):
+        return getattr(self.original_stream, "isatty", lambda: False)()
+
 sys.stdout = TeeLogger(sys.stdout, log_filename)
 sys.stderr = TeeLogger(sys.stderr, log_filename)
 
@@ -166,8 +169,13 @@ def _print_widget_install_instructions(site_id: str, public_url: str) -> None:
     script_tag = _persist_widget_script(site_id, public_url)
     print("\nManual widget injection:")
     print(script_tag)
-    print(f"Saved to .env as MANUAL_WIDGET_SCRIPT for CURRENT_URL={config.CURRENT_URL or 'current target'}")
-    print(f"Allow this backend origin in target CSP: {public_url} (script-src, connect-src, frame-src)")
+    
+    if not _is_public_https_url(public_url):
+        print(f"[warning] This is a LOCAL URL. Widget will only work from: {public_url}")
+        print(f"[warning] For production, ensure ngrok is running and update PUBLIC_API_URL")
+    else:
+        print(f"Saved to .env as MANUAL_WIDGET_SCRIPT for CURRENT_URL={config.CURRENT_URL or 'current target'}")
+        print(f"Allow this backend origin in target CSP: {public_url} (script-src, connect-src, frame-src)")
 
 
 def _local_base_url(host: str, port: int) -> str:
@@ -338,13 +346,13 @@ def _start_tunnel(host: str, port: int) -> str:
                     except Exception as kill_exc:
                         print(f"[!] ngrok.kill() retry failed: {kill_exc}")
                     time.sleep(1)
-        print("[!] ngrok unavailable. Refusing to write a localhost PUBLIC_API_URL.")
-        if last_error is not None:
-            print(f"[!] ngrok error: {last_error}")
-        raise RuntimeError("A public HTTPS ngrok tunnel is required before deploying the widget.")
+        print("[warning] ngrok unavailable. Using localhost-only mode.")
+        print("[warning] Widget will only work on localhost. To enable public access, fix ngrok.")
+        return local_url
     except ImportError:
-        print("\n[-] pyngrok not installed. Cannot create the public HTTPS widget URL.")
-        raise RuntimeError("Install pyngrok and restart before deploying the widget.")
+        print("\n[warning] pyngrok not installed. Cannot create public HTTPS widget URL.")
+        print("[warning] Widget will only work on localhost. Install pyngrok for public access.")
+        return local_url
 
 
 def _cleanup_runtime() -> None:
@@ -366,12 +374,18 @@ def _run_server(host: str, port: int, site_id: str) -> None:
     _ensure_port_free(host, port)
     selected_port = _choose_server_port(host, port)
     public_url = _start_tunnel(host, selected_port)
+    
     if not _is_public_https_url(public_url):
-        raise RuntimeError(f"Refusing to persist non-public widget URL: {public_url}")
-    _persist_launch_config(site_id, public_url)
+        print(f"[warning] Using local URL: {public_url}")
+        print("[warning] Widget will only work locally. For public access, ensure ngrok is working.")
+        # Still persist the URL but mark it as local-only
+        _persist_launch_config(site_id, public_url)
+    else:
+        _persist_launch_config(site_id, public_url)
+    
     local_url = _local_base_url(host, selected_port)
     if public_url == local_url:
-        print("[!] No public ngrok URL is available. Manual script output is local-only.")
+        print("[warning] No public ngrok URL available. Manual script output is local-only.")
     _print_widget_install_instructions(site_id, public_url)
 
     print(f"\nStarting FastAPI server on {local_url}")

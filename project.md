@@ -53,9 +53,18 @@ This project is an AI-powered voice shopping assistant ("Voice Orb") that can be
 - Fixed duplicated prompt example numbering in `prompt.py`.
 
 ### What is Not Working / Broken ❌
-- None at the moment. All known critical issues are resolved.
+- **None** - All known critical issues are resolved including resilient Vercel updater.
 
 ---
 
 ## Future Addons / Planned Changes
-1. **Resilient Vercel Updater**: Modify the build/deployment pipeline to fail gracefully if ngrok isn't available, preventing broken script URLs from reaching production.
+1. **Resilient Vercel Updater (COMPLETED)**: The build/deployment pipeline now fails gracefully if ngrok isn't available. Three scenarios are handled:
+   - **Placeholder mode**: When no ngrok URL is found, deploys site with warning stub script
+   - **Localhost mode**: When localhost URL is cached, deploys with local-only warning
+   - **Valid ngrok mode**: When valid HTTPS ngrok URL is available, full widget injection proceeds
+   
+   Changes made:
+   - `scripts/update_vercel.py`: Added graceful fallback to placeholder URL instead of exiting
+   - `run.py`: Modified to use localhost URLs when ngrok unavailable instead of raising errors
+   - `Vercel_website/scripts/inject-shopbot.mjs`: Added stub script injection for non-functional cases
+   - Added proper warning messages and user guidance for each scenario

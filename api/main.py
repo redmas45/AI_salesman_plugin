@@ -50,20 +50,9 @@ from db.database import (
 )
 from db.seed import seed as seed_db
 
-# Logging setup
-_logs_dir = Path(__file__).resolve().parent.parent / "logs"
-_logs_dir.mkdir(exist_ok=True)
-_log_filename = _logs_dir / f"api_{__import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s | %(message)s",
-    datefmt="%H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(str(_log_filename), encoding="utf-8"),
-    ],
-)
+# Module-level logger — file handler is added inside lifespan() AFTER
+# uvicorn has called its own logging.config.dictConfig(), so we don't
+# conflict with its formatter configuration.
 logger = logging.getLogger(__name__)
 
 

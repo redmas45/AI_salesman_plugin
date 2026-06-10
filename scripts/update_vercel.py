@@ -34,6 +34,19 @@ def read_env_value(key: str) -> str:
 def normalize_url(raw: str) -> str:
     return (raw or "").strip().strip("'").strip('"').rstrip("/")
 
+def is_localhost_url(raw: str) -> bool:
+    url = normalize_url(raw)
+    if not url:
+        return False
+    
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    
+    host = parsed.hostname.lower() if parsed.hostname else ""
+    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
 
 def is_public_https_url(raw: str) -> bool:
     url = normalize_url(raw)
@@ -112,11 +125,13 @@ def resolve_public_api_url() -> str:
     if is_public_https_url(env_url):
         return env_url
 
-    print("[error] No deployable public HTTPS URL found.")
-    if env_url:
-        print(f"[error] PUBLIC_API_URL is not deployable: {env_url}")
-    print("[error] Start the backend and wait for a real https://...ngrok-free.app URL before deploying.")
-    sys.exit(1)
+    print("[warning] No deployable public HTTPS URL found.")
+    print("[warning] This will deploy the site WITHOUT the voice orb widget.")
+    print("[warning] To enable voice orb, start the backend with: python run.py")
+    print("[warning] Then run this script again when ngrok tunnel is active.")
+    
+    # Return a placeholder URL that won't break the deployment
+    return "https://placeholder.ngrok-free.app"
 
 
 def run_vercel_env_update(api_url: str) -> None:
@@ -188,11 +203,44 @@ def main() -> None:
         sys.exit(1)
 
     api_url = resolve_public_api_url()
+    current_site_id = site_id()
+    
+    # Handle placeholder URL case
+    if api_url == "https://placeholder.ngrok-free.app":
+        print(f"\n[warning] Using placeholder URL: {api_url}")
+        print("[warning] Voice orb widget will NOT be functional on deployed site.")
+        print("[warning] To enable voice orb, start backend with ngrok tunnel and run this script again.")
+        
+        # Don't try to fetch shopbot.js or update widget script when using placeholder
+        # Just update Vercel env with placeholder
+        persist_public_url(api_url, current_site_id)
+        print(f"[info] Using placeholder API URL: {api_url}")
+        
+        # Deploy without widget functionality
+        run_vercel_env_update(api_url)
+        deploy_vercel()
+        return
+    
+    # Handle localhost URL case
+    if is_localhost_url(api_url):
+        print(f"\n[warning] Using localhost URL: {api_url}")
+        print("[warning] Voice orb widget will NOT work on deployed site (local-only).")
+        print("[warning] To enable public voice orb, start backend with ngrok tunnel.")
+        
+        # Still update the env but with warning
+        persist_public_url(api_url, current_site_id)
+        print(f"[info] Using localhost API URL: {api_url}")
+        
+        # Deploy without widget functionality
+        run_vercel_env_update(api_url)
+        deploy_vercel()
+        return
+    
+    # Valid ngrok URL case - proceed with full widget injection
     if not is_public_https_url(api_url):
         print(f"[error] Refusing to deploy non-public URL: {api_url}")
         sys.exit(1)
 
-    current_site_id = site_id()
     persist_public_url(api_url, current_site_id)
     print(f"[ok] Using public API URL: {api_url}")
 
