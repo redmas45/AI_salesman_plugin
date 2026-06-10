@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 # Paths
-PLUGIN_DIR = Path(__file__).parent.resolve()
+PLUGIN_DIR = Path(__file__).parent.parent.resolve()
 VERCEL_DIR = PLUGIN_DIR.parent / "Vercel_website"
 ENV_FILE = PLUGIN_DIR / ".env"
 
@@ -55,7 +55,9 @@ def main():
             cwd=str(VERCEL_DIR),
             shell=True,
             capture_output=True,
-            text=True
+            text=True,
+            encoding="utf-8",
+            errors="replace"
         )
         if result.returncode != 0:
             print("❌ Failed to add environment variable:")
@@ -74,7 +76,9 @@ def main():
             ["npx.cmd", "-y", "vercel", "deploy", "--prod", "--yes"],
             cwd=str(VERCEL_DIR),
             capture_output=True,
-            text=True
+            text=True,
+            encoding="utf-8",
+            errors="replace"
         )
         
         if result.returncode == 0:

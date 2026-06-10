@@ -30,7 +30,7 @@ This starts the backend, crawls the catalog, and generates a new `ngrok` URL (sa
 
 **Terminal 2:**
 ```powershell
-python update_vercel.py
+python scripts/update_vercel.py
 ```
 This script will:
 1. Detect your new ngrok URL from `.env`.
