@@ -139,6 +139,7 @@ def run_vercel_env_update(api_url: str) -> None:
     subprocess.run(
         ["npx.cmd", "-y", "vercel", "env", "rm", "SHOPBOT_API_URL", "production", "--yes"],
         cwd=str(VERCEL_DIR),
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=False,
@@ -163,26 +164,36 @@ def run_vercel_env_update(api_url: str) -> None:
 
 def deploy_vercel() -> str:
     print("\nDeploying Vercel production site...")
-    result = subprocess.run(
+    process = subprocess.Popen(
         ["npx.cmd", "-y", "vercel", "deploy", "--prod", "--yes"],
         cwd=str(VERCEL_DIR),
-        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
         errors="replace",
     )
 
-    if result.returncode != 0:
-        print("[error] Deployment failed:")
-        print(result.stderr or result.stdout)
-        sys.exit(1)
-
     deployment_url = ""
-    for line in result.stderr.splitlines() + result.stdout.splitlines():
+    # Stream the output live to console
+    while True:
+        line = process.stdout.readline()
+        if not line:
+            break
+        # Safely write to console, replacing characters not supported by the terminal encoding (e.g. ▲ on Windows)
+        enc = sys.stdout.encoding or "utf-8"
+        sys.stdout.write(line.encode(enc, errors="replace").decode(enc))
+        sys.stdout.flush()
+
         stripped = line.strip()
         if stripped.startswith("https://"):
             deployment_url = stripped
-            break
+
+    process.wait()
+    if process.returncode != 0:
+        print("[error] Deployment failed.")
+        sys.exit(1)
 
     print("[ok] Deployment successful.")
     if deployment_url:

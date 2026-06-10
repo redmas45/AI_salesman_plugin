@@ -36,12 +36,12 @@
     "is_active": 1
   },
   {
-    "id": 3418289619617256856,
+    "id": 5152291636877956294,
     "variant_id": null,
-    "name": "Acme Rainbow Sticker",
+    "name": "Acme Sticker",
     "brand": "Unknown Brand",
     "category": "Stickers",
-    "description": "Acme Rainbow Sticker $4.00 USD Acme Sticker $4.00 USD",
+    "description": "Acme Sticker $4.00 USD Acme Rainbow Sticker $4.00 USD",
     "price": 4.0,
     "original_price": 4.0,
     "color": null,
@@ -50,7 +50,7 @@
     "rating": 0.0,
     "review_count": 0,
     "stock": 100,
-    "image_url": "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/sticker-rainbow.png?v=1690003602",
+    "image_url": "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/sticker.png?v=1690003619",
     "is_active": 1
   },
   {
@@ -148,7 +148,7 @@
     "variant_id": null,
     "name": "Acme Baby Cap",
     "brand": "Unknown Brand",
-    "category": "Kids",
+    "category": "Headwear",
     "description": "Acme Baby Cap $10.00 USD Acme Baby Onesie $10.00 USD Acme Pacifier $10.00 USD",
     "price": 10.0,
     "original_price": 10.0,
@@ -166,7 +166,7 @@
     "variant_id": null,
     "name": "Acme Cowboy Hat",
     "brand": "Unknown Brand",
-    "category": "Headwear",
+    "category": "Products",
     "description": "Part of our Buffalo collection, this cowboy hat is made in the USA of high-quality, weather-resistant 4X buffalo felt. Its classic Western profile features a classic cattleman crease, a 4\" brim and a 4 1/2\" regular oval crown. Additional details include a leather sweatband, satin lining, and a self-matching hat band with a three-piece silver-toned buckle set, as well as a hat box. 4\" Brim 4 1/2\" Regular Oval Crown Cattleman Crease Self-Matching Hat Band 3-Piece Silver Buckle Set Hat Box 4X Wool Felt Construction American Buffalo Collection Made in the USA",
     "price": 160.0,
     "original_price": 160.0,
@@ -306,12 +306,12 @@
     "is_active": 1
   },
   {
-    "id": 5152291636877956294,
+    "id": 3418289619617256856,
     "variant_id": null,
-    "name": "Acme Sticker",
+    "name": "Acme Rainbow Sticker",
     "brand": "Unknown Brand",
     "category": "Products",
-    "description": "Acme Sticker",
+    "description": "Acme Rainbow Sticker",
     "price": 4.0,
     "original_price": 4.0,
     "color": null,
@@ -320,7 +320,7 @@
     "rating": 0.0,
     "review_count": 0,
     "stock": 100,
-    "image_url": "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/sticker.png?v=1690003619",
+    "image_url": "https://cdn.shopify.com/s/files/1/0754/3727/7491/files/sticker-rainbow.png?v=1690003602",
     "is_active": 1
   },
   {

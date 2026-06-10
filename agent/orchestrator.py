@@ -125,6 +125,16 @@ def run(
         retrieved_products = rag.retrieve(
             rag_query, site_id=site_id, price_constraints=price_constraints
         )
+        
+        # Dialogue context: fetch previously discussed products
+        history_products = _extract_products_from_history(conversation_history or [], site_id)
+        if history_products:
+            # Merge lists, avoiding duplicates by product ID
+            existing_ids = {str(p["id"]) for p in retrieved_products}
+            for hp in history_products:
+                if str(hp["id"]) not in existing_ids:
+                    retrieved_products.append(hp)
+                    existing_ids.add(str(hp["id"]))
     except Exception as exc:
         logger.error("PIPELINE | RAG failed: %s", exc)
         retrieved_products = []  # Degrade gracefully — LLM can still respond
@@ -344,6 +354,16 @@ def run_stream(
         retrieved_products = rag.retrieve(
             rag_query, site_id=site_id, price_constraints=price_constraints
         )
+        
+        # Dialogue context: fetch previously discussed products
+        history_products = _extract_products_from_history(conversation_history or [], site_id)
+        if history_products:
+            # Merge lists, avoiding duplicates by product ID
+            existing_ids = {str(p["id"]) for p in retrieved_products}
+            for hp in history_products:
+                if str(hp["id"]) not in existing_ids:
+                    retrieved_products.append(hp)
+                    existing_ids.add(str(hp["id"]))
     except Exception as exc:
         logger.error("PIPELINE | RAG failed: %s", exc)
         retrieved_products = []
@@ -574,3 +594,75 @@ def _guardrail_response(
         "latency_ms": timings,
     }
 
+
+def _extract_products_from_history(history: list[dict], site_id: str) -> list[dict]:
+    """
+    Check the previous assistant response text for product names or IDs
+    and retrieve them from the database to retain multi-turn RAG context.
+
+    The frontend embeds a `[PRODUCT_IDS: id1,id2,...]` tag in assistant messages
+    so that even ordinal references like "add the first one" can be resolved.
+    """
+    if not history:
+        return []
+
+    # Get the last assistant message
+    last_assistant_msg = ""
+    for msg in reversed(history):
+        if msg.get("role") == "assistant" and msg.get("content"):
+            last_assistant_msg = msg["content"]
+            break
+
+    if not last_assistant_msg:
+        return []
+
+    # --- Strategy 1: Parse [PRODUCT_IDS: ...] tag inserted by frontend ---
+    import re as _re
+    id_tag_match = _re.search(r'\[PRODUCT_IDS:\s*([\d,\s]+)\]', last_assistant_msg)
+    tagged_ids: list[int] = []
+    if id_tag_match:
+        raw_ids = id_tag_match.group(1)
+        for pid_str in raw_ids.split(','):
+            pid_str = pid_str.strip()
+            if pid_str.isdigit():
+                tagged_ids.append(int(pid_str))
+        logger.info("PIPELINE | Found %d product IDs from history tag: %s", len(tagged_ids), tagged_ids)
+
+    # --- Strategy 2: Name-matching fallback ---
+    from db.database import get_all_products, get_products_by_ids
+    mentioned = []
+
+    # First: fetch tagged products directly by ID (fast, reliable)
+    if tagged_ids:
+        try:
+            tagged_products = get_products_by_ids(site_id, tagged_ids)
+            for product in tagged_products:
+                p_copy = dict(product)
+                p_copy["_semantic_score"] = 0.95
+                mentioned.append(p_copy)
+        except Exception as exc:
+            logger.warning("PIPELINE | History tag product bulk lookup failed: %s", exc)
+
+    # Then: name-match remaining products not already found via tag
+    if not mentioned:
+        try:
+            products = get_all_products(site_id, limit=100)
+        except Exception as exc:
+            logger.error("PIPELINE | History product check failed to get all products: %s", exc)
+            products = []
+
+        for p in products:
+            name = p.get("name") or p.get("title") or ""
+            p_id = str(p.get("id", ""))
+            # Check if the product name or exact ID is mentioned in the assistant's previous message text
+            if (name and name.lower() in last_assistant_msg.lower()) or (p_id and p_id in last_assistant_msg):
+                # Skip if already added via tag
+                if any(str(m.get("id")) == p_id for m in mentioned):
+                    continue
+                p_copy = dict(p)
+                p_copy["_semantic_score"] = 0.95  # Give it a high score since it was just discussed
+                mentioned.append(p_copy)
+
+    if mentioned:
+        logger.info("PIPELINE | Extracted %d previously discussed products from history context", len(mentioned))
+    return mentioned

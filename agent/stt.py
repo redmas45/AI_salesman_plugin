@@ -99,7 +99,7 @@ def transcribe(audio_bytes: bytes, filename: str = "audio.wav") -> str:
         return transcript
 
     except Exception as exc:
-        logger.error("STT | OpenAI Whisper failed: %s", exc)
+        logger.exception("STT | OpenAI Whisper failed")
         raise RuntimeError("I didn't catch that. Please try again.") from exc
 
 

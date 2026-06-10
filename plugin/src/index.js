@@ -4,6 +4,7 @@ import { setupRecorder } from "./recorder";
 import { processAudio } from "./api";
 
 // Initialize UI
+window.__shopbot_identifier = "voice-orb";
 injectStyles();
 const elements = initWidget();
 
@@ -24,12 +25,46 @@ function handleStatusChange(statusStr) {
   }
 }
 
+// Message history cache (limit to last 12 messages)
+const conversationHistory = [];
+
+// Extract product IDs from ui_actions and append them as context to assistant content.
+// This lets the backend resolve ordinal references like "add the first one" in follow-up turns.
+function buildAssistantContent(text, uiActions) {
+  const productIds = [];
+  for (const action of (uiActions || [])) {
+    const params = action.params || {};
+    if (params.product_ids && Array.isArray(params.product_ids)) {
+      for (const pid of params.product_ids) {
+        if (!productIds.includes(pid)) productIds.push(pid);
+      }
+    }
+    if (params.product_id && !productIds.includes(params.product_id)) {
+      productIds.push(params.product_id);
+    }
+  }
+  if (productIds.length > 0) {
+    // Append a machine-readable product ID list the backend can parse
+    return text + ` [PRODUCT_IDS: ${productIds.join(",")}]`;
+  }
+  return text;
+}
+
 // Stop Callback
 async function handleStop(blob) {
   await processAudio(blob, elements, {
-    onMessage: (text, role) => addMessage(elements, text, role),
+    onMessage: (text, role, uiActions) => {
+      addMessage(elements, text, role);
+      const apiRole = role === "ai" ? "assistant" : role;
+      // For assistant messages, embed product IDs so next turn has context
+      const content = apiRole === "assistant" ? buildAssistantContent(text, uiActions) : text;
+      conversationHistory.push({ role: apiRole, content });
+      if (conversationHistory.length > 12) {
+        conversationHistory.shift();
+      }
+    },
     onStatusChange: handleStatusChange
-  });
+  }, conversationHistory);
 }
 
 // Setup Recorder

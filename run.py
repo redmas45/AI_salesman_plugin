@@ -30,8 +30,19 @@ class TeeLogger:
         self.log_file = log_file
 
     def write(self, data):
-        self.original_stream.write(data)
-        self.original_stream.flush()
+        try:
+            self.original_stream.write(data)
+            self.original_stream.flush()
+        except UnicodeEncodeError:
+            try:
+                encoding = getattr(self.original_stream, "encoding", "cp1252") or "cp1252"
+                safe_data = data.encode(encoding, errors="replace").decode(encoding)
+                self.original_stream.write(safe_data)
+                self.original_stream.flush()
+            except Exception:
+                pass
+        except Exception:
+            pass
         try:
             if isinstance(data, bytes):
                 data = data.decode('utf-8', 'replace')
