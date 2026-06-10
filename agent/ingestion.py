@@ -931,6 +931,11 @@ def sync_web_crawl(
     deduped_products = _dedupe_products(extracted_products)
     print(f"- Deduped candidates: {len(deduped_products)}")
 
+    import json
+    crawl_json_path = Path(__file__).resolve().parent.parent / "crawl.json"
+    with open(crawl_json_path, "w", encoding="utf-8") as f:
+        json.dump(deduped_products, f, indent=2, ensure_ascii=False)
+
     _persist_catalog(
         resolved_site_id,
         deduped_products,
