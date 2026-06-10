@@ -292,7 +292,7 @@ def _validate_product_ids(
                 # If we have strict allowed IDs from RAG, ensure the ID was actually shown to the LLM
                 if allowed_product_ids is not None and pid not in allowed_product_ids:
                     continue
-                valid_ids.append(pid)
+                valid_ids.append(str(pid))
 
         if len(valid_ids) != len(raw_ids):
             logger.warning(
@@ -320,7 +320,7 @@ def _validate_product_ids(
             )
             return None
 
-        result = {"product_id": pid}
+        result = {"product_id": str(pid)}
         if (
             action_type in ("ADD_TO_CART", "UPDATE_CART_QUANTITY")
             and "quantity" in params

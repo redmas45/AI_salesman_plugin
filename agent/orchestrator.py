@@ -179,7 +179,7 @@ def run(
             "ui_actions": [
                 {
                     "action": "SHOW_PRODUCTS",
-                    "params": {"product_ids": [p["id"] for p in retrieved_products]},
+                    "params": {"product_ids": [str(p["id"]) for p in retrieved_products]},
                 }
             ],
         }
@@ -260,7 +260,7 @@ def run(
                 with get_db(site_id) as conn:
                     res = conn.execute("SELECT variant_id FROM products WHERE id = %s", (pid,)).fetchone()
                     if res and res["variant_id"]:
-                        a["params"]["variant_id"] = res["variant_id"]
+                        a["params"]["variant_id"] = str(res["variant_id"])
 
     return {
         "transcript": transcript,
@@ -355,6 +355,7 @@ def run_stream(
     
     cart_context = format_cart_for_prompt(get_cart_items(site_id))
     llm_response = llm.generate_response(
+        site_id,
         safe_transcript,
         retrieved_products,
         conversation_history=conversation_history or [],
@@ -383,7 +384,7 @@ def run_stream(
             "ui_actions": [
                 {
                     "action": "SHOW_PRODUCTS",
-                    "params": {"product_ids": [p["id"] for p in retrieved_products]},
+                    "params": {"product_ids": [str(p["id"]) for p in retrieved_products]},
                 }
             ],
         }
@@ -404,7 +405,7 @@ def run_stream(
             if isinstance(a, dict)
         ]
         
-        validated = guardrails.validate_output(llm_response, allowed_product_ids)
+        validated = guardrails.validate_output(llm_response, site_id, allowed_product_ids)
 
         # Check if the LLM hallucinated fake product IDs and they were all blocked
         val_actions = [a.get("action") for a in validated.get("ui_actions", [])]
@@ -437,7 +438,7 @@ def run_stream(
                 with get_db(site_id) as conn:
                     res = conn.execute("SELECT variant_id FROM products WHERE id = %s", (pid,)).fetchone()
                     if res and res["variant_id"]:
-                        a["params"]["variant_id"] = res["variant_id"]
+                        a["params"]["variant_id"] = str(res["variant_id"])
 
     # Yield actions so UI can update immediately
     yield {"event": "actions", "data": {"ui_actions": final_actions}}

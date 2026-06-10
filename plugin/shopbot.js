@@ -18,6 +18,8 @@
     "CLEAR_CART",
     "CHECKOUT",
     "UPDATE_CART_QUANTITY",
+    "CLEAR_HISTORY",
+    "UPDATE_PREFERENCES",
   ]);
 
   const SITE_ID_RE = /^[a-z0-9_]+$/;
@@ -682,8 +684,8 @@
 
   async function fetchProductsByIds(productIds) {
     const ids = (Array.isArray(productIds) ? productIds : [])
-      .map((id) => Number(id))
-      .filter((id) => Number.isFinite(id));
+      .map((id) => String(id).trim())
+      .filter((id) => id.length > 0);
     if (ids.length === 0) {
       return [];
     }
@@ -970,7 +972,14 @@
         throw new Error(`API Error ${response.status}`);
       }
 
-      const result = await response.json();
+      // BigInt-safe JSON parsing: wrap bare integers > MAX_SAFE_INTEGER in quotes
+      // so JavaScript doesn't silently corrupt 64-bit product IDs.
+      const rawText = await response.text();
+      const safeParsed = rawText.replace(
+        /:\s*(\d{16,})/g,
+        ': "$1"'
+      );
+      const result = JSON.parse(safeParsed);
 
       if (result.ui_actions && result.ui_actions.length > 0) {
         executeUiActions(result.ui_actions, result.transcript);

@@ -2,7 +2,7 @@
 Pydantic models for API request/response validation.
 """
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -22,6 +22,7 @@ class UIAction(BaseModel):
         "CHECKOUT",
         "UPDATE_CART_QUANTITY",
         "CLEAR_HISTORY",
+        "UPDATE_PREFERENCES",
     ] = Field(..., description="UI action type")
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -33,13 +34,13 @@ class UIAction(BaseModel):
         if action in ("SHOW_PRODUCTS", "SHOW_COMPARISON"):
             product_ids = params.get("product_ids")
             if not isinstance(product_ids, list) or not all(
-                isinstance(pid, int) for pid in product_ids
+                isinstance(pid, (int, str)) for pid in product_ids
             ):
-                raise ValueError(f"{action} requires product_ids: list[int]")
+                raise ValueError(f"{action} requires product_ids: list[int|str]")
 
         elif action in ("ADD_TO_CART", "SHOW_PRODUCT_DETAIL", "UPDATE_CART_QUANTITY"):
-            if not isinstance(params.get("product_id"), int):
-                raise ValueError(f"{action} requires product_id: int")
+            if not isinstance(params.get("product_id"), (int, str)):
+                raise ValueError(f"{action} requires product_id: int|str")
 
         elif action == "FILTER_PRODUCTS":
             # Allow any filter params as we handle unsupported ones gracefully
@@ -65,8 +66,8 @@ class UIAction(BaseModel):
             pass
 
         elif action == "REMOVE_FROM_CART":
-            if not isinstance(params.get("product_id"), int):
-                raise ValueError("REMOVE_FROM_CART requires product_id: int")
+            if not isinstance(params.get("product_id"), (int, str)):
+                raise ValueError("REMOVE_FROM_CART requires product_id: int|str")
 
         elif action == "CHECKOUT":
             pass  # No strict parameter requirements
@@ -91,7 +92,7 @@ class ShopResponse(BaseModel):
 class ProductResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    id: int
+    id: Union[int, str]
     name: str
     brand: str
     category_name: str
@@ -113,7 +114,7 @@ class HealthResponse(BaseModel):
 
 class AddToCartRequest(BaseModel):
     site_id: str = "site_1"
-    product_id: int
+    product_id: Union[int, str]
     quantity: int = 1
 
 

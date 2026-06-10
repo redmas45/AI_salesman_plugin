@@ -18,6 +18,35 @@ from agent.ingestion import sanitize_site_id, sync_web_crawl
 
 load_dotenv()
 
+import sys
+from datetime import datetime
+LOGS_DIR = Path(__file__).resolve().parent / "logs"
+LOGS_DIR.mkdir(exist_ok=True)
+log_filename = LOGS_DIR / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+class TeeLogger:
+    def __init__(self, original_stream, log_file):
+        self.original_stream = original_stream
+        self.log_file = log_file
+
+    def write(self, data):
+        self.original_stream.write(data)
+        self.original_stream.flush()
+        try:
+            if isinstance(data, bytes):
+                data = data.decode('utf-8', 'replace')
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(data)
+        except Exception:
+            pass
+
+    def flush(self):
+        self.original_stream.flush()
+
+sys.stdout = TeeLogger(sys.stdout, log_filename)
+sys.stderr = TeeLogger(sys.stderr, log_filename)
+
+
 PID_FILE = Path(__file__).resolve().parent / ".run.pid"
 
 

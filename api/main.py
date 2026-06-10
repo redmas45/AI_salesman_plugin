@@ -51,11 +51,18 @@ from db.database import (
 from db.seed import seed as seed_db
 
 # Logging setup
+_logs_dir = Path(__file__).resolve().parent.parent / "logs"
+_logs_dir.mkdir(exist_ok=True)
+_log_filename = _logs_dir / f"api_{__import__('datetime').datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s | %(message)s",
     datefmt="%H:%M:%S",
-    stream=sys.stdout,
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(str(_log_filename), encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger(__name__)
 
@@ -360,7 +367,15 @@ async def list_products(
 async def list_products_by_ids(ids: str, site_id: str = config.DEFAULT_SITE_ID):
     """Fetch specific products by a comma-separated list of IDs."""
     try:
-        id_list = [int(i.strip()) for i in ids.split(",") if i.strip().isdigit()]
+        # Parse IDs as Python ints (Python handles arbitrary-precision integers correctly)
+        id_list = []
+        for raw_id in ids.split(","):
+            raw_id = raw_id.strip().strip('"')
+            if raw_id:
+                try:
+                    id_list.append(int(raw_id))
+                except ValueError:
+                    continue
         from db.database import get_products_by_ids
 
         products = get_products_by_ids(site_id, id_list)

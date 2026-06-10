@@ -117,8 +117,9 @@ def get_products_by_category(site_id: str, category_name: str, limit: int = 50) 
     return rows
 
 
-def product_exists(site_id: str, product_id: int) -> bool:
+def product_exists(site_id: str, product_id: int | str) -> bool:
     """Check whether a product ID exists and is active."""
+    product_id = int(product_id)
     with get_db(site_id) as conn:
         row = conn.execute(
             "SELECT 1 FROM products WHERE id = %s AND is_active = 1 AND stock > 0", (product_id,)
@@ -259,8 +260,9 @@ def get_cart_items(site_id: str) -> list[dict]:
     return rows
 
 
-def add_to_cart(site_id: str, product_id: int, quantity: int = 1) -> int:
+def add_to_cart(site_id: str, product_id: int | str, quantity: int = 1) -> int:
     """Add a product to the cart or increment quantity if it exists."""
+    product_id = int(product_id)  # Ensure native int for DB
     with get_db(site_id) as conn:
         row = conn.execute(
             "SELECT id, quantity FROM cart WHERE product_id = %s", (product_id,)
@@ -279,8 +281,9 @@ def add_to_cart(site_id: str, product_id: int, quantity: int = 1) -> int:
             return cur.fetchone()["id"]
 
 
-def update_cart_quantity(site_id: str, product_id: int, quantity: int) -> bool:
+def update_cart_quantity(site_id: str, product_id: int | str, quantity: int) -> bool:
     """Update quantity of a product in the cart. Remove if <= 0."""
+    product_id = int(product_id)
     with get_db(site_id) as conn:
         row = conn.execute(
             "SELECT id FROM cart WHERE product_id = %s", (product_id,)
