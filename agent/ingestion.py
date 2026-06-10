@@ -1,8 +1,5 @@
 """
-Catalog ingestion utilities for multiple sources:
-- Shopify API
-- third-party website API
-- generic website crawler (HTML crawl + extraction)
+Catalog ingestion utilities for crawler-based sources.
 
 Each source is normalized into tenant-specific PostgreSQL tables and then vectorized
 for RAG.
@@ -10,7 +7,6 @@ for RAG.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import html
 import json
@@ -23,7 +19,6 @@ from urllib.parse import urldefrag, urljoin, urlparse
 
 import httpx
 
-from api.integrations.shopify import fetch_shopify_catalog
 from agent.rag import _embed, _product_to_text
 from db.database import get_db, init_tenant_schema
 
@@ -76,6 +71,14 @@ def _first(*values: Any, default: Any = None) -> Any:
     return default
 
 
+def _is_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
 def _to_float(value: Any) -> float:
     if isinstance(value, (int, float)):
         return float(value)
@@ -96,6 +99,41 @@ def _parse_price(text: str) -> float:
     if not match:
         return 0.0
     return _to_float(match.group(1))
+
+
+def _normalized_candidate_name(value: str) -> str:
+    text = _clean_text(value).lower()
+    text = re.sub(r"(?:\s+|^)(?:₹|rs\.?|inr|\$)\s*[0-9]+(?:[.,][0-9]{1,2})?\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _looks_like_noise_name(value: str) -> bool:
+    lowered = _normalized_candidate_name(value)
+    if not lowered:
+        return True
+
+    utility_tokens = {
+        "relative",
+        "block",
+        "inline-block",
+        "h-full",
+        "w-full",
+        "aspect-square",
+        "sr-only",
+        "pointer-events-none",
+    }
+    tokens = set(lowered.split())
+    if len(tokens & utility_tokens) >= 2:
+        return True
+
+    if lowered.startswith(("relative ", "block ", "inline-block ")):
+        return True
+
+    if "," in lowered and float(_parse_price(lowered)) <= 0:
+        return True
+
+    return False
 
 
 def _decode_next_payload(raw: str) -> Any | None:
@@ -453,7 +491,7 @@ def _normalize_jsonld_item(raw: dict[str, Any], source_url: str) -> dict[str, An
         rating = _to_float(aggregate.get("ratingValue"))
         review_count = int(_to_float(aggregate.get("reviewCount")))
 
-    availability = raw.get("availability", "").lower()
+    availability = _clean_text(_first(raw.get("availability"), offers.get("availability"), default="")).lower()
     stock = 100 if ("in stock" in availability or availability == "instock") else 100
 
     return _normalize_product_row(
@@ -463,8 +501,8 @@ def _normalize_jsonld_item(raw: dict[str, Any], source_url: str) -> dict[str, An
             "brand": _first(brand, "Unknown Brand"),
             "category": _first(category, "Products"),
             "description": description,
-            "price": _to_float(_first(offers.get("price"), 0)),
-            "original_price": _to_float(_first(offers.get("highPrice"), offers.get("lowPrice"), 0)),
+            "price": _to_float(_first(offers.get("price"), offers.get("lowPrice"), offers.get("highPrice"), 0)),
+            "original_price": _to_float(_first(offers.get("highPrice"), offers.get("price"), offers.get("lowPrice"), 0)),
             "color": _first(raw.get("color"), default=None),
             "size_options": _first(raw.get("size"), raw.get("size_options"), "[]"),
             "tags": _to_tags(raw.get("keywords")),
@@ -525,7 +563,57 @@ def _build_candidates_from_html(url: str, html_text: str) -> list[dict[str, Any]
     for item in all_products:
         if isinstance(item, dict):
             unique[int(item["id"])] = item
-    return list(unique.values())
+
+    return _dedupe_products(list(unique.values()))
+
+
+def _candidate_score(product: dict[str, Any]) -> tuple[int, int, int, int, int]:
+    return (
+        1 if float(product.get("price") or 0.0) > 0 else 0,
+        1 if _is_present(product.get("image_url")) else 0,
+        1 if _clean_text(product.get("brand")) not in {"", "Unknown Brand"} else 0,
+        1 if _clean_text(product.get("category")) not in {"", "Products", "Uncategorized"} else 0,
+        len(_clean_text(product.get("description"))),
+    )
+
+
+def _merge_product_candidates(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    preferred = incoming if _candidate_score(incoming) > _candidate_score(existing) else existing
+    other = existing if preferred is incoming else incoming
+    merged = dict(preferred)
+
+    if float(merged.get("price") or 0.0) <= 0 and float(other.get("price") or 0.0) > 0:
+        merged["price"] = other["price"]
+        merged["original_price"] = other.get("original_price", other["price"])
+    if not _is_present(merged.get("image_url")) and _is_present(other.get("image_url")):
+        merged["image_url"] = other["image_url"]
+    if _clean_text(merged.get("brand")) in {"", "Unknown Brand"} and _clean_text(other.get("brand")) not in {"", "Unknown Brand"}:
+        merged["brand"] = other["brand"]
+    if _clean_text(merged.get("category")) in {"", "Products", "Uncategorized"} and _clean_text(other.get("category")) not in {"", "Products", "Uncategorized"}:
+        merged["category"] = other["category"]
+    if len(_clean_text(other.get("description"))) > len(_clean_text(merged.get("description"))):
+        merged["description"] = other["description"]
+
+    preferred_name = _clean_text(merged.get("name"))
+    other_name = _clean_text(other.get("name"))
+    if _normalized_candidate_name(other_name) == _normalized_candidate_name(preferred_name) and len(other_name) < len(preferred_name):
+        merged["name"] = other_name
+
+    return merged
+
+
+def _dedupe_products(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged_by_name: dict[str, dict[str, Any]] = {}
+    for item in products:
+        if _looks_like_noise_name(str(item.get("name") or "")):
+            continue
+        normalized_name = _normalized_candidate_name(str(item.get("name") or ""))
+        if not normalized_name:
+            merged_by_name[str(item["id"])] = item
+            continue
+        existing = merged_by_name.get(normalized_name)
+        merged_by_name[normalized_name] = _merge_product_candidates(existing, item) if existing else item
+    return list(merged_by_name.values())
 
 
 def _ensure_category(conn, category_name: str, site_id: str) -> int:
@@ -757,106 +845,6 @@ def _persist_catalog(
     )
     return changed
 
-
-def sync_shopify_api(
-    store_domain: str,
-    access_token: str,
-    *,
-    site_id: str | None = None,
-    reconcile_missing: bool = True,
-    source_name: str = "shopify_api",
-) -> str:
-    if not store_domain or not access_token:
-        raise ValueError("Store domain and access token are required.")
-
-    resolved_site_id = sanitize_site_id(site_id or store_domain.replace(".myshopify.com", ""))
-    catalog = asyncio.run(fetch_shopify_catalog(store_domain, access_token))
-    categories = {
-        str(category.get("id")): category.get("name", "Uncategorized")
-        for category in catalog.get("categories", [])
-    }
-
-    normalized: list[dict[str, Any]] = []
-    for item in catalog.get("products", []):
-        category_name = categories.get(str(item.get("category_id")), "Uncategorized")
-        row = _normalize_product_row(
-            {**item, "category": category_name},
-            fallback_category="Uncategorized",
-            source_url=store_domain,
-        )
-        if row:
-            normalized.append(row)
-
-    if not normalized:
-        raise RuntimeError("Shopify catalog sync returned no products.")
-    _persist_catalog(
-        resolved_site_id,
-        normalized,
-        reconcile_missing=reconcile_missing,
-        source_name=source_name,
-    )
-    return resolved_site_id
-
-
-def sync_website_api(
-    api_url: str,
-    *,
-    method: str = "GET",
-    headers: dict[str, str] | None = None,
-    payload: dict[str, Any] | None = None,
-    site_id: str | None = None,
-    reconcile_missing: bool = True,
-    source_name: str = "website_api",
-    timeout: int = 30,
-) -> str:
-    if not api_url:
-        raise ValueError("API URL is required.")
-
-    method = method.upper()
-    if method not in {"GET", "POST"}:
-        raise ValueError("Method must be GET or POST.")
-
-    resolved_site_id = sanitize_site_id(site_id or api_url)
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        response = client.request(method, api_url, headers=headers, json=payload)
-        response.raise_for_status()
-        payload_data = response.json()
-
-    if isinstance(payload_data, list):
-        raw_products = payload_data
-    elif isinstance(payload_data, dict):
-        raw_products = (
-            payload_data.get("products")
-            or payload_data.get("items")
-            or payload_data.get("results")
-            or []
-        )
-    else:
-        raise ValueError("API response is not a list and does not contain products/items/results.")
-
-    if not isinstance(raw_products, list):
-        raise ValueError("API response products/items/results is not a list.")
-    if not raw_products:
-        raise ValueError("API response contains no products.")
-
-    normalized = []
-    for item in raw_products:
-        row = _normalize_product_row(item, "Products", api_url)
-        if row:
-            normalized.append(row)
-
-    if not normalized:
-        raise RuntimeError("API response did not contain parseable products.")
-
-    _persist_catalog(
-        resolved_site_id,
-        normalized,
-        reconcile_missing=reconcile_missing,
-        source_name=source_name,
-    )
-    return resolved_site_id
-
-
 def sync_web_crawl(
     start_url: str,
     *,
@@ -864,7 +852,7 @@ def sync_web_crawl(
     max_depth: int = 3,
     site_id: str | None = None,
     reconcile_missing: bool = True,
-    source_name: str = "website_crawler",
+    source_name: str = "custom_url_crawler",
     timeout: int = 12,
 ) -> str:
     if not start_url:
@@ -940,9 +928,12 @@ def sync_web_crawl(
     if stopped_by_limit:
         print(f"- Stopped by max_pages={max_pages}")
 
+    deduped_products = _dedupe_products(extracted_products)
+    print(f"- Deduped candidates: {len(deduped_products)}")
+
     _persist_catalog(
         resolved_site_id,
-        extracted_products,
+        deduped_products,
         reconcile_missing=reconcile_missing,
         source_name=source_name,
     )

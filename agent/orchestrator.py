@@ -20,7 +20,13 @@ from typing import Any, Generator, Optional
 from agent import guardrails, llm, rag, stt, tts
 from agent.guardrails import InputGuardrailError, OutputGuardrailError
 from agent.prompt import format_cart_for_prompt
-from db.database import get_cart_items, get_user_profile, update_user_preferences, get_db
+from db.database import (
+    get_cart_items,
+    get_user_profile,
+    tenant_inventory_summary,
+    update_user_preferences,
+    get_db,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +107,9 @@ def run(
     except InputGuardrailError as exc:
         return _guardrail_response(str(exc), transcript, skip_tts, timings)
     timings["guardrail_input_ms"] = _ms(t)
+
+    if _is_inventory_stats_query(safe_transcript):
+        return _inventory_stats_response(site_id, transcript, skip_tts, timings, t0)
 
     # Stage 3: RAG Retrieval
     t = time.perf_counter()
@@ -311,6 +320,18 @@ def run_stream(
         yield {"event": "audio", "data": {"response_text": msg, "audio_b64": audio_b64}}
         return
 
+    if _is_inventory_stats_query(safe_transcript):
+        result = _inventory_stats_response(site_id, transcript, skip_tts, {}, time.perf_counter())
+        yield {"event": "actions", "data": {"ui_actions": []}}
+        yield {
+            "event": "audio",
+            "data": {
+                "response_text": result["response_text"],
+                "audio_b64": result["audio_b64"],
+            },
+        }
+        return
+
     # Stage 3: RAG
     try:
         profile = get_user_profile(site_id)
@@ -463,6 +484,58 @@ def _promote_comparison_action(response: dict[str, Any], transcript: str) -> Non
                 action["params"] = {"product_ids": product_ids[:4]}
                 response["intent"] = "product_compare"
                 return
+
+
+def _is_inventory_stats_query(transcript: str) -> bool:
+    text = (transcript or "").lower()
+    has_inventory_word = any(
+        token in text
+        for token in ("inventory", "catalog", "catalogue", "data", "products", "items", "stock")
+    )
+    has_count_word = any(
+        token in text
+        for token in ("how many", "count", "total", "number", "available", "right now")
+    )
+    return has_inventory_word and has_count_word
+
+
+def _inventory_stats_response(
+    site_id: str,
+    transcript: str,
+    skip_tts: bool,
+    timings: dict[str, float],
+    start_time: float,
+) -> dict[str, Any]:
+    try:
+        stats = tenant_inventory_summary(site_id)
+        logger.info("Inventory stats requested; internal counts hidden from customer: %s", stats)
+    except Exception as exc:
+        logger.error("Inventory stats lookup failed: %s", exc)
+    response_text = (
+        "I have plenty of products available to browse. "
+        "Tell me what you are looking for, and I will find the best options for you."
+    )
+
+    audio_b64 = ""
+    if not skip_tts:
+        t = time.perf_counter()
+        try:
+            audio_b64 = tts.synthesize_b64(response_text)
+        except RuntimeError as exc:
+            logger.error("PIPELINE | TTS failed for inventory stats: %s", exc)
+        timings["tts_ms"] = _ms(t)
+
+    timings["total_ms"] = _ms(start_time)
+    logger.info("PIPELINE | Inventory stats answered in %.0fms", timings["total_ms"])
+    return {
+        "transcript": transcript,
+        "response_text": response_text,
+        "intent": "inventory_status",
+        "confidence": 1.0,
+        "ui_actions": [],
+        "audio_b64": audio_b64,
+        "latency_ms": timings,
+    }
 
 
 def _error_response(message: str, timings: dict) -> dict[str, Any]:

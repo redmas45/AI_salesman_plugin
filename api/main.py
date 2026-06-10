@@ -10,28 +10,21 @@ Endpoints:
 
 import json
 import logging
-import logging.config
-import sys
+import os
 import re
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
 
 import config
 from agent import orchestrator
 from api.middleware import RequestTracingMiddleware
 from pydantic import BaseModel
-from typing import List, Any, Optional
-
-
-class ShopifySyncRequest(BaseModel):
-    store_domain: Optional[str] = None
-    access_token: Optional[str] = None
 
 
 class ClientLogRequest(BaseModel):
@@ -74,56 +67,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Initialise database, seed data, and build FAISS index on startup."""
     logger.info("Starting Voice Shopping Agent API...")
-
-    from db.database import init_global_schema
-    init_global_schema()
     
     # Preload RAG embedder and index into memory
     from agent import rag
     rag.preload()
-
-    # --- Auto-update Shopify ScriptTags ---
-    try:
-        from db.database import get_global_db
-        import os
-        import httpx
-        public_url = os.environ.get("PUBLIC_API_URL")
-        if public_url:
-            with get_global_db() as conn:
-                installations = conn.execute("SELECT shop_domain, access_token FROM shopify_installations").fetchall()
-                for inst in installations:
-                    shop_domain = inst["shop_domain"]
-                    access_token = inst["access_token"]
-                    configured_shop = config.SHOPIFY_STORE_DOMAIN.strip().removeprefix("https://").removeprefix("http://").rstrip("/")
-                    if config.SHOPIFY_SITE_ID and shop_domain == configured_shop:
-                        site_id = _safe_site_id(config.SHOPIFY_SITE_ID)
-                    else:
-                        site_id = _safe_site_id(shop_domain.removesuffix(".myshopify.com"))
-                    script_url = f"{public_url}/shopbot.js?site={site_id}"
-                    
-                    headers = {
-                        "X-Shopify-Access-Token": access_token,
-                        "Content-Type": "application/json"
-                    }
-                    endpoint = f"https://{shop_domain}/admin/api/2024-01/script_tags.json"
-                    
-                    with httpx.Client() as client:
-                        # Remove existing shopbot.js script tags
-                        res = client.get(endpoint, headers=headers)
-                        if res.status_code == 200:
-                            for tag in res.json().get("script_tags", []):
-                                if "shopbot.js" in tag.get("src", ""):
-                                    client.delete(f"{endpoint.replace('.json', '')}/{tag['id']}.json", headers=headers)
-                        
-                        # Inject new script tag with the current public URL
-                        client.post(
-                            endpoint, 
-                            json={"script_tag": {"event": "onload", "src": script_url, "display_scope": "online_store"}}, 
-                            headers=headers
-                        )
-                    logger.info(f"Auto-updated ScriptTag for {shop_domain} to use {script_url}")
-    except Exception as e:
-        logger.error(f"Failed to auto-update ScriptTags: {e}")
 
     logger.info("Startup complete. API ready.")
     yield
@@ -150,10 +97,6 @@ app.add_middleware(
 )
 
 app.add_middleware(RequestTracingMiddleware)
-
-
-from api.integrations import oauth
-app.include_router(oauth.router)
 
 # Endpoints
 
@@ -632,42 +575,6 @@ async def api_checkout_cart(req: CheckoutRequest):
 
 
 
-@app.post("/v1/shopify/sync", tags=["Shopify Integration"])
-async def shopify_sync(req: ShopifySyncRequest, background_tasks: BackgroundTasks):
-    domain = req.store_domain or config.SHOPIFY_STORE_DOMAIN
-    token = req.access_token or config.SHOPIFY_ACCESS_TOKEN
-    
-    if not domain or not token:
-        raise HTTPException(400, "Missing Shopify domain or access token in request and environment variables.")
-    
-    try:
-        import asyncio
-        from agent.ingestion import sanitize_site_id, sync_shopify_api
-
-        configured_shop = config.SHOPIFY_STORE_DOMAIN.strip().removeprefix("https://").removeprefix("http://").rstrip("/")
-        request_shop = domain.strip().removeprefix("https://").removeprefix("http://").rstrip("/")
-        if config.SHOPIFY_SITE_ID and request_shop == configured_shop:
-            site_id = sanitize_site_id(config.SHOPIFY_SITE_ID)
-        else:
-            site_id = sanitize_site_id(request_shop.removesuffix(".myshopify.com"))
-
-        synced_site_id = await asyncio.to_thread(
-            sync_shopify_api,
-            domain,
-            token,
-            site_id=site_id,
-            reconcile_missing=True,
-        )
-    except Exception as e:
-        logger.error(f"Shopify incremental sync failed: {e}")
-        raise HTTPException(500, f"Failed to sync Shopify catalog: {e}")
-    
-    return {
-        "status": "success", 
-        "site_id": synced_site_id,
-        "message": "Shopify catalog synced incrementally."
-    }
-
 def vectorize_site_catalog(site_id: str):
     import logging
     logger = logging.getLogger(__name__)
@@ -717,30 +624,173 @@ def _safe_script_base_url(raw: str) -> str:
     return ""
 
 
-@app.get("/shopbot.js", tags=["Plugin"])
-async def serve_plugin(site: Optional[str] = None, site_id: Optional[str] = None, shop: Optional[str] = None):
-    """Serve the ShopBot JavaScript plugin with dynamic API URL."""
-    from fastapi.responses import Response
-    import config
-    plugin_path = Path(__file__).parent.parent / "plugin" / "shopbot.js"
-    if not plugin_path.exists():
-        raise HTTPException(status_code=404, detail="Plugin script not found.")
-        
-    with open(plugin_path, "r", encoding="utf-8") as f:
-        js_code = f.read()
-
-    import os
-
-    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    safe_api = (
+def _public_widget_base_url() -> str:
+    return (
         _safe_script_base_url(os.environ.get("PUBLIC_API_URL", ""))
         or _safe_script_base_url(config.PUBLIC_API_URL)
         or _safe_script_base_url(config.VOICE_ORB_API_URL or "")
     )
 
-    js_code = js_code.replace('"__AI_PUBLIC_API_URL__"', json.dumps(safe_api))
-    js_code = js_code.replace('"__AI_DEFAULT_SITE_ID__"', json.dumps(safe_site))
-    
+
+def _load_widget_script(*, site: str, api_base_url: str) -> str:
+    plugin_path = Path(__file__).parent.parent / "plugin" / "shopbot.js"
+    if not plugin_path.exists():
+        raise HTTPException(status_code=404, detail="Plugin script not found.")
+
+    with open(plugin_path, "r", encoding="utf-8") as f:
+        js_code = f.read()
+
+    js_code = js_code.replace('"__AI_PUBLIC_API_URL__"', json.dumps(api_base_url))
+    js_code = js_code.replace('"__AI_DEFAULT_SITE_ID__"', json.dumps(site))
+    return js_code
+
+
+def _render_embed_bootstrap(*, site: str, api_base_url: str) -> str:
+    return f"""
+(function () {{
+  if (window.__shopbotFrameLoaded) return;
+  window.__shopbotFrameLoaded = true;
+
+  var currentScript = document.currentScript;
+  var scriptUrl = currentScript && currentScript.src ? new URL(currentScript.src, window.location.href) : null;
+  var siteId = {json.dumps(site)};
+  var apiBaseUrl = {json.dumps(api_base_url)};
+  var parentOrigin = window.location.origin;
+  var frameUrl = new URL(apiBaseUrl + "/shopbot-frame");
+  frameUrl.searchParams.set("site", siteId);
+  frameUrl.searchParams.set("parent_origin", parentOrigin);
+
+  var frame = document.createElement("iframe");
+  frame.src = frameUrl.toString();
+  frame.title = "ShopBot Voice Orb";
+  frame.setAttribute("allow", "microphone");
+  frame.setAttribute("aria-label", "ShopBot Voice Orb");
+  frame.style.position = "fixed";
+  frame.style.left = "50%";
+  frame.style.bottom = "12px";
+  frame.style.transform = "translateX(-50%)";
+  frame.style.width = "360px";
+  frame.style.height = "180px";
+  frame.style.maxWidth = "calc(100vw - 24px)";
+  frame.style.maxHeight = "calc(100vh - 24px)";
+  frame.style.border = "0";
+  frame.style.background = "transparent";
+  frame.style.zIndex = "2147483647";
+  frame.style.overflow = "hidden";
+  frame.style.colorScheme = "light";
+
+  function clamp(value, fallback, maxCss) {{
+    var numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+    return Math.min(numeric, maxCss);
+  }}
+
+  window.addEventListener("message", function (event) {{
+    if (event.origin !== apiBaseUrl) return;
+    var data = event.data || {{}};
+    if (data.source !== "shopbot-frame") return;
+
+    if (data.type === "shopbot:frame-size") {{
+      var width = clamp(data.width, 360, Math.max(320, window.innerWidth - 24));
+      var height = clamp(data.height, 180, Math.max(180, window.innerHeight - 24));
+      frame.style.width = width + "px";
+      frame.style.height = height + "px";
+      return;
+    }}
+
+    if (data.type === "shopbot:navigate" && data.path) {{
+      try {{
+        var targetUrl = new URL(data.path, window.location.href);
+        if (targetUrl.origin === window.location.origin) {{
+          window.location.href = targetUrl.pathname + targetUrl.search + targetUrl.hash;
+        }}
+      }} catch (_err) {{}}
+    }}
+  }});
+
+  function mountFrame(retries) {{
+    if (document.body) {{
+      document.body.appendChild(frame);
+      return;
+    }}
+    if (retries > 100) {{
+      return;
+    }}
+    setTimeout(function () {{ mountFrame(retries + 1); }}, 50);
+  }}
+
+  mountFrame(0);
+}})();
+"""
+
+
+@app.get("/shopbot-frame", tags=["Plugin"])
+async def serve_plugin_frame(site: Optional[str] = None, site_id: Optional[str] = None, shop: Optional[str] = None, parent_origin: Optional[str] = None):
+    """Serve a standalone orb frame for external website modes."""
+    from fastapi.responses import Response
+
+    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
+    script_path = f"/shopbot-widget.js?site={safe_site}"
+    if parent_origin:
+        script_path += f"&parent_origin={parent_origin}"
+
+    html_doc = f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ShopBot</title>
+    <style>
+      html, body {{
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+      }}
+      body {{
+        position: relative;
+      }}
+    </style>
+  </head>
+  <body>
+    <script src="{script_path}"></script>
+  </body>
+</html>"""
+
+    return Response(
+        content=html_doc,
+        media_type="text/html",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/shopbot-widget.js", tags=["Plugin"])
+async def serve_plugin_widget(site: Optional[str] = None, site_id: Optional[str] = None, shop: Optional[str] = None):
+    """Serve the full widget app for direct use or inside the external embed frame."""
+    from fastapi.responses import Response
+
+    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
+    safe_api = _public_widget_base_url()
+    js_code = _load_widget_script(site=safe_site, api_base_url=safe_api)
+
+    return Response(
+        content=js_code,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/shopbot.js", tags=["Plugin"])
+async def serve_plugin(site: Optional[str] = None, site_id: Optional[str] = None, shop: Optional[str] = None):
+    """Serve the public widget loader with dynamic runtime behavior."""
+    from fastapi.responses import Response
+
+    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
+    safe_api = _public_widget_base_url()
+    js_code = _render_embed_bootstrap(site=safe_site, api_base_url=safe_api)
+
     return Response(
         content=js_code,
         media_type="application/javascript",

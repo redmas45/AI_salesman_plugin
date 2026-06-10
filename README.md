@@ -1,228 +1,94 @@
 # AI Salesman Hub
 
-Voice shopping assistant for Shopify and normal websites.
+This project now does one thing:
 
-The system ingests product catalogs into PostgreSQL, vectorizes product text with pgvector, serves a FastAPI backend, and injects a `shopbot.js` voice orb into storefronts. Customers can speak naturally, search products, compare products side by side, add items to cart, and hear spoken responses.
+1. crawl a public website from `CURRENT_URL`
+2. start the backend
+3. print and save the widget `<script>` tag for manual HTML injection
 
-## Supported Modes
+Current target example:
 
-Run the project with:
+```text
+https://vercelclonedwebsite.vercel.app/
+```
+
+## Run
 
 ```powershell
 python run.py
 ```
 
-Menu:
+`run.py` will:
 
-```text
-1) Shopify
-   a) Shopify API
-   b) Shopify crawler
-2) Website API
-3) Website crawler
-4) View data
-0) Exit
-```
+- read `CURRENT_URL` and `CURRENT_SITE_ID` from `.env`
+- crawl the target site and build the catalog
+- start the FastAPI backend
+- open an ngrok URL when available
+- save the final widget tag into `.env` as `MANUAL_WIDGET_SCRIPT`
 
-Mode meanings:
-
-- `1a Shopify API`: merchant provides Shopify API access. Products are fetched directly from Shopify Admin API.
-- `1b Shopify crawler`: merchant does not provide API/catalog access. The storefront is crawled and scraped.
-- `2 Website API`: a normal website provides a product API URL.
-- `3 Website crawler`: a normal website provides no API. The crawler builds the catalog from public pages.
-- `4 View data`: inspect stored catalog data and source snapshots.
-
-`1a` and `1b` are separate business paths. Selecting `1b` must crawl the storefront even if API data already exists.
-
-## Catalog Storage
-
-Every website has its own tenant schema:
-
-```text
-tenant_<site_id>
-```
-
-Example:
-
-```text
-tenant_pisszq_ay
-```
-
-The main runtime catalog lives in:
-
-```text
-products
-categories
-```
-
-Source snapshots live in:
-
-```text
-catalog_source_products
-catalog_sync_runs
-```
-
-Known source names:
-
-```text
-shopify_api
-shopify_crawler
-website_api
-website_crawler
-```
-
-This lets you compare what came from Shopify API versus what the crawler found.
-
-## Incremental Sync
-
-Catalog sync is incremental.
-
-- New products are inserted.
-- Changed products are updated.
-- Removed/missing products are marked inactive.
-- Unchanged products keep their existing embeddings.
-- Only new/changed/deactivated rows are vectorized again.
-- Cart and user profile data are not wiped during catalog sync.
-
-This keeps repeat runs fast when the catalog has not changed.
-
-## AI Pipeline
-
-Voice request flow:
-
-```text
-Browser audio
--> OpenAI STT
--> input guardrails
--> pgvector RAG retrieval
--> OpenAI LLM
--> output guardrails
--> OpenAI TTS
--> widget UI actions + spoken reply
-```
-
-Current model environment:
+## Required `.env`
 
 ```env
-STT_MODEL=gpt-4o-mini-transcribe
-STT_LANGUAGE=en
-LLM_MODEL=gpt-4.1
-TTS_MODEL=gpt-4o-mini-tts
-TTS_VOICE=alloy
+OPENAI_API_KEY=
+DATABASE_URL=postgresql://shopbot:shopbot_password@localhost:5433/shopping_db
+HOST=0.0.0.0
+PORT=8001
+
+CURRENT_URL=https://vercelclonedwebsite.vercel.app/
+CURRENT_SITE_ID=https_demo_vercel_store
+CRAWL_MAX_PAGES=1024
+CRAWL_MAX_DEPTH=100
+
+MANUAL_WIDGET_SCRIPT=
+PUBLIC_WIDGET_SCRIPT_URL=
+PUBLIC_API_URL=
 ```
 
-Embeddings:
+## Manual Injection
 
-```env
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-```
-
-## Widget Behavior
-
-The injected `shopbot.js` supports:
-
-- microphone recording
-- spoken AI response playback
-- product cards for `SHOW_PRODUCTS`
-- side-by-side comparison table for `SHOW_COMPARISON`
-- Shopify cart add/clear actions
-- navigation actions
-- client diagnostics via `/v1/client-log`
-
-Comparison works for 2, 3, or 4 products across all catalog sources.
-
-## Shopify Setup
-
-Required `.env` keys for Shopify API mode:
-
-```env
-SHOPIFY_STORE_DOMAIN=pisszq-ay.myshopify.com
-SHOPIFY_ACCESS_TOKEN=
-SHOPIFY_CLIENT_ID=
-SHOPIFY_CLIENT_SECRET=
-SHOPIFY_SITE_URL=https://pisszq-ay.myshopify.com/?pb=0
-SHOPIFY_SITE_ID=pisszq_ay
-SHOPIFY_CRAWL_FALLBACK_URL=https://pisszq-ay.myshopify.com/?pb=0
-```
-
-Required Shopify scopes:
-
-```text
-read_products,read_inventory
-```
-
-For automatic ScriptTag injection:
-
-```text
-read_script_tags,write_script_tags
-```
-
-The app auto-updates Shopify ScriptTags on server startup when a Shopify installation exists in the global DB.
-
-## External Website Setup
-
-For Website API mode:
-
-```env
-WEBSITE_API_URL=
-WEBSITE_API_METHOD=GET
-WEBSITE_API_HEADERS_JSON=
-VOICE_ORB_SITE_ID=
-```
-
-For Website crawler mode:
-
-```env
-WEBSITE_CRAWL_URL=
-WEBSITE_CRAWL_MAX_PAGES=120
-WEBSITE_CRAWL_MAX_DEPTH=10
-VOICE_ORB_SITE_ID=
-```
-
-Manual one-line widget install:
+After startup, the saved script looks like:
 
 ```html
-<script src="https://your-public-api.example.com/shopbot.js" data-site-id="your_site_id" data-api-url="https://your-public-api.example.com"></script>
+<script src="https://your-public-backend.ngrok-free.app/shopbot.js?site=https_demo_vercel_store"></script>
 ```
 
-## Local Setup
+Paste that directly into the target site HTML.
 
-Install dependencies:
+If the target site has CSP, allow the backend origin in:
+
+- `script-src`
+- `connect-src`
+- `frame-src`
+
+## Local Setup
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-Start Postgres/pgvector:
-
-```powershell
 docker-compose up -d
-```
-
-Run:
-
-```powershell
 python run.py
 ```
 
-## Data Inspection
+## Catalog Storage
 
-Use:
-
-```text
-4) View data
-```
-
-Then preview:
+Each crawled target uses a tenant schema:
 
 ```text
-live_catalog
-shopify_api
-shopify_crawler
-website_api
-website_crawler
+tenant_<site_id>
 ```
 
-`live_catalog` is the current catalog used by voice/RAG. Source names show snapshots from each ingestion path.
+Relevant tables:
+
+```text
+products
+categories
+catalog_source_products
+catalog_sync_runs
+```
+
+Current crawler source name:
+
+```text
+custom_url_crawler
+```

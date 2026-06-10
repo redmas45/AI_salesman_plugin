@@ -45,35 +45,6 @@ def get_db(site_id: str) -> Generator[psycopg.Connection, None, None]:
         conn.rollback()
         raise
 
-@contextmanager
-def get_global_db() -> Generator[psycopg.Connection, None, None]:
-    """Context manager that yields a DB connection on the public schema."""
-    conn = _get_connection()
-    try:
-        conn.execute("SET search_path TO public")
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-
-def init_global_schema() -> None:
-    """Initialize the global public schema tables (like OAuth tokens)."""
-    conn = _get_connection()
-    try:
-        conn.execute("SET search_path TO public")
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS shopify_installations (
-                shop_domain TEXT PRIMARY KEY,
-                access_token TEXT NOT NULL,
-                installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-
 def init_tenant_schema(site_id: str) -> None:
     """Create schema for a specific tenant and initialize tables."""
     schema_path = Path(__file__).parent / "schema.sql"
@@ -172,6 +143,40 @@ def tenant_catalog_stats(site_id: str) -> dict:
             return dict(row) if row else {"total_products": 0, "active_products": 0, "missing_embeddings": 0}
     except Exception:
         return {"total_products": 0, "active_products": 0, "missing_embeddings": 0}
+
+
+def tenant_inventory_summary(site_id: str) -> dict[str, Any]:
+    """Return inventory counts for customer-facing status questions."""
+    init_tenant_schema(site_id)
+    with get_db(site_id) as conn:
+        catalog = conn.execute(
+            """
+            SELECT
+                COUNT(*) AS total_products,
+                COUNT(*) FILTER (WHERE is_active = 1) AS active_products,
+                COUNT(*) FILTER (WHERE is_active = 1 AND stock > 0) AS in_stock_products,
+                COALESCE(SUM(stock) FILTER (WHERE is_active = 1), 0) AS total_units,
+                COUNT(*) FILTER (WHERE embedding IS NULL) AS missing_embeddings
+            FROM products
+            """
+        ).fetchone()
+        categories = conn.execute(
+            """
+            SELECT COUNT(*) AS total_categories
+            FROM categories
+            """
+        ).fetchone()
+        cart = conn.execute(
+            """
+            SELECT COUNT(*) AS cart_rows
+            FROM cart
+            """
+        ).fetchone()
+
+    result = dict(catalog or {})
+    result.update(dict(categories or {}))
+    result.update(dict(cart or {}))
+    return result
 
 
 def catalog_source_stats(site_id: str) -> list[dict[str, Any]]:

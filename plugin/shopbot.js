@@ -63,6 +63,23 @@
     }
   }
 
+  function resolveOrigin(raw) {
+    const value = normalizeText(raw);
+    if (!value || value.includes("__AI_")) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(value, window.location.href);
+      if (!SAFE_SCHEME_RE.test(parsed.protocol)) {
+        return "";
+      }
+      return `${parsed.protocol}//${parsed.host}`;
+    } catch (_err) {
+      return "";
+    }
+  }
+
   function resolveWidgetConfig() {
     const currentScript = document.currentScript;
     const scriptUrl = currentScript && currentScript.src ? new URL(currentScript.src, window.location.href) : null;
@@ -83,7 +100,45 @@
     return {
       siteId: sanitizeSiteId(siteIdSource),
       apiUrl: resolveApiUrl(apiUrlSource) || window.location.origin,
+      parentOrigin: resolveOrigin(scriptUrl?.searchParams.get("parent_origin") || ""),
     };
+  }
+
+  function isEmbeddedFrame() {
+    return window.top !== window.self;
+  }
+
+  function postToParent(type, payload) {
+    if (!isEmbeddedFrame() || !config.parentOrigin) {
+      return;
+    }
+    try {
+      window.parent.postMessage({ source: "shopbot-frame", type, ...payload }, config.parentOrigin);
+    } catch (_err) {
+      // Parent communication is best effort only.
+    }
+  }
+
+  function setFrameSize(expanded) {
+    if (!isEmbeddedFrame()) {
+      return;
+    }
+    if (expanded) {
+      postToParent("shopbot:frame-size", { width: 460, height: 720 });
+      return;
+    }
+    postToParent("shopbot:frame-size", { width: 360, height: 180 });
+  }
+
+  function navigateToPath(path) {
+    if (!path) {
+      return;
+    }
+    if (isEmbeddedFrame()) {
+      postToParent("shopbot:navigate", { path });
+      return;
+    }
+    window.location.href = path;
   }
 
   function isShopifyStorefront() {
@@ -651,6 +706,7 @@
     ui.results.style.removeProperty("--shopbot-cols");
     ui.results.innerHTML = `<div class="shopbot-results-empty">Loading products...</div>`;
     ui.results.classList.add("visible");
+    setFrameSize(true);
 
     try {
       const products = await fetchProductsByIds(productIds);
@@ -681,7 +737,7 @@
         card.addEventListener("click", () => {
           const path = card.getAttribute("data-path");
           if (path) {
-            window.location.href = path;
+            navigateToPath(path);
           }
         });
       });
@@ -702,6 +758,7 @@
 
     ui.results.innerHTML = `<div class="shopbot-results-empty">Building comparison...</div>`;
     ui.results.classList.add("visible", "shopbot-comparison");
+    setFrameSize(true);
 
     try {
       const products = (await fetchProductsByIds(productIds)).slice(0, 4);
@@ -741,7 +798,7 @@
         card.addEventListener("click", () => {
           const path = card.getAttribute("data-path");
           if (path) {
-            window.location.href = path;
+            navigateToPath(path);
           }
         });
       });
@@ -876,7 +933,7 @@
       }
 
       if (actionName === "NAVIGATE_TO" && params.page) {
-        window.location.href = safeInternalPath(params.page);
+        navigateToPath(safeInternalPath(params.page));
         return;
       }
 
@@ -947,25 +1004,43 @@
     }
     window.__shopbotLoaded = true;
 
+    logClientEvent("orb_boot_start", {
+      embedded: isEmbeddedFrame(),
+      site_id: config.siteId,
+      api_url: config.apiUrl,
+    });
+
     injectStyles();
     ui = createWidget();
     if (!ui) {
       console.error("ShopBot: failed to initialize UI");
+      logClientEvent("orb_boot_error", { reason: "ui_init_failed" });
       return;
     }
+
+    setFrameSize(false);
+    logClientEvent("orb_boot_success", {
+      embedded: isEmbeddedFrame(),
+      site_id: config.siteId,
+      api_url: config.apiUrl,
+    });
 
     function updateStatus(status, message) {
       ui.btn.className = "voice-orb"; // reset classes
       if (status === "listening") {
         ui.btn.classList.add("listening");
         updateTooltip("Listening...", false);
+        setFrameSize(false);
       } else if (status === "processing") {
         ui.btn.classList.add("processing");
         updateTooltip("AI thinking...", true);
+        setFrameSize(false);
       } else if (status === "ready") {
         // Don't reset tooltip instantly on ready, let vanishTimeout handle it if needed
+        setFrameSize(false);
       } else if (status === "error") {
         updateTooltip(message || "Mic error. Check permission", false);
+        setFrameSize(false);
         setTimeout(() => updateTooltip("Click to speak", false), 3000);
       }
     }
