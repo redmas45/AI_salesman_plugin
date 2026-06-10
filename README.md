@@ -1,13 +1,13 @@
 # AI Salesman Hub
 
-This project now does one thing:
+This project is the backend and AI agent engine for the Voice Orb. It is designed to automatically sync with your cloned Vercel Storefront.
 
-1. crawl a public website from `CURRENT_URL`
-2. start the backend
-3. print and save the widget `<script>` tag for manual HTML injection
+The core workflow:
+1. Crawls a public website from `CURRENT_URL` to build the catalog database.
+2. Starts the FastAPI backend, which handles chat and voice via an `ngrok` tunnel.
+3. Automatically updates the connected Vercel storefront with the new ngrok URL so the Voice Orb stays synced.
 
 Current target example:
-
 ```text
 https://vercelclonedwebsite.vercel.app/
 ```
@@ -16,21 +16,34 @@ https://vercelclonedwebsite.vercel.app/
 
 ![AI Salesman Plugin Flow](docs/ai_salesman_plugin_flow.svg)
 
-The diagram above shows the full operator flow from `.env` setup to crawl, backend startup, manual script injection, and live storefront behavior.
+## Startup Workflow (Important)
 
-## Run
+Because this project uses the free tier of ngrok, your public backend URL changes every time you restart the server. Your live website needs to be updated with this new URL. 
 
+To start working, open **two separate terminal windows**:
+
+**Terminal 1:**
 ```powershell
 python run.py
 ```
+This starts the backend, crawls the catalog, and generates a new `ngrok` URL (saving it to `.env`). **Leave this running.**
 
-`run.py` will:
+**Terminal 2:**
+```powershell
+python update_vercel.py
+```
+This script will:
+1. Detect your new ngrok URL from `.env`.
+2. Connect to your `vercel_cloned_website` project and update the `SHOPBOT_API_URL` environment variable.
+3. Automatically redeploy the site to production.
 
-- read `CURRENT_URL` and `CURRENT_SITE_ID` from `.env`
-- crawl the target site and build the catalog
-- start the FastAPI backend
-- open an ngrok URL when available
-- save the final widget tag into `.env` as `MANUAL_WIDGET_SCRIPT`
+Once Terminal 2 says the deployment is successful, you can close Terminal 2. Your live website is now connected to your active backend!
+
+## Vercel Integration
+
+The Vercel storefront (`Vercel_website`) has been customized with the following integrations:
+1. **Auto-Injection:** A custom script (`scripts/inject-shopbot.mjs`) automatically reads the `SHOPBOT_API_URL` environment variable and injects the Voice Orb `<script>` tag into all static HTML files during the Vercel build process.
+2. **CSP Fixes:** The backend proxy in Vercel (`api/index.py`) has been modified to allow `script-src` and `media-src` from `https://*.ngrok-free.app`, ensuring that the Voice Orb and its text-to-speech audio are not blocked by the browser.
 
 ## Required `.env`
 
@@ -50,22 +63,6 @@ PUBLIC_WIDGET_SCRIPT_URL=
 PUBLIC_API_URL=
 ```
 
-## Manual Injection
-
-After startup, the saved script looks like:
-
-```html
-<script src="https://your-public-backend.ngrok-free.app/shopbot.js?site=https_demo_vercel_store"></script>
-```
-
-Paste that directly into the target site HTML.
-
-If the target site has CSP, allow the backend origin in:
-
-- `script-src`
-- `connect-src`
-- `frame-src`
-
 ## Local Setup
 
 ```powershell
@@ -79,13 +76,11 @@ python run.py
 ## Catalog Storage
 
 Each crawled target uses a tenant schema:
-
 ```text
 tenant_<site_id>
 ```
 
 Relevant tables:
-
 ```text
 products
 categories
@@ -94,7 +89,6 @@ catalog_sync_runs
 ```
 
 Current crawler source name:
-
 ```text
 custom_url_crawler
 ```
