@@ -784,12 +784,17 @@ async def serve_plugin_widget(site: Optional[str] = None, site_id: Optional[str]
 
 @app.get("/shopbot.js", tags=["Plugin"])
 async def serve_plugin(site: Optional[str] = None, site_id: Optional[str] = None, shop: Optional[str] = None):
-    """Serve the public widget loader with dynamic runtime behavior."""
+    """Serve the public widget loader — inlined directly (no iframe).
+
+    The iframe-based bootstrap (_render_embed_bootstrap) fails with free-tier
+    ngrok because the interstitial "Visit Site" page blocks iframe loading.
+    Serving the full widget JS directly avoids this issue entirely.
+    """
     from fastapi.responses import Response
 
     safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
     safe_api = _public_widget_base_url()
-    js_code = _render_embed_bootstrap(site=safe_site, api_base_url=safe_api)
+    js_code = _load_widget_script(site=safe_site, api_base_url=safe_api)
 
     return Response(
         content=js_code,
