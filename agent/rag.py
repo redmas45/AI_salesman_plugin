@@ -41,7 +41,7 @@ def _get_embedder():
 def _embed(texts: list[str]) -> np.ndarray:
     """Embed a list of texts into unit-normalized vectors (for cosine sim)."""
     embedder = _get_embedder()
-    vecs = embedder.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
+    vecs = embedder.encode(texts, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
     return vecs.astype(np.float32)
 
 

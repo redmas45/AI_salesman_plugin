@@ -63,6 +63,8 @@ logger = logging.getLogger(__name__)
 # Startup / Shutdown
 
 
+import asyncio
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise database, seed data, and build FAISS index on startup."""
@@ -72,9 +74,34 @@ async def lifespan(app: FastAPI):
     from agent import rag
     rag.preload()
 
+    import config
+    from agent.ingestion import async_web_crawl
+    
+    async def periodic_crawl():
+        target_url = config.CURRENT_URL
+        site_id = config.CURRENT_SITE_ID or config.DEFAULT_SITE_ID
+        if target_url:
+            while True:
+                await asyncio.sleep(60)
+                logger.info("Starting periodic 1-minute crawl for %s...", target_url)
+                try:
+                    await async_web_crawl(
+                        start_url=target_url,
+                        max_pages=config.CRAWL_MAX_PAGES,
+                        max_depth=config.CRAWL_MAX_DEPTH,
+                        site_id=site_id,
+                        reconcile_missing=True,
+                        source_name="custom_url_crawler"
+                    )
+                except Exception as e:
+                    logger.error("Periodic crawl failed: %s", e)
+
+    crawler_task = asyncio.create_task(periodic_crawl())
+
     logger.info("Startup complete. API ready.")
     yield
 
+    crawler_task.cancel()
     logger.info("Shutting down Voice Shopping Agent API.")
 
 

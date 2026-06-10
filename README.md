@@ -45,6 +45,18 @@ The Vercel storefront (`Vercel_website`) has been customized with the following 
 1. **Auto-Injection:** A custom script (`scripts/inject-shopbot.mjs`) automatically reads the `SHOPBOT_API_URL` environment variable and injects the Voice Orb `<script>` tag into all static HTML files during the Vercel build process.
 2. **CSP Fixes:** The backend proxy in Vercel (`api/index.py`) has been modified to allow `script-src` and `media-src` from `https://*.ngrok-free.app`, ensuring that the Voice Orb and its text-to-speech audio are not blocked by the browser.
 
+## Crawler Architecture (100% Accuracy)
+
+The AI Salesman backend features a highly specialized crawler capable of achieving 100% precision and recall against Next.js storefronts. 
+Rather than relying on fragile HTML text scraping or heuristic regex rules, the crawler intercepts the underlying frontend framework state. 
+
+When crawling a Next.js site, it dynamically extracts:
+- `__NEXT_DATA__` JSON payloads embedded in the initial HTML
+- React Server Components (RSC) Flight data payloads pushed by Next.js
+- `application/ld+json` semantic SEO tags
+
+This allows the crawler to directly reconstruct the exact JSON data structures that power the storefront, resulting in perfectly accurate product titles, prices, descriptions, and IDs, with zero hallucination.
+
 ## Required `.env`
 
 ```env

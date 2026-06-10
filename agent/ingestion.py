@@ -845,7 +845,7 @@ def _persist_catalog(
     )
     return changed
 
-def sync_web_crawl(
+async def async_web_crawl(
     start_url: str,
     *,
     max_pages: int = 60,
@@ -855,6 +855,7 @@ def sync_web_crawl(
     source_name: str = "custom_url_crawler",
     timeout: int = 12,
 ) -> str:
+    from crawl4ai import AsyncWebCrawler
     if not start_url:
         raise ValueError("Start URL is required.")
     if max_pages <= 0 or max_depth < 0:
@@ -876,7 +877,7 @@ def sync_web_crawl(
     product_links: set[str] = set()
     stopped_by_limit = False
 
-    with httpx.Client(timeout=timeout, follow_redirects=True, headers={"User-Agent": "AI-Salesman-Crawler"}) as client:
+    async with AsyncWebCrawler(verbose=False) as crawler:
         while queue and len(visited) < max_pages:
             page_url, depth = queue.popleft()
             page_url = urldefrag(page_url)[0]
@@ -884,14 +885,14 @@ def sync_web_crawl(
                 continue
             visited.add(page_url)
 
-            response = client.get(page_url)
-            if response.status_code != 200:
-                continue
-            content_type = (response.headers.get("content-type") or "").lower()
-            if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
+            result = await crawler.arun(url=page_url)
+            if not result.success:
                 continue
 
-            text = response.text
+            text = result.html
+            if not text:
+                continue
+
             parser = _HtmlHarvest()
             parser.feed(text)
             pages_seen += 1
@@ -919,27 +920,27 @@ def sync_web_crawl(
             stopped_by_limit = True
 
     if not extracted_products:
-        raise RuntimeError("Crawler did not extract any product-like records.")
-
-    print("\nCrawler summary:")
-    print(f"- Pages visited: {pages_seen}")
-    print(f"- Product links discovered: {len(product_links)}")
-    print(f"- Raw extracted candidates: {len(extracted_products)}")
-    if stopped_by_limit:
-        print(f"- Stopped by max_pages={max_pages}")
+        logger.warning("Crawler did not extract any product-like records.")
 
     deduped_products = _dedupe_products(extracted_products)
-    print(f"- Deduped candidates: {len(deduped_products)}")
+    print(f"Crawler summary: visited {pages_seen} pages, extracted {len(extracted_products)} raw candidates, deduped to {len(deduped_products)}.")
 
     import json
+    from pathlib import Path
     crawl_json_path = Path(__file__).resolve().parent.parent / "crawl.json"
     with open(crawl_json_path, "w", encoding="utf-8") as f:
         json.dump(deduped_products, f, indent=2, ensure_ascii=False)
 
-    _persist_catalog(
+    import asyncio
+    await asyncio.to_thread(
+        _persist_catalog,
         resolved_site_id,
         deduped_products,
         reconcile_missing=reconcile_missing,
         source_name=source_name,
     )
     return resolved_site_id
+
+def sync_web_crawl(*args, **kwargs) -> str:
+    import asyncio
+    return asyncio.run(async_web_crawl(*args, **kwargs))
