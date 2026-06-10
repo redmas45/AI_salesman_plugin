@@ -644,7 +644,7 @@
       fetch(`${config.apiUrl}/v1/client-log`, {
         method: "POST",
         mode: "cors",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "1" },
         body: JSON.stringify({ event, payload }),
       }).catch(() => {});
     } catch (_err) {
@@ -689,7 +689,10 @@
     }
 
     const url = `${config.apiUrl}/v1/products/by-ids?site_id=${encodeURIComponent(config.siteId)}&ids=${encodeURIComponent(ids.join(","))}`;
-    const response = await fetch(url, { mode: "cors" });
+    const response = await fetch(url, { 
+      mode: "cors",
+      headers: { "ngrok-skip-browser-warning": "1" }
+    });
     if (!response.ok) {
       throw new Error(`Product fetch failed ${response.status}`);
     }
@@ -955,6 +958,7 @@
         method: "POST",
         body: formData,
         mode: "cors",
+        headers: { "ngrok-skip-browser-warning": "1" },
         signal: controller.signal,
       });
 

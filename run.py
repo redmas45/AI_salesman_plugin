@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import uvicorn
 from dotenv import load_dotenv, set_key
@@ -143,6 +144,16 @@ def _print_widget_install_instructions(site_id: str, public_url: str) -> None:
 def _local_base_url(host: str, port: int) -> str:
     local_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     return f"http://{local_host}:{port}"
+
+
+def _is_public_https_url(raw: str) -> bool:
+    try:
+        parsed = urlparse((raw or "").strip().strip("\"'"))
+    except ValueError:
+        return False
+    if parsed.scheme != "https" or not parsed.hostname:
+        return False
+    return parsed.hostname.lower() not in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
 
 def _port_is_in_use(host: str, port: int) -> bool:
@@ -298,13 +309,13 @@ def _start_tunnel(host: str, port: int) -> str:
                     except Exception as kill_exc:
                         print(f"[!] ngrok.kill() retry failed: {kill_exc}")
                     time.sleep(1)
-        print(f"[!] ngrok unavailable. Falling back to local URL: {local_url}")
+        print("[!] ngrok unavailable. Refusing to write a localhost PUBLIC_API_URL.")
         if last_error is not None:
             print(f"[!] ngrok error: {last_error}")
-        return local_url
+        raise RuntimeError("A public HTTPS ngrok tunnel is required before deploying the widget.")
     except ImportError:
-        print("\n[-] pyngrok not installed. Running locally only.")
-        return local_url
+        print("\n[-] pyngrok not installed. Cannot create the public HTTPS widget URL.")
+        raise RuntimeError("Install pyngrok and restart before deploying the widget.")
 
 
 def _cleanup_runtime() -> None:
@@ -326,6 +337,8 @@ def _run_server(host: str, port: int, site_id: str) -> None:
     _ensure_port_free(host, port)
     selected_port = _choose_server_port(host, port)
     public_url = _start_tunnel(host, selected_port)
+    if not _is_public_https_url(public_url):
+        raise RuntimeError(f"Refusing to persist non-public widget URL: {public_url}")
     _persist_launch_config(site_id, public_url)
     local_url = _local_base_url(host, selected_port)
     if public_url == local_url:

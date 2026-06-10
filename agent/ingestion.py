@@ -906,6 +906,8 @@ async def async_web_crawl(
                     continue
                 if next_url in visited or depth >= max_depth:
                     continue
+                if "/admin" in next_url.lower():
+                    continue
                 if next_url.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".css", ".js", ".pdf", ".xml")):
                     continue
                 queue.append((next_url, depth + 1))
