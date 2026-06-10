@@ -12,6 +12,12 @@ Current target example:
 https://vercelclonedwebsite.vercel.app/
 ```
 
+## Flow Diagram
+
+![AI Salesman Plugin Flow](docs/ai_salesman_plugin_flow.svg)
+
+The diagram above shows the full operator flow from `.env` setup to crawl, backend startup, manual script injection, and live storefront behavior.
+
 ## Run
 
 ```powershell

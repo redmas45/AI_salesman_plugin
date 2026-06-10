@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import atexit
 import os
+import signal
 import socket
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -14,6 +17,8 @@ from agent.ingestion import sanitize_site_id, sync_web_crawl
 
 load_dotenv()
 
+PID_FILE = Path(__file__).resolve().parent / ".run.pid"
+
 
 def _ask(prompt: str, default: str | None = None) -> str:
     label = f"{prompt} [{default}]: " if default is not None else f"{prompt}: "
@@ -25,6 +30,39 @@ def _persist_env_value(key: str, value: str) -> None:
     os.environ[key] = value
     env_path = Path(__file__).resolve().parent / ".env"
     set_key(str(env_path), key, value)
+
+
+def _process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _read_pid_file() -> int | None:
+    if not PID_FILE.exists():
+        return None
+    try:
+        return int(PID_FILE.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _write_pid_file() -> None:
+    PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+
+
+def _remove_pid_file() -> None:
+    current = _read_pid_file()
+    if current not in {None, os.getpid()}:
+        return
+    try:
+        PID_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _configured_url() -> str:
@@ -114,6 +152,86 @@ def _port_is_in_use(host: str, port: int) -> bool:
         return sock.connect_ex((check_host, port)) == 0
 
 
+def _list_listening_pids(port: int) -> list[int]:
+    result = subprocess.run(
+        ["netstat", "-ano", "-p", "tcp"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    pids: set[int] = set()
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line or "LISTENING" not in line.upper():
+            continue
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        local_address = parts[1]
+        pid_raw = parts[-1]
+        if ":" not in local_address:
+            continue
+        local_port = local_address.rsplit(":", 1)[-1].strip("[]")
+        if local_port != str(port):
+            continue
+        try:
+            pid = int(pid_raw)
+        except ValueError:
+            continue
+        if pid > 0 and pid != os.getpid():
+            pids.add(pid)
+    return sorted(pids)
+
+
+def _kill_pid(pid: int) -> None:
+    subprocess.run(
+        ["taskkill", "/PID", str(pid), "/F", "/T"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _stop_previous_run_instance() -> None:
+    existing_pid = _read_pid_file()
+    if existing_pid is None or existing_pid == os.getpid():
+        return
+    if not _process_exists(existing_pid):
+        _remove_pid_file()
+        return
+
+    print(f"[!] Stopping previous run.py instance PID {existing_pid}")
+    _kill_pid(existing_pid)
+    for _ in range(20):
+        if not _process_exists(existing_pid):
+            _remove_pid_file()
+            return
+        time.sleep(0.25)
+    raise RuntimeError(f"Previous run.py instance PID {existing_pid} did not stop cleanly.")
+
+
+def _ensure_port_free(host: str, port: int) -> None:
+    if not _port_is_in_use(host, port):
+        return
+
+    pids = _list_listening_pids(port)
+    if not pids:
+        print(f"[!] Port {port} is busy but no listener PID could be resolved.")
+        return
+
+    print(f"[!] Freeing port {port} by stopping listener PID(s): {', '.join(str(pid) for pid in pids)}")
+    for pid in pids:
+        _kill_pid(pid)
+
+    for _ in range(20):
+        if not _port_is_in_use(host, port):
+            print(f"[ok] Port {port} is now free.")
+            return
+        time.sleep(0.25)
+
+    raise RuntimeError(f"Port {port} is still busy after attempting to stop existing listeners.")
+
+
 def _find_any_free_port(host: str) -> int:
     bind_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -189,7 +307,23 @@ def _start_tunnel(host: str, port: int) -> str:
         return local_url
 
 
+def _cleanup_runtime() -> None:
+    try:
+        from pyngrok import ngrok
+
+        ngrok.kill()
+    except Exception:
+        pass
+    _remove_pid_file()
+
+
+def _handle_exit_signal(signum, _frame) -> None:
+    print(f"\n[!] Received signal {signum}. Shutting down run.py...")
+    raise KeyboardInterrupt
+
+
 def _run_server(host: str, port: int, site_id: str) -> None:
+    _ensure_port_free(host, port)
     selected_port = _choose_server_port(host, port)
     public_url = _start_tunnel(host, selected_port)
     _persist_launch_config(site_id, public_url)
@@ -207,9 +341,16 @@ def _run_server(host: str, port: int, site_id: str) -> None:
 
 
 if __name__ == "__main__":
+    atexit.register(_cleanup_runtime)
+    signal.signal(signal.SIGINT, _handle_exit_signal)
+    signal.signal(signal.SIGTERM, _handle_exit_signal)
+
     print("\n" + "=" * 80)
     print(" AI SALESMAN HUB ".center(80, "="))
     print("=" * 80)
+
+    _stop_previous_run_instance()
+    _write_pid_file()
 
     host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "8001"))
