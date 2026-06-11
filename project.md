@@ -36,6 +36,8 @@ This project is an AI-powered voice shopping assistant ("Voice Orb") that can be
 - **Fixed Voice Orb Visibility**: The orb wasn't showing because the frontend was using a stale `127.0.0.1` script URL instead of the ngrok HTTPS URL. We corrected the `.env` settings to properly use the ngrok URL.
 - **Enabled Crawler Exclusion**: We excluded `/admin` paths from the catalog crawler to avoid hitting HTTP 401 errors.
 - **Vercel Admin UI**: The Vercel clone has an Admin Panel `/admin` route which allows replenishing stock. A hardcoded Admin Panel link is currently injected via `api/index.py` at the bottom left of the storefront.
+- **Resilient Vercel Updater**: Upgraded `update_vercel.py` to handle deployment crashes gracefully by caching `vercel` CLI, streaming build logs, fixing Windows Unicode encode errors, and providing a robust fallback when ngrok is unavailable.
+- **Multi-Turn Cart Fix**: Solved an issue where the bot forgot product IDs during follow-up turns (e.g. "add the first one"). The frontend now embeds `[PRODUCT_IDS: ...]` into assistant history, the orchestrator parses these tags for context, and the prompt directs the LLM to use the inventory order for ordinal references.
 
 ### What is Working ✅
 - **Server Startup & Ngrok Tunneling**: `run.py` correctly provisions a tunnel and exposes the API.
@@ -46,6 +48,7 @@ This project is an AI-powered voice shopping assistant ("Voice Orb") that can be
 - **LLM Product Identification (Precision Loss)**: Fixed the 64-bit ID corruption issue. The LLM is instructed to output IDs as strings, and the entire pipeline (frontend parser, guardrails, models, database) safely handles string-based IDs.
 - **Admin Panel UI Placement**: The Admin Panel link on the Vercel site is now an aesthetic glassmorphic SVG gear icon with hover effects, matching the Voice Orb.
 - **Debugging Auditability**: The backend now writes timestamped logs to the `logs/` directory alongside standard output.
+- **Multi-Turn Cart Operations**: The agent correctly resolves ordinal product references from previous conversational turns.
 
 ### Edge Cases Resolved
 - Fixed `run_stream` crash bugs in `orchestrator.py` by adding missing `site_id` arguments.
@@ -53,18 +56,9 @@ This project is an AI-powered voice shopping assistant ("Voice Orb") that can be
 - Fixed duplicated prompt example numbering in `prompt.py`.
 
 ### What is Not Working / Broken ❌
-- **None** - All known critical issues are resolved including resilient Vercel updater.
+- **None** - All known critical issues are resolved including resilient Vercel updater and multi-turn product selection.
 
 ---
 
 ## Future Addons / Planned Changes
-1. **Resilient Vercel Updater (COMPLETED)**: The build/deployment pipeline now fails gracefully if ngrok isn't available. Three scenarios are handled:
-   - **Placeholder mode**: When no ngrok URL is found, deploys site with warning stub script
-   - **Localhost mode**: When localhost URL is cached, deploys with local-only warning
-   - **Valid ngrok mode**: When valid HTTPS ngrok URL is available, full widget injection proceeds
-   
-   Changes made:
-   - `scripts/update_vercel.py`: Added graceful fallback to placeholder URL instead of exiting
-   - `run.py`: Modified to use localhost URLs when ngrok unavailable instead of raising errors
-   - `Vercel_website/scripts/inject-shopbot.mjs`: Added stub script injection for non-functional cases
-   - Added proper warning messages and user guidance for each scenario
+- **None planned at the moment.** The core requirements (Vercel deployment resiliency, multi-turn bug fixes) have been successfully implemented.
