@@ -1,6 +1,11 @@
 export function executeActions(actions) {
   actions.forEach(action => {
     console.log("ShopBot executing action:", action);
+
+    // Normalize both params and parameters keys to ensure compatibility
+    const params = action.params || action.parameters || {};
+    action.params = params;
+    action.parameters = params;
     
     // Look for site owner overrides
     if (window.ShopBotConfig) {

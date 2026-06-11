@@ -4,7 +4,6 @@ FastAPI application — Voice Shopping Agent API.
 Endpoints:
   POST /v1/shop          Main pipeline: audio/text → ui_actions + voice response
   GET  /v1/products      List all products (for frontend sync)
-  POST /v1/rebuild-index Admin: rebuild FAISS vector index
   GET  /health           Health check
 """
 
@@ -63,7 +62,7 @@ import asyncio
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialise database, seed data, and build FAISS index on startup."""
+    """Initialise database, seed data, and register pgvector on startup."""
     logger.info("Starting Voice Shopping Agent API...")
     
     # Preload RAG embedder and index into memory
@@ -71,24 +70,30 @@ async def lifespan(app: FastAPI):
     rag.preload()
 
     import config
-    from agent.ingestion import async_web_crawl
+    import functools
+    from agent.ingestion import sync_web_crawl
+    import concurrent.futures
     
     async def periodic_crawl():
         target_url = config.CURRENT_URL
         site_id = config.CURRENT_SITE_ID or config.DEFAULT_SITE_ID
         if target_url:
             while True:
-                await asyncio.sleep(60)
-                logger.info("Starting periodic 1-minute crawl for %s...", target_url)
+                await asyncio.sleep(120)
+                logger.info("Starting periodic 2-minute crawl for %s...", target_url)
                 try:
-                    await async_web_crawl(
-                        start_url=target_url,
+                    loop = asyncio.get_running_loop()
+                    func = functools.partial(
+                        sync_web_crawl,
+                        target_url,
                         max_pages=config.CRAWL_MAX_PAGES,
                         max_depth=config.CRAWL_MAX_DEPTH,
                         site_id=site_id,
                         reconcile_missing=True,
                         source_name="custom_url_crawler"
                     )
+                    with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+                        await loop.run_in_executor(executor, func)
                 except Exception as e:
                     logger.error("Periodic crawl failed: %s", e)
 

@@ -54,7 +54,7 @@ def test_shop_response_rejects_bad_product_action_params():
     with pytest.raises(ValidationError):
         ShopResponse(
             **_base_response(
-                ui_actions=[{"action": "ADD_TO_CART", "params": {"product_id": "1"}}]
+                ui_actions=[{"action": "ADD_TO_CART", "params": {"product_id": [1]}}]
             )
         )
 

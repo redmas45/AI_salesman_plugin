@@ -929,7 +929,9 @@ async def async_web_crawl(
 
     import json
     from pathlib import Path
-    crawl_json_path = Path(__file__).resolve().parent.parent / "crawl.json"
+    data_dir = Path(__file__).resolve().parent.parent / "data" / resolved_site_id
+    data_dir.mkdir(parents=True, exist_ok=True)
+    crawl_json_path = data_dir / "crawl.json"
     with open(crawl_json_path, "w", encoding="utf-8") as f:
         json.dump(deduped_products, f, indent=2, ensure_ascii=False)
 

@@ -5,7 +5,7 @@ Pipeline:
   audio bytes
     → STT (Whisper via OpenAI)
     → Input Guardrails
-    → RAG Retrieval (FAISS + SQLite)
+    → RAG Retrieval (PostgreSQL + pgvector)
     → LLM Agent (OpenAI Chat Completions)
     → Output Guardrails
     → TTS (OpenAI tts-1)
@@ -113,6 +113,7 @@ def run(
 
     # Stage 3: RAG Retrieval
     t = time.perf_counter()
+    profile = {}
     try:
         profile = get_user_profile(site_id)
         prefs = profile.get("preferences")
@@ -158,7 +159,11 @@ def run(
     t = time.perf_counter()
     cart_context = format_cart_for_prompt(get_cart_items(site_id))
 
-    profile = get_user_profile(site_id)
+    if not profile:
+        try:
+            profile = get_user_profile(site_id)
+        except Exception:
+            profile = {}
     profile_context = f"Address: {profile.get('address') or 'None'} | Payment Method: {profile.get('payment_method') or 'None'} | Preferences: {profile.get('preferences') or 'None'}"
 
     llm_response = llm.generate_response(

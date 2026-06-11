@@ -127,35 +127,26 @@ def _configured_site_id() -> str:
 
 
 def _run_with_animation(message: str, fn, *args, **kwargs):
-    result: dict[str, str] = {}
-    error: dict[str, Exception] = {}
-
-    def worker():
-        try:
-            result["value"] = fn(*args, **kwargs)
-        except Exception as exc:  # pragma: no cover
-            error["value"] = exc
-
+    import concurrent.futures
+    import time
+    
     spinner = "|/-\\"
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
-
     idx = 0
-    while thread.is_alive():
-        print(f"\r{spinner[idx % len(spinner)]} {message}", end="", flush=True)
-        idx += 1
-        time.sleep(0.12)
-    thread.join()
-
-    if "value" in result:
-        print(f"\r[ok] {message} done", flush=True)
-        return result["value"]
-
-    exc = error.get("value")
-    print(f"\r[x] {message} failed")
-    if exc is None:
-        raise RuntimeError(f"{message} failed unexpectedly.")
-    raise exc
+    
+    with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn, *args, **kwargs)
+        while not future.done():
+            print(f"\r{spinner[idx % len(spinner)]} {message}", end="", flush=True)
+            idx += 1
+            time.sleep(0.12)
+        
+        try:
+            val = future.result()
+            print(f"\r[ok] {message} done", flush=True)
+            return val
+        except Exception as exc:
+            print(f"\r[x] {message} failed")
+            raise exc
 
 
 def _persist_launch_config(site_id: str, public_url: str) -> None:

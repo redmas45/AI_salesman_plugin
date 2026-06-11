@@ -42,31 +42,35 @@ from tenacity import (
 )
 def _call_stt(audio_file: tuple, language: str) -> str:
     client = _get_client()
-    try:
-        request = {
-            "model": config.STT_MODEL,
-            "file": audio_file,
-            "response_format": "text",
-            "temperature": 0.0,
-            "prompt": "The user is talking to an AI shopping assistant. Please transcribe their speech.",
-        }
-        if language:
-            request["language"] = language
+    models_to_try = [config.STT_MODEL]
+    if config.STT_MODEL != "whisper-1":
+        models_to_try.append("whisper-1")
 
-        response = client.audio.transcriptions.create(**request)
-        if isinstance(response, str):
-            return response.strip()
-        return (getattr(response, "text", "") or "").strip()
-    except Exception as exc:
-        if config.STT_MODEL != "gpt-4o-mini-transcribe":
-            logger.warning(
-                "STT failed for model %s. OpenAI fallback to gpt-4o-mini-transcribe.",
-                config.STT_MODEL,
-            )
-            config.STT_MODEL = "gpt-4o-mini-transcribe"
-        else:
-            logger.error("OpenAI STT failed: %s", exc)
-        raise exc
+    last_exc = None
+    for model in models_to_try:
+        try:
+            request = {
+                "model": model,
+                "file": audio_file,
+                "response_format": "text",
+                "temperature": 0.0,
+                "prompt": "The user is talking to an AI shopping assistant. Please transcribe their speech.",
+            }
+            if language:
+                request["language"] = language
+
+            response = client.audio.transcriptions.create(**request)
+            if isinstance(response, str):
+                return response.strip()
+            return (getattr(response, "text", "") or "").strip()
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("STT failed for model %s: %s", model, exc)
+            if model == config.STT_MODEL and len(models_to_try) > 1:
+                config.STT_MODEL = "whisper-1"
+
+    if last_exc:
+        raise last_exc
 
 
 def transcribe(audio_bytes: bytes, filename: str = "audio.wav") -> str:

@@ -49,22 +49,28 @@ def _call_tts(text: str) -> bytes:
         tts.write_to_fp(fp)
         return fp.getvalue()
 
-    try:
-        response = _get_client().audio.speech.create(
-            model=config.TTS_MODEL,
-            voice=config.TTS_VOICE,
-            input=text,
-            response_format="wav",
-        )
-        return response.content
-    except Exception as exc:
-        if config.TTS_MODEL != "gpt-4o-mini-tts":
-            logger.warning(
-                "TTS failed for model %s. OpenAI fallback to gpt-4o-mini-tts.",
-                config.TTS_MODEL,
+    models_to_try = [config.TTS_MODEL]
+    if config.TTS_MODEL != "tts-1":
+        models_to_try.append("tts-1")
+
+    last_exc = None
+    for model in models_to_try:
+        try:
+            response = _get_client().audio.speech.create(
+                model=model,
+                voice=config.TTS_VOICE,
+                input=text,
+                response_format="wav",
             )
-            config.TTS_MODEL = "gpt-4o-mini-tts"
-        raise exc
+            return response.content
+        except Exception as exc:
+            last_exc = exc
+            logger.warning("TTS failed for model %s: %s", model, exc)
+            if model == config.TTS_MODEL and len(models_to_try) > 1:
+                config.TTS_MODEL = "tts-1"
+
+    if last_exc:
+        raise last_exc
 
 
 def synthesize(text: str) -> bytes:

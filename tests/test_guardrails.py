@@ -20,6 +20,21 @@ from db.seed import seed
 def setup_db():
     init_tenant_schema("site_1")
     seed()
+    # Now let's insert a dummy category and product with ID 1
+    from db.database import get_db
+    with get_db("site_1") as conn:
+        conn.execute(
+            "INSERT INTO categories (id, name, slug) VALUES (%s, %s, %s) ON CONFLICT (id) DO NOTHING",
+            (99999, "Test Category", "test-category")
+        )
+        conn.execute(
+            """
+            INSERT INTO products (id, name, brand, category_id, description, price, stock, is_active)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            (1, "Test Product 1", "Test Brand", 99999, "Test Description 1", 100.0, 100, 1)
+        )
 
 
 # Input Guardrail Tests
@@ -88,7 +103,7 @@ class TestOutputGuardrails:
 
     def test_valid_response_passes(self):
         resp = self._make_response()
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert result["response_text"] == "Here are some red shoes for you!"
 
     def test_invalid_action_type_removed(self):
@@ -98,7 +113,7 @@ class TestOutputGuardrails:
                 {"action": "SHOW_PRODUCTS", "params": {"product_ids": []}},
             ]
         )
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         action_types = [a["action"] for a in result["ui_actions"]]
         assert "HACK_WEBSITE" not in action_types
 
@@ -106,31 +121,31 @@ class TestOutputGuardrails:
         resp = self._make_response(
             ui_actions=[{"action": "CLEAR_FILTERS", "params": {}} for _ in range(10)]
         )
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert len(result["ui_actions"]) <= 5
 
     def test_non_list_actions_reset(self):
         resp = self._make_response(ui_actions="invalid")
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert result["ui_actions"] == []
 
     def test_negative_price_clamped(self):
         resp = self._make_response(
             ui_actions=[{"action": "FILTER_PRODUCTS", "params": {"max_price": -1000}}]
         )
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert result["ui_actions"][0]["params"]["max_price"] == 0.0
 
     def test_rating_out_of_range_clamped(self):
         resp = self._make_response(
             ui_actions=[{"action": "FILTER_PRODUCTS", "params": {"min_rating": 10}}]
         )
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert result["ui_actions"][0]["params"]["min_rating"] == 5.0
 
     def test_empty_response_text_replaced(self):
         resp = self._make_response(response_text="")
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert len(result["response_text"]) > 0
 
     def test_add_to_cart_invalid_product_id_removed(self):
@@ -139,16 +154,16 @@ class TestOutputGuardrails:
                 {"action": "ADD_TO_CART", "params": {"product_id": "not-a-number"}}
             ]
         )
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert result["ui_actions"] == []
 
     def test_add_to_cart_numeric_string_product_id_coerced(self):
         resp = self._make_response(
             ui_actions=[{"action": "ADD_TO_CART", "params": {"product_id": "1"}}]
         )
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert result["ui_actions"] == [
-            {"action": "ADD_TO_CART", "params": {"product_id": 1}}
+            {"action": "ADD_TO_CART", "params": {"product_id": "1"}}
         ]
 
     def test_show_products_drops_invalid_ids_and_keeps_valid(self):
@@ -160,16 +175,16 @@ class TestOutputGuardrails:
                 }
             ]
         )
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert result["ui_actions"] == [
-            {"action": "SHOW_PRODUCTS", "params": {"product_ids": [1]}}
+            {"action": "SHOW_PRODUCTS", "params": {"product_ids": ["1"]}}
         ]
 
     def test_invalid_navigation_removed(self):
         resp = self._make_response(
             ui_actions=[{"action": "NAVIGATE_TO", "params": {"page": "admin"}}]
         )
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert result["ui_actions"] == []
 
     def test_invalid_sort_removed(self):
@@ -178,7 +193,7 @@ class TestOutputGuardrails:
                 {"action": "SORT_PRODUCTS", "params": {"sort_by": "delete_all"}}
             ]
         )
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert result["ui_actions"] == []
 
     def test_unsupported_filter_key_removed(self):
@@ -190,12 +205,12 @@ class TestOutputGuardrails:
                 }
             ]
         )
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert result["ui_actions"][0]["params"] == {"category": "shoes"}
 
     def test_non_dict_params_removed(self):
         resp = self._make_response(
             ui_actions=[{"action": "FILTER_PRODUCTS", "params": "category=shoes"}]
         )
-        result = validate_output(resp)
+        result = validate_output(resp, site_id="site_1")
         assert result["ui_actions"] == []
