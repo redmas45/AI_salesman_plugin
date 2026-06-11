@@ -85,3 +85,24 @@ Controlled via `DEPLOYMENT_MODE` in `.env`:
 4. Search products: Say "show me mugs" (verify recommendation panel filters grid).
 5. Cart: Say "add bomber jacket to cart" (verify item added and drawer opens).
 6. Admin Panel: Log in, verify RAG status, test "Generate Description with AI" button.
+
+---
+
+## Next Step: Real-time Voice Streaming via WebSockets (Option 1)
+
+### Planned Architecture: Sentence-Buffered Parallel Streaming
+We will implement a high-performance streaming pipeline to achieve sub-second voice response latency using our existing standard OpenAI API key and models (without ElevenLabs):
+1. **Audio Input Streaming**: Client streams mic audio in small binary chunks (100–200ms WebM/Opus or WAV) via WebSockets to `/ws/chat`.
+2. **Text Generation Streaming**: The FastAPI backend invokes OpenAI LLM Chat Completions with `stream=True`.
+3. **Sentence Buffering & Parallel TTS**: As response tokens arrive, they are accumulated on the backend. When a sentence boundary (punctuation like `.`, `?`, `!`) is reached:
+   - A concurrent background task is spun up to call OpenAI TTS (`tts-1` model) for just that sentence.
+   - The resulting audio chunk is immediately streamed back to the client over the WebSocket.
+4. **Seamless Playback Queue**: The frontend uses the browser's Web Audio API to queue incoming audio chunks and play them back sequentially without pauses.
+5. **Barge-in (Interruption Handling)**: If the user starts speaking during playback, the client sends an `INTERRUPT` frame, prompting the backend to immediately cancel all active LLM/TTS generation tasks, and the client stops audio playback.
+
+### Implementation Checklist
+- [ ] Refactor `/ws/chat` in [api/main.py](file:///c:/Users/admin/Desktop/AI_salesman_plugin/api/main.py) to orchestrate sentence-level parallel synthesis and streaming.
+- [ ] Implement browser microphone chunk streaming in the frontend widget (source code in `plugin/src/index.js` or separate helper).
+- [ ] Build the audio queueing and playing mechanism in the frontend using standard browser Web Audio API.
+- [ ] Implement client-side interrupt triggers (e.g. user speaks/clicks) and server-side task cancellation.
+
