@@ -1,45 +1,96 @@
 # AI Salesman Hub
 
-This project is the backend and AI agent engine for the Voice Orb. It is designed to automatically sync with your cloned Vercel Storefront.
+This project is the backend and AI agent engine for the Voice Orb. It is designed to sync with the AI-KART storefront and can run on localhost, the local Wi-Fi/LAN, a public static IP, a DNS domain, or a tunnel.
 
 The core workflow:
 1. Crawls a public website from `CURRENT_URL` to build the catalog database.
-2. Starts the FastAPI backend, which handles chat and voice via an `ngrok` tunnel.
-3. Automatically updates the connected Vercel storefront with the new ngrok URL so the Voice Orb stays synced.
+2. Starts the FastAPI backend, which handles chat, voice, cart, checkout, and RAG status.
+3. Serves the storefront/admin site through a same-origin proxy so `/shopbot.js` and `/v1/*` route to the backend cleanly.
 
 Current target example:
 ```text
-https://vercelclonedwebsite.vercel.app/
+http://127.0.0.1:8000/
 ```
 
 ## Flow Diagram
 
 ![AI Salesman Plugin Flow](docs/ai_salesman_plugin_flow.svg)
 
-## Startup Workflow (Important)
+## Modular Startup Workflow
 
-Because this project uses the free tier of ngrok, your public backend URL changes every time you restart the server. Your live website needs to be updated with this new URL. 
+Use `run.py` to start the HTTPS proxy, storefront/admin, and backend:
 
-To start working, open **two separate terminal windows**:
-
-**Terminal 1:**
 ```powershell
 python run.py
 ```
-This starts the backend, crawls the catalog, and generates a new `ngrok` URL (saving it to `.env`). **Leave this running.**
 
-**Terminal 2:**
+Stop both processes:
+
 ```powershell
-python scripts/update_vercel.py
+Ctrl+C
 ```
-This script will:
-1. Detect your new ngrok URL from `.env`.
-2. Connect to your `vercel_cloned_website` project and update the `SHOPBOT_API_URL` environment variable.
-3. Automatically redeploy the site to production.
 
-Once Terminal 2 says the deployment is successful, you can close Terminal 2. Your live website is now connected to your active backend!
+Default intranet topology:
+```text
+Caddy HTTPS:      https://<this-pc-lan-ip> -> http://127.0.0.1:8000
+Storefront/admin: http://0.0.0.0:8000
+Backend:          http://127.0.0.1:8011
+Browser routes:   /shopbot.js and /v1/* proxy through the storefront
+```
 
-## Vercel Integration
+For intranet mode, open the printed `Wi-Fi/LAN URL` from other devices on the same Wi-Fi. Caddy uses a local self-signed certificate for the LAN IP, so browsers may show a warning. Accepting the warning is enough for internal testing; a real customer URL should use a domain with trusted HTTPS.
+
+Deployment mode is controlled by `.env`:
+
+```env
+DEPLOYMENT_MODE=intranet
+```
+
+Supported modes:
+- `intranet`: same Wi-Fi/LAN, no router port forwarding.
+- `public-ip`: direct public IP hosting after router/firewall forwarding is configured.
+- `domain`: DNS hostname with Caddy-managed HTTPS.
+- `custom`: tunnel or external HTTPS origin, such as Cloudflare Tunnel/ngrok.
+
+Switch modes with:
+
+```powershell
+.\scripts\set_deployment_mode.ps1 -Mode intranet
+.\scripts\set_deployment_mode.ps1 -Mode public-ip -Origin https://103.97.243.133
+.\scripts\set_deployment_mode.ps1 -Mode domain -Domain shop.example.com
+.\scripts\set_deployment_mode.ps1 -Mode custom -Origin https://example.trycloudflare.com
+```
+
+After switching, restart:
+
+```powershell
+python run.py
+```
+
+## Admin Panel
+
+The storefront admin panel is available at:
+
+```text
+/admin
+```
+
+Default development credentials:
+
+```text
+admin / admin
+```
+
+Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` before any real public exposure.
+
+Admin capabilities:
+- Add/update/delete catalog products.
+- Replenish stock.
+- View catalog/RAG sync status from `/v1/catalog/status`.
+
+The backend crawler treats `/api/products.json` as the authoritative storefront catalog when present, so admin edits are picked up by periodic RAG sync.
+
+## Legacy Vercel / Ngrok Integration
 
 The Vercel storefront (`Vercel_website`) has been customized with the following integrations:
 1. **Auto-Injection:** A custom script (`scripts/inject-shopbot.mjs`) automatically reads the `SHOPBOT_API_URL` environment variable and injects the Voice Orb `<script>` tag into all static HTML files during the Vercel build process.
@@ -61,19 +112,25 @@ This allows the crawler to directly reconstruct the exact JSON data structures t
 
 ```env
 OPENAI_API_KEY=
-DATABASE_URL=postgresql://shopbot:shopbot_password@localhost:5433/shopping_db
+DATABASE_URL=postgresql://shopbot:shopbot_password@localhost:5434/shopping_db
 HOST=0.0.0.0
 PORT=8001
 
-CURRENT_URL=https://vercelclonedwebsite.vercel.app/
-CURRENT_SITE_ID=https_demo_vercel_store
+CURRENT_URL=http://127.0.0.1:8000/
+DEPLOYMENT_MODE=intranet
+CURRENT_SITE_ID=ai_kart_main
 CRAWL_MAX_PAGES=1024
 CRAWL_MAX_DEPTH=100
+CRAWL_ON_STARTUP=true
 
 MANUAL_WIDGET_SCRIPT=
 PUBLIC_WIDGET_SCRIPT_URL=
 PUBLIC_API_URL=
+PUBLIC_STOREFRONT_ORIGIN=
+PUBLIC_HTTPS_ORIGIN=
 ```
+
+`CURRENT_SITE_ID` is a tenant/catalog namespace used by the backend database and RAG sync. The current value `ai_kart_main` is not a live URL and does not mean the old storefront owner is still connected. If you rename it later, update `CURRENT_SITE_ID`, `AI_DEFAULT_SITE_ID`, `DEFAULT_SITE_ID`, and the `site=` query parameter together so the crawler, widget, and RAG schema stay aligned.
 
 ## Local Setup
 

@@ -1,75 +1,155 @@
 export function injectStyles() {
   const style = document.createElement("style");
   style.textContent = `
-    #shopbot-widget { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 999999; font-family: system-ui, -apple-system, sans-serif; }
+    #shopbot-widget {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 999999;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #161615;
+      letter-spacing: 0;
+    }
     #shopbot-btn {
-      width: 60px; height: 60px; border-radius: 50%;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      background: rgba(10, 10, 10, 0.85);
-      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3), inset 0 0 15px rgba(255, 255, 255, 0.1);
-      color: white; display: flex; align-items: center; justify-content: center;
-      cursor: pointer; transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+      width: 62px;
+      height: 62px;
+      border-radius: 50%;
+      border: 1px solid rgba(22, 22, 21, 0.12);
+      background: #161615;
+      box-shadow: 0 18px 38px rgba(22, 22, 21, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: transform 0.22s ease, box-shadow 0.22s ease, background 0.22s ease;
       outline: none;
     }
     #shopbot-btn:hover {
-      transform: scale(1.05) translateY(-3px);
-      box-shadow: 0 15px 40px rgba(0,0,0,0.4), 0 0 20px rgba(139,92,246,0.4), inset 0 0 15px rgba(255,255,255,0.2);
-      border-color: rgba(255,255,255,0.4);
+      transform: translateY(-3px);
+      box-shadow: 0 22px 46px rgba(22, 22, 21, 0.28), 0 0 0 6px rgba(21, 93, 252, 0.1);
+      background: #242421;
     }
     #shopbot-btn.recording {
-      background: rgba(239, 68, 68, 0.85);
-      border-color: rgba(255, 255, 255, 0.4);
-      animation: pulse 1.5s infinite cubic-bezier(0.66, 0, 0, 1);
+      background: #a76335;
+      animation: shopbotPulse 1.5s infinite cubic-bezier(0.66, 0, 0, 1);
     }
     #shopbot-chat {
-      position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); width: 320px;
-      background: rgba(10, 10, 10, 0.85);
-      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      border-radius: 16px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.3), inset 0 0 15px rgba(255,255,255,0.05);
-      padding: 16px; display: none; flex-direction: column; gap: 12px;
-      color: white;
+      position: absolute;
+      bottom: 82px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(380px, calc(100vw - 28px));
+      max-height: min(520px, calc(100vh - 120px));
+      background: rgba(247, 247, 243, 0.96);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      border: 1px solid rgba(22, 22, 21, 0.12);
+      border-radius: 8px;
+      box-shadow: 0 24px 72px rgba(22, 22, 21, 0.2);
+      padding: 14px;
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+      color: #161615;
     }
     #shopbot-chat.visible { display: flex; }
-    .shopbot-msg { padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.5; }
-    .shopbot-msg.user { background: rgba(255, 255, 255, 0.1); color: white; align-self: flex-end; border-bottom-right-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.1); }
-    .shopbot-msg.ai { background: rgba(139, 92, 246, 0.8); color: white; align-self: flex-start; border-bottom-left-radius: 4px; border: 1px solid rgba(255, 255, 255, 0.2); }
-    #shopbot-status {
+    .shopbot-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid rgba(22, 22, 21, 0.1);
+    }
+    .shopbot-header strong {
+      display: block;
+      color: #161615;
       font-size: 14px;
-      color: rgba(255, 255, 255, 0.7);
+      line-height: 1.2;
+    }
+    .shopbot-kicker {
+      display: block;
+      margin-bottom: 2px;
+      color: #a76335;
+      font-size: 11px;
+      font-weight: 760;
+      line-height: 1;
+    }
+    .shopbot-live-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #155dfc;
+      box-shadow: 0 0 0 5px rgba(21, 93, 252, 0.12);
+      flex: 0 0 auto;
+    }
+    #shopbot-msgs {
+      padding-right: 2px;
+    }
+    .shopbot-msg {
+      max-width: 88%;
+      padding: 11px 13px;
+      border-radius: 8px;
+      font-size: 14px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+    .shopbot-msg.user {
+      background: #161615;
+      color: #fff;
+      align-self: flex-end;
+      border: 1px solid rgba(22, 22, 21, 0.12);
+    }
+    .shopbot-msg.ai {
+      background: #ffffff;
+      color: #161615;
+      align-self: flex-start;
+      border: 1px solid rgba(22, 22, 21, 0.1);
+      box-shadow: 0 8px 20px rgba(22, 22, 21, 0.06);
+    }
+    #shopbot-status {
+      font-size: 12px;
+      color: #686660;
       text-align: center;
-      margin-top: 6px;
-      transition: all 0.3s ease;
-      font-weight: 500;
+      min-height: 18px;
+      margin-top: 2px;
+      transition: color 0.2s ease;
+      font-weight: 650;
     }
     #shopbot-status.listening {
-      font-size: 18px;
-      color: #f87171; /* Brighter red */
-      font-weight: 600;
-      text-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
-      animation: textPulse 1.5s infinite ease-in-out;
+      color: #a76335;
+      animation: shopbotTextPulse 1.5s infinite ease-in-out;
     }
     #shopbot-status.processing {
-      font-size: 16px;
-      color: #c084fc; /* Purple */
-      font-weight: 600;
-      animation: textPulse 1.5s infinite ease-in-out;
+      color: #155dfc;
+      animation: shopbotTextPulse 1.5s infinite ease-in-out;
     }
     #shopbot-status.ready {
-      color: #4ade80; /* Green */
+      color: #596652;
     }
     #shopbot-status.error {
-      color: #f87171; /* Red */
-      font-weight: 600;
+      color: #a76335;
     }
-    @keyframes textPulse {
-      0%, 100% { opacity: 0.7; transform: scale(0.98); }
-      50% { opacity: 1; transform: scale(1.02); }
+    @keyframes shopbotTextPulse {
+      0%, 100% { opacity: 0.68; }
+      50% { opacity: 1; }
     }
-    @keyframes pulse {
-      to { box-shadow: 0 0 0 20px rgba(239, 68, 68, 0); }
+    @keyframes shopbotPulse {
+      to { box-shadow: 0 0 0 20px rgba(167, 99, 53, 0); }
+    }
+    @media (max-width: 520px) {
+      #shopbot-widget {
+        bottom: 14px;
+      }
+      #shopbot-btn {
+        width: 58px;
+        height: 58px;
+      }
+      #shopbot-chat {
+        bottom: 76px;
+      }
     }
   `;
   document.head.appendChild(style);

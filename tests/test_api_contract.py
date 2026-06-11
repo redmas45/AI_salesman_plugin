@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from api.main import _parse_conversation_history
-from api.models import ShopResponse
+from api.models import ProductResponse, ShopResponse
 
 
 def _base_response(**overrides):
@@ -73,3 +73,19 @@ def test_conversation_history_parser_drops_unsafe_roles():
         {"role": "user", "content": "show me red shoes"},
         {"role": "assistant", "content": "Sure."},
     ]
+
+
+def test_product_response_serializes_large_ids_as_strings():
+    product = ProductResponse(
+        id=2467198976006386294,
+        name="NOVA Slip-On Shoes",
+        brand="NOVA",
+        category_name="Footwear",
+        description="Comfortable slip-on shoes.",
+        price=120.0,
+        rating=4.8,
+        review_count=18,
+        stock=12,
+    )
+
+    assert product.model_dump(mode="json")["id"] == "2467198976006386294"

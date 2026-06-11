@@ -62,13 +62,36 @@ def generate_synthetic_catalog(base_products, target_count):
         
     return synthetic
 
+
+def get_or_create_category_id(conn, category_id, name: str, slug: str) -> int:
+    """Return a category ID, reusing existing rows when unique keys already exist."""
+    existing = conn.execute(
+        "SELECT id FROM categories WHERE name = %s OR slug = %s LIMIT 1",
+        (name, slug),
+    ).fetchone()
+    if existing:
+        return existing["id"]
+
+    row = conn.execute(
+        """
+        INSERT INTO categories (id, name, slug)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (id) DO UPDATE
+        SET name = EXCLUDED.name,
+            slug = EXCLUDED.slug
+        RETURNING id
+        """,
+        (category_id, name, slug),
+    ).fetchone()
+    return row["id"]
+
 def seed(site_ids=None):
     """Read products.json and seed the PostgreSQL database for the configured sites."""
     from db.database import get_db, init_tenant_schema
     from agent.ingestion import _stable_id, _vectorize
 
     if site_ids is None:
-        site_ids = ["site_1", "site_2", "site_3", "site_4", "https_demo_vercel_store"]
+        site_ids = ["site_1", "site_2", "site_3", "site_4", "ai_kart_main"]
 
     json_path = Path(__file__).parent.parent / "data" / "products.json"
     if not json_path.exists():
@@ -125,11 +148,7 @@ def seed(site_ids=None):
             for cat_slug in categories:
                 cat_name = format_category_name(cat_slug)
                 cat_id = _stable_id(site_id, cat_name, cat_slug)
-                conn.execute(
-                    "INSERT INTO categories (id, name, slug) VALUES (%s, %s, %s) ON CONFLICT (id) DO NOTHING",
-                    (cat_id, cat_name, cat_slug),
-                )
-                cat_id_map[cat_slug] = cat_id
+                cat_id_map[cat_slug] = get_or_create_category_id(conn, cat_id, cat_name, cat_slug)
 
             # Get base products for this site's categories
             base_site_products = [p for p in all_products if p["category"] in categories]

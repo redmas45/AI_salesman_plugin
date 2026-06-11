@@ -33,6 +33,11 @@ nosetests.xml
 coverage.xml
 *.cover
 *.log
+*.pid
+logs/
+data/*/crawl.json
+.local/
+deploy/certs/
 
 # IDEs
 .idea/

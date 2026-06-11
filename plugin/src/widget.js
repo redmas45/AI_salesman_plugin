@@ -3,6 +3,13 @@ export function initWidget() {
   container.id = "shopbot-widget";
   container.innerHTML = `
     <div id="shopbot-chat">
+      <div class="shopbot-header">
+        <div>
+          <span class="shopbot-kicker">AI-KART</span>
+          <strong>Shopping Assistant</strong>
+        </div>
+        <span class="shopbot-live-dot" aria-hidden="true"></span>
+      </div>
       <div id="shopbot-msgs" style="max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;"></div>
       <div id="shopbot-status">Ready</div>
     </div>

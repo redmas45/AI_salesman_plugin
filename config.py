@@ -41,12 +41,18 @@ VOICE_ORB_API_URL: str = os.getenv("VOICE_ORB_API_URL", "").strip()
 
 DATABASE_URL: str = os.getenv(
     "DATABASE_URL",
-    "postgresql://shopbot:shopbot_password@localhost:5433/shopping_db",
+    "postgresql://shopbot:shopbot_password@localhost:5434/shopping_db",
 )
 BASE_DIR = Path(__file__).parent
 
 CRAWL_MAX_PAGES: int = int(os.getenv("CRAWL_MAX_PAGES", "60"))
 CRAWL_MAX_DEPTH: int = int(os.getenv("CRAWL_MAX_DEPTH", "3"))
+CRAWL_ON_STARTUP: bool = os.getenv("CRAWL_ON_STARTUP", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
 MAX_TRANSCRIPT_CHARS: int = 2000
 MAX_RESPONSE_CHARS: int = 3000

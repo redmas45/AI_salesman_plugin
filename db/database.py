@@ -19,6 +19,27 @@ import config
 _local = threading.local()
 
 
+class InvalidProductIdError(ValueError):
+    """Raised when a product identifier cannot be safely converted."""
+
+
+class ProductNotFoundError(LookupError):
+    """Raised when a cart operation targets a missing product."""
+
+
+def coerce_product_id(value: int | str) -> int:
+    """Return a positive integer product ID or raise a domain-specific error."""
+    if isinstance(value, bool):
+        raise InvalidProductIdError("Product ID must be a positive integer.")
+    try:
+        product_id = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise InvalidProductIdError("Product ID must be a positive integer.") from None
+    if product_id <= 0:
+        raise InvalidProductIdError("Product ID must be a positive integer.")
+    return product_id
+
+
 def _get_connection() -> psycopg.Connection:
     """Return a thread-local Postgres connection, creating one if needed."""
     if not hasattr(_local, "conn") or _local.conn is None or _local.conn.closed:
@@ -119,7 +140,10 @@ def get_products_by_category(site_id: str, category_name: str, limit: int = 50) 
 
 def product_exists(site_id: str, product_id: int | str) -> bool:
     """Check whether a product ID exists and is active."""
-    product_id = int(product_id)
+    try:
+        product_id = coerce_product_id(product_id)
+    except InvalidProductIdError:
+        return False
     with get_db(site_id) as conn:
         row = conn.execute(
             "SELECT 1 FROM products WHERE id = %s AND is_active = 1 AND stock > 0", (product_id,)
@@ -216,6 +240,29 @@ def catalog_source_preview(site_id: str, source_name: str, limit: int = 10) -> l
     return [dict(row) for row in rows]
 
 
+def catalog_sync_history(site_id: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Return recent catalog sync runs for an admin/status surface."""
+    init_tenant_schema(site_id)
+    with get_db(site_id) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                source_name,
+                source_count,
+                changed_count,
+                deactivated_count,
+                vectorized_count,
+                created_at::TEXT AS created_at
+            FROM catalog_sync_runs
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def tenant_catalog_preview(site_id: str, limit: int = 10) -> list[dict[str, Any]]:
     """Return a small preview from the active vectorized catalog table."""
     init_tenant_schema(site_id)
@@ -262,7 +309,11 @@ def get_cart_items(site_id: str) -> list[dict]:
 
 def add_to_cart(site_id: str, product_id: int | str, quantity: int = 1) -> int:
     """Add a product to the cart or increment quantity if it exists."""
-    product_id = int(product_id)  # Ensure native int for DB
+    product_id = coerce_product_id(product_id)
+    if quantity <= 0:
+        raise ValueError("Quantity must be positive.")
+    if not product_exists(site_id, product_id):
+        raise ProductNotFoundError(f"Product {product_id} was not found.")
     with get_db(site_id) as conn:
         row = conn.execute(
             "SELECT id, quantity FROM cart WHERE product_id = %s", (product_id,)
@@ -283,7 +334,10 @@ def add_to_cart(site_id: str, product_id: int | str, quantity: int = 1) -> int:
 
 def update_cart_quantity(site_id: str, product_id: int | str, quantity: int) -> bool:
     """Update quantity of a product in the cart. Remove if <= 0."""
-    product_id = int(product_id)
+    try:
+        product_id = coerce_product_id(product_id)
+    except InvalidProductIdError:
+        return False
     with get_db(site_id) as conn:
         row = conn.execute(
             "SELECT id FROM cart WHERE product_id = %s", (product_id,)

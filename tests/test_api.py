@@ -56,6 +56,27 @@ class TestProductsEndpoint:
         for p in products:
             assert p["price"] > 0
 
+    def test_product_ids_are_json_strings(self, client):
+        products = client.get("/v1/products").json()
+        assert products
+        assert isinstance(products[0]["id"], str)
+
+
+class TestCartEndpoint:
+    def test_cart_add_rejects_malformed_product_id(self, client):
+        res = client.post(
+            "/v1/cart/add",
+            json={"site_id": "site_1", "product_id": "gid://shopify/Product/9401822679353", "quantity": 1},
+        )
+        assert res.status_code == 400
+
+    def test_cart_add_returns_404_for_missing_numeric_product_id(self, client):
+        res = client.post(
+            "/v1/cart/add",
+            json={"site_id": "site_1", "product_id": "999999999999999999", "quantity": 1},
+        )
+        assert res.status_code == 404
+
 
 class TestShopEndpoint:
     def test_text_input_returns_response(self, client):

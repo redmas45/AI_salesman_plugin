@@ -39,11 +39,19 @@ from api.models import (
     ShopResponse,
 )
 from db.database import (
+    InvalidProductIdError,
+    ProductNotFoundError,
     add_to_cart,
+    catalog_source_preview,
+    catalog_source_stats,
+    catalog_sync_history,
     clear_cart,
+    coerce_product_id,
     get_all_products,
     get_cart_items,
     get_user_profile,
+    tenant_catalog_preview,
+    tenant_catalog_stats,
     remove_from_cart,
     update_user_profile,
 )
@@ -74,28 +82,38 @@ async def lifespan(app: FastAPI):
     from agent.ingestion import sync_web_crawl
     import concurrent.futures
     
+    async def run_crawl_once(target_url: str, site_id: str, *, initial: bool = False) -> None:
+        phase = "startup" if initial else "periodic"
+        logger.info("Starting %s crawl for %s...", phase, target_url)
+        try:
+            loop = asyncio.get_running_loop()
+            func = functools.partial(
+                sync_web_crawl,
+                target_url,
+                max_pages=config.CRAWL_MAX_PAGES,
+                max_depth=config.CRAWL_MAX_DEPTH,
+                site_id=site_id,
+                reconcile_missing=True,
+                source_name="custom_url_crawler"
+            )
+            with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
+                await loop.run_in_executor(executor, func)
+            logger.info("%s crawl completed for %s.", phase.capitalize(), target_url)
+        except Exception as e:
+            logger.error("%s crawl failed: %s", phase.capitalize(), e)
+
     async def periodic_crawl():
         target_url = config.CURRENT_URL
         site_id = config.CURRENT_SITE_ID or config.DEFAULT_SITE_ID
         if target_url:
             while True:
                 await asyncio.sleep(120)
-                logger.info("Starting periodic 2-minute crawl for %s...", target_url)
-                try:
-                    loop = asyncio.get_running_loop()
-                    func = functools.partial(
-                        sync_web_crawl,
-                        target_url,
-                        max_pages=config.CRAWL_MAX_PAGES,
-                        max_depth=config.CRAWL_MAX_DEPTH,
-                        site_id=site_id,
-                        reconcile_missing=True,
-                        source_name="custom_url_crawler"
-                    )
-                    with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
-                        await loop.run_in_executor(executor, func)
-                except Exception as e:
-                    logger.error("Periodic crawl failed: %s", e)
+                await run_crawl_once(target_url, site_id)
+
+    startup_target_url = config.CURRENT_URL
+    startup_site_id = config.CURRENT_SITE_ID or config.DEFAULT_SITE_ID
+    if startup_target_url and config.CRAWL_ON_STARTUP:
+        await run_crawl_once(startup_target_url, startup_site_id, initial=True)
 
     crawler_task = asyncio.create_task(periodic_crawl())
 
@@ -361,14 +379,13 @@ async def list_products(
 async def list_products_by_ids(ids: str, site_id: str = config.DEFAULT_SITE_ID):
     """Fetch specific products by a comma-separated list of IDs."""
     try:
-        # Parse IDs as Python ints (Python handles arbitrary-precision integers correctly)
         id_list = []
         for raw_id in ids.split(","):
             raw_id = raw_id.strip().strip('"')
             if raw_id:
                 try:
-                    id_list.append(int(raw_id))
-                except ValueError:
+                    id_list.append(coerce_product_id(raw_id))
+                except InvalidProductIdError:
                     continue
         from db.database import get_products_by_ids
 
@@ -392,6 +409,27 @@ async def list_categories(site_id: str = config.DEFAULT_SITE_ID):
         raise HTTPException(status_code=500, detail="Failed to fetch categories.")
 
 
+@app.get("/v1/catalog/status", tags=["Products"])
+async def catalog_status(site_id: str = config.DEFAULT_SITE_ID):
+    """Return catalog/RAG sync status for the storefront admin panel."""
+    try:
+        source_stats = catalog_source_stats(site_id)
+        preview_source = source_stats[0]["source_name"] if source_stats else "custom_url_crawler"
+        return {
+            "site_id": site_id,
+            "catalog": tenant_catalog_stats(site_id),
+            "sources": source_stats,
+            "recent_sync_runs": catalog_sync_history(site_id, limit=8),
+            "catalog_preview": tenant_catalog_preview(site_id, limit=12),
+            "source_preview": catalog_source_preview(site_id, preview_source, limit=12)
+            if source_stats
+            else [],
+        }
+    except Exception as exc:
+        logger.error("GET /v1/catalog/status failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to fetch catalog status.")
+
+
 @app.get("/v1/cart", response_model=list[CartItemResponse], tags=["Cart"])
 async def get_cart(site_id: str = config.DEFAULT_SITE_ID):
     """Return all items currently in the shopping cart."""
@@ -409,6 +447,12 @@ async def api_add_to_cart(req: AddToCartRequest):
     try:
         cart_id = add_to_cart(req.site_id, req.product_id, req.quantity)
         return {"status": "ok", "cart_id": cart_id}
+    except InvalidProductIdError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ProductNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         logger.error("POST /v1/cart/add failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to add to cart.")

@@ -6,6 +6,11 @@ import { processAudio } from "./api";
 // Initialize UI
 window.__shopbot_identifier = "voice-orb";
 function boot() {
+  if (window.__shopbotBooted || document.getElementById("shopbot-widget")) {
+    return;
+  }
+  window.__shopbotBooted = true;
+
   injectStyles();
   const elements = initWidget();
 

@@ -4,7 +4,7 @@ Pydantic models for API request/response validation.
 
 from typing import Any, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class UIAction(BaseModel):
@@ -92,7 +92,7 @@ class ShopResponse(BaseModel):
 class ProductResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    id: Union[int, str]
+    id: str
     name: str
     brand: str
     category_name: str
@@ -107,6 +107,11 @@ class ProductResponse(BaseModel):
     stock: int
     image_url: Optional[str] = None
 
+    @field_validator("id", mode="before")
+    @classmethod
+    def serialize_id_as_string(cls, value: Any) -> str:
+        return str(value)
+
 class HealthResponse(BaseModel):
     status: str
     version: str = "1.0.0"
@@ -115,7 +120,7 @@ class HealthResponse(BaseModel):
 class AddToCartRequest(BaseModel):
     site_id: str = "site_1"
     product_id: Union[int, str]
-    quantity: int = 1
+    quantity: int = Field(default=1, ge=1, le=99)
 
 
 class CartItemResponse(ProductResponse):

@@ -346,7 +346,7 @@ def _normalize_product_row(row: dict[str, Any], fallback_category: str, source_u
         try:
             product_id = int(raw_id)
         except (TypeError, ValueError):
-            product_id = _stable_id(source_url, str(raw_id), name)
+            product_id = _stable_id(source_url, str(raw_id))
 
     variant = row.get("variant_id")
     variant_id = int(_to_float(variant)) if variant not in (None, "") else None
@@ -384,6 +384,75 @@ def _normalize_product_row(row: dict[str, Any], fallback_category: str, source_u
         "image_url": image,
         "is_active": is_active,
     }
+
+
+def _normalize_api_catalog_product(raw: dict[str, Any], api_url: str) -> dict[str, Any] | None:
+    """Normalize the storefront's JSON catalog product shape for RAG ingestion."""
+    categories = raw.get("categories") if isinstance(raw.get("categories"), list) else []
+    category = _first(raw.get("category"), categories[0] if categories else None, "Products")
+    stock = raw.get("stock")
+    in_stock = raw.get("in_stock")
+    if stock in (None, ""):
+        stock = 100 if in_stock is not False else 0
+
+    tags = list(categories)
+    for tag in _to_tags(raw.get("tags")):
+        if tag not in tags:
+            tags.append(tag)
+
+    return _normalize_product_row(
+        {
+            "id": _first(raw.get("rag_id"), raw.get("id"), raw.get("handle"), raw.get("sku")),
+            "name": _first(raw.get("name"), raw.get("title"), raw.get("handle")),
+            "description": _first(raw.get("description"), raw.get("summary"), raw.get("name"), raw.get("title")),
+            "category": category,
+            "brand": _first(raw.get("brand"), raw.get("vendor"), "Unknown Brand"),
+            "price": _first(raw.get("price"), raw.get("amount"), raw.get("cost"), 0),
+            "original_price": _first(raw.get("original_price"), raw.get("compare_at_price"), raw.get("price"), 0),
+            "image": _first(raw.get("image_url"), raw.get("image"), raw.get("thumbnail")),
+            "stock": stock,
+            "tags": tags,
+            "is_active": 1 if in_stock is not False and int(_to_float(stock)) > 0 else 0,
+        },
+        fallback_category=_clean_text(category) or "Products",
+        source_url=api_url,
+    )
+
+
+def _catalog_endpoint_for(seed_url: str) -> str:
+    parsed = urlparse(seed_url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    return urljoin(base, "/api/products.json")
+
+
+async def _fetch_api_catalog_products(seed_url: str, timeout: int) -> list[dict[str, Any]]:
+    """Fetch `/api/products.json` when a storefront exposes an authoritative catalog."""
+    api_url = _catalog_endpoint_for(seed_url)
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
+            response = await client.get(api_url, headers={"Accept": "application/json"})
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:
+        logger.info("No API catalog available at %s: %s", api_url, exc)
+        return []
+
+    raw_products = payload.get("products") if isinstance(payload, dict) else payload
+    if not isinstance(raw_products, list):
+        logger.warning("API catalog at %s did not contain a product list.", api_url)
+        return []
+
+    products = []
+    for raw in raw_products:
+        if not isinstance(raw, dict):
+            continue
+        normalized = _normalize_api_catalog_product(raw, api_url)
+        if normalized:
+            products.append(normalized)
+
+    deduped = _dedupe_products(products)
+    logger.info("API catalog at %s returned %d products.", api_url, len(deduped))
+    return deduped
 
 
 class _HtmlHarvest(HTMLParser):
@@ -872,60 +941,66 @@ async def async_web_crawl(
 
     queue: deque[tuple[str, int]] = deque([(seed, 0)])
     visited: set[str] = set()
-    extracted_products: list[dict[str, Any]] = []
+    api_catalog_products = await _fetch_api_catalog_products(seed, timeout)
+    extracted_products: list[dict[str, Any]] = list(api_catalog_products)
     pages_seen = 0
     product_links: set[str] = set()
     stopped_by_limit = False
 
-    async with AsyncWebCrawler(verbose=False) as crawler:
-        while queue and len(visited) < max_pages:
-            page_url, depth = queue.popleft()
-            page_url = urldefrag(page_url)[0]
-            if page_url in visited:
-                continue
-            visited.add(page_url)
-
-            result = await crawler.arun(url=page_url)
-            if not result.success:
-                continue
-
-            text = result.html
-            if not text:
-                continue
-
-            parser = _HtmlHarvest()
-            parser.feed(text)
-            pages_seen += 1
-
-            for link in parser.links:
-                next_url = urldefrag(urljoin(page_url, link))[0]
-                parsed = urlparse(next_url)
-                if not parsed.netloc:
+    if not api_catalog_products:
+        async with AsyncWebCrawler(verbose=False) as crawler:
+            while queue and len(visited) < max_pages:
+                page_url, depth = queue.popleft()
+                page_url = urldefrag(page_url)[0]
+                if page_url in visited:
                     continue
-                if parsed.scheme != allowed_scheme or parsed.netloc.lower() != allowed_host:
-                    continue
-                if next_url in visited or depth >= max_depth:
-                    continue
-                if "/admin" in next_url.lower():
-                    continue
-                if next_url.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".css", ".js", ".pdf", ".xml")):
-                    continue
-                queue.append((next_url, depth + 1))
+                visited.add(page_url)
 
-            candidates = _build_candidates_from_html(page_url, text)
-            for link in parser.links:
-                if link and "/product/" in link.lower():
-                    product_links.add(urldefrag(urljoin(page_url, link))[0])
-            extracted_products.extend(candidates)
+                result = await crawler.arun(url=page_url)
+                if not result.success:
+                    continue
 
-        if len(visited) >= max_pages:
-            stopped_by_limit = True
+                text = result.html
+                if not text:
+                    continue
+
+                parser = _HtmlHarvest()
+                parser.feed(text)
+                pages_seen += 1
+
+                for link in parser.links:
+                    next_url = urldefrag(urljoin(page_url, link))[0]
+                    parsed = urlparse(next_url)
+                    if not parsed.netloc:
+                        continue
+                    if parsed.scheme != allowed_scheme or parsed.netloc.lower() != allowed_host:
+                        continue
+                    if next_url in visited or depth >= max_depth:
+                        continue
+                    if "/admin" in next_url.lower():
+                        continue
+                    if next_url.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".css", ".js", ".pdf", ".xml")):
+                        continue
+                    queue.append((next_url, depth + 1))
+
+                candidates = _build_candidates_from_html(page_url, text)
+                for link in parser.links:
+                    if link and "/product/" in link.lower():
+                        product_links.add(urldefrag(urljoin(page_url, link))[0])
+                extracted_products.extend(candidates)
+
+            if len(visited) >= max_pages:
+                stopped_by_limit = True
 
     if not extracted_products:
         logger.warning("Crawler did not extract any product-like records.")
 
     deduped_products = _dedupe_products(extracted_products)
-    print(f"Crawler summary: visited {pages_seen} pages, extracted {len(extracted_products)} raw candidates, deduped to {len(deduped_products)}.")
+    source_label = "api catalog" if api_catalog_products else "html crawl"
+    print(
+        f"Crawler summary ({source_label}): visited {pages_seen} pages, "
+        f"extracted {len(extracted_products)} raw candidates, deduped to {len(deduped_products)}."
+    )
 
     import json
     from pathlib import Path
