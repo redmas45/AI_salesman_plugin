@@ -35,10 +35,12 @@ export async function processAudio(blob, elements, callbacks, conversationHistor
     if (data.ui_actions && data.ui_actions.length > 0) {
       executeActions(data.ui_actions);
     }
+    callbacks.onComplete?.(data);
 
   } catch (err) {
     console.error(err);
     callbacks.onStatusChange("error");
+    callbacks.onComplete?.({ error: String(err) });
   }
 }
 

@@ -15,16 +15,32 @@ function boot() {
   const elements = initWidget();
 
   // Status Callback
+  let clearTimer = null;
+  function scheduleVisibleReset(delayMs = 2400) {
+    if (clearTimer) window.clearTimeout(clearTimer);
+    clearTimer = window.setTimeout(() => {
+      elements.msgs.innerHTML = "";
+      elements.chat.classList.remove("visible");
+      clearTimer = null;
+    }, delayMs);
+  }
+
   function handleStatusChange(statusStr) {
     elements.status.className = ""; // Reset all classes
     if (statusStr === "recording") {
+      if (clearTimer) {
+        window.clearTimeout(clearTimer);
+        clearTimer = null;
+      }
+      elements.msgs.innerHTML = "";
       elements.btn.classList.add("recording");
       elements.chat.classList.add("visible");
       elements.status.innerText = "Listening...";
       elements.status.classList.add("listening");
     } else if (statusStr === "processing") {
       elements.btn.classList.remove("recording");
-      elements.status.innerText = "Processing...";
+      elements.chat.classList.add("visible");
+      elements.status.innerText = "Analyzing...";
       elements.status.classList.add("processing");
     } else if (statusStr === "ready") {
       elements.status.innerText = "Ready";
@@ -74,7 +90,8 @@ function boot() {
           conversationHistory.shift();
         }
       },
-      onStatusChange: handleStatusChange
+      onStatusChange: handleStatusChange,
+      onComplete: () => scheduleVisibleReset()
     }, conversationHistory);
   }
 

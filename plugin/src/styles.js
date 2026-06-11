@@ -6,7 +6,7 @@ export function injectStyles() {
       bottom: 20px;
       left: 50%;
       transform: translateX(-50%);
-      z-index: 999999;
+      z-index: 2147483647;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: #161615;
       letter-spacing: 0;

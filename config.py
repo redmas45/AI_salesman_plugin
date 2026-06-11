@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
 
-OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+OPENAI_API_KEY: str = (os.getenv("OPENAI_API_KEY", "") or os.getenv("\ufeffOPENAI_API_KEY", "")).strip()
 
 STT_MODEL: str = os.getenv("STT_MODEL", "gpt-4o-mini-transcribe")
 STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "").strip()

@@ -14,6 +14,7 @@ Pipeline:
 
 import json
 import logging
+import re
 import time
 from typing import Any, Generator, Optional
 
@@ -48,6 +49,14 @@ def print(*args, **kwargs):
         
         file.write(safe_text + end)
         file.flush()
+
+
+def _ai_log(label: str, value: Any) -> None:
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    text = " ".join(str(text).split())
+    line = f"AI_CONVO | {label}: {text[:2000]}"
+    logger.info(line)
+    print(line, flush=True)
 
 
 def run(
@@ -96,6 +105,7 @@ def run(
         return _error_response("No audio or text input provided.", timings)
 
     logger.info("PIPELINE | transcript: %r", transcript[:120])
+    _ai_log("user", transcript)
     print(f"\n{'=' * 60}")
     print(f'🎤 STT HEARD: "{transcript}"')
     print(f"{'=' * 60}")
@@ -107,6 +117,9 @@ def run(
     except InputGuardrailError as exc:
         return _guardrail_response(str(exc), transcript, skip_tts, timings)
     timings["guardrail_input_ms"] = _ms(t)
+
+    if _is_simple_greeting(safe_transcript):
+        return _greeting_response(transcript, skip_tts, timings, t0)
 
     if _is_inventory_stats_query(safe_transcript):
         return _inventory_stats_response(site_id, transcript, skip_tts, timings, t0)
@@ -268,6 +281,8 @@ def run(
     print(f"{'=' * 60}\n")
 
     final_actions = validated.get("ui_actions", [])
+    _ai_log("assistant", validated["response_text"])
+    _ai_log("actions", final_actions)
     for a in final_actions:
         if a.get("action") == "ADD_TO_CART":
             pid = a.get("params", {}).get("product_id")
@@ -317,6 +332,7 @@ def run_stream(
         yield {"event": "error", "data": {"error": "No audio or text input provided."}}
         return
 
+    _ai_log("user", transcript)
     yield {"event": "transcript", "data": {"transcript": transcript}}
 
     # Stage 2: Input Guardrails
@@ -333,6 +349,18 @@ def run_stream(
             except Exception:
                 pass
         yield {"event": "audio", "data": {"response_text": msg, "audio_b64": audio_b64}}
+        return
+
+    if _is_simple_greeting(safe_transcript):
+        result = _greeting_response(transcript, skip_tts, {}, time.perf_counter())
+        yield {"event": "actions", "data": {"ui_actions": []}}
+        yield {
+            "event": "audio",
+            "data": {
+                "response_text": result["response_text"],
+                "audio_b64": result["audio_b64"],
+            },
+        }
         return
 
     if _is_inventory_stats_query(safe_transcript):
@@ -456,6 +484,8 @@ def run_stream(
 
     # Inject variant_id for ADD_TO_CART actions so the frontend can hit Shopify's native Cart API
     final_actions = validated.get("ui_actions", [])
+    _ai_log("assistant", validated["response_text"])
+    _ai_log("actions", final_actions)
     for a in final_actions:
         if a.get("action") == "ADD_TO_CART":
             pid = a.get("params", {}).get("product_id")
@@ -512,6 +542,15 @@ def _promote_comparison_action(response: dict[str, Any], transcript: str) -> Non
                 return
 
 
+def _is_simple_greeting(transcript: str) -> bool:
+    text = re.sub(r"[^a-z\s]", " ", (transcript or "").lower())
+    words = [word for word in text.split() if word]
+    if not words or len(words) > 5:
+        return False
+    greeting_words = {"hello", "hi", "hey", "namaste", "yo"}
+    return any(word in greeting_words for word in words)
+
+
 def _is_inventory_stats_query(transcript: str) -> bool:
     text = (transcript or "").lower()
     has_inventory_word = any(
@@ -523,6 +562,38 @@ def _is_inventory_stats_query(transcript: str) -> bool:
         for token in ("how many", "count", "total", "number", "available", "right now")
     )
     return has_inventory_word and has_count_word
+
+
+def _greeting_response(
+    transcript: str,
+    skip_tts: bool,
+    timings: dict[str, float],
+    start_time: float,
+) -> dict[str, Any]:
+    response_text = "Hi, I am ready to help. Tell me what you want to find today."
+    _ai_log("assistant", response_text)
+    _ai_log("actions", [])
+
+    audio_b64 = ""
+    if not skip_tts:
+        t = time.perf_counter()
+        try:
+            audio_b64 = tts.synthesize_b64(response_text)
+        except RuntimeError as exc:
+            logger.error("PIPELINE | TTS failed for greeting: %s", exc)
+        timings["tts_ms"] = _ms(t)
+
+    timings["total_ms"] = _ms(start_time)
+    logger.info("PIPELINE | Greeting answered in %.0fms", timings["total_ms"])
+    return {
+        "transcript": transcript,
+        "response_text": response_text,
+        "intent": "greeting",
+        "confidence": 1.0,
+        "ui_actions": [],
+        "audio_b64": audio_b64,
+        "latency_ms": timings,
+    }
 
 
 def _inventory_stats_response(

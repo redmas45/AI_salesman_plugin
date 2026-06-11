@@ -9,6 +9,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -126,6 +127,7 @@ class RuntimeOrigin:
 
 
 services: list[Service] = []
+log_tail_stop = threading.Event()
 
 
 def main() -> None:
@@ -136,10 +138,16 @@ def main() -> None:
     stop_previous_supervisor()
     write_pid_file(PID_FILE, os.getpid())
 
-    storefront_port = int(os.getenv("STOREFRONT_PORT", "8000"))
-    backend_port = int(os.getenv("BACKEND_PORT", os.getenv("SHOPBOT_BACKEND_PORT", "8011")))
-    https_port = int(os.getenv("HTTPS_PORT", "443"))
-    http_redirect_port = int(os.getenv("HTTP_REDIRECT_PORT", "80"))
+    deployment_mode = current_deployment_mode()
+    default_storefront_port = "8584" if deployment_mode == "intranet" else "8000"
+    default_backend_port = "8585" if deployment_mode == "intranet" else "8011"
+    default_https_port = "8484" if deployment_mode == "intranet" else "443"
+    default_http_redirect_port = "0" if deployment_mode == "intranet" else "80"
+
+    storefront_port = int(os.getenv("STOREFRONT_PORT", default_storefront_port))
+    backend_port = int(os.getenv("BACKEND_PORT", os.getenv("SHOPBOT_BACKEND_PORT", default_backend_port)))
+    https_port = int(os.getenv("HTTPS_PORT", default_https_port))
+    http_redirect_port = int(os.getenv("HTTP_REDIRECT_PORT", default_http_redirect_port))
     site_id = safe_site_id(
         os.getenv("CURRENT_SITE_ID")
         or os.getenv("AI_DEFAULT_SITE_ID")
@@ -148,7 +156,7 @@ def main() -> None:
     )
     storefront_root = Path(os.getenv("STOREFRONT_ROOT", str(DEFAULT_STOREFRONT_ROOT))).resolve()
 
-    runtime_origin = resolve_runtime_origin(storefront_port)
+    runtime_origin = resolve_runtime_origin(storefront_port, https_port)
     public_origin = runtime_origin.public_origin
     public_ip = runtime_origin.public_ip
 
@@ -156,9 +164,19 @@ def main() -> None:
     backend_origin = f"http://127.0.0.1:{backend_port}"
     admin_username, admin_password = ensure_admin_credentials()
 
-    persist_runtime_env(site_id, public_origin, local_storefront_origin, runtime_origin.mode)
+    persist_runtime_env(
+        site_id,
+        public_origin,
+        local_storefront_origin,
+        runtime_origin.mode,
+        storefront_port,
+        backend_port,
+        https_port,
+        http_redirect_port,
+    )
     ensure_firewall_rule(storefront_port)
-    ensure_firewall_rule(http_redirect_port, "AI-KART HTTPS Redirect")
+    if http_redirect_port > 0:
+        ensure_firewall_rule(http_redirect_port, "AI-KART HTTPS Redirect")
     ensure_firewall_rule(https_port, "AI-KART HTTPS Proxy")
 
     print("\nRuntime configuration:")
@@ -179,8 +197,10 @@ def main() -> None:
     if is_ip_https_origin(public_origin):
         print("[warning] IP-based HTTPS uses a local self-signed certificate. Browsers may warn on other devices.")
 
-    caddy = build_caddy_service(public_origin, public_ip)
-    stop_stale_runtime_processes([storefront_port, backend_port, http_redirect_port, https_port])
+    caddy = build_caddy_service(public_origin, public_ip, https_port, http_redirect_port, storefront_port)
+    stop_stale_runtime_processes(
+        [port for port in [storefront_port, backend_port, http_redirect_port, https_port] if port > 0]
+    )
 
     storefront = Service(
         name="AI-KART storefront/admin",
@@ -242,6 +262,7 @@ def main() -> None:
     wait_for_http(f"{local_storefront_origin}/api/products.json", "storefront catalog", timeout=45)
 
     backend.start()
+    start_ai_log_tail(backend.log_file)
     wait_for_http(f"{local_storefront_origin}/health", "backend health through storefront proxy", timeout=240)
 
     print("\nReady.")
@@ -289,14 +310,17 @@ def detect_lan_ip() -> str:
     return "127.0.0.1"
 
 
-def resolve_runtime_origin(storefront_port: int) -> RuntimeOrigin:
-    mode = clean_env_value(
+def current_deployment_mode() -> str:
+    return normalize_deployment_mode(clean_env_value(
         os.getenv("DEPLOYMENT_MODE")
         or os.getenv("AI_KART_DEPLOYMENT_MODE")
         or os.getenv("HOSTING_MODE")
         or "intranet"
-    ).lower()
-    mode = normalize_deployment_mode(mode)
+    ).lower())
+
+
+def resolve_runtime_origin(storefront_port: int, https_port: int) -> RuntimeOrigin:
+    mode = current_deployment_mode()
 
     lan_ip = detect_lan_ip()
     public_ip = clean_env_value(os.getenv("STATIC_PUBLIC_IP") or os.getenv("PUBLIC_IP"))
@@ -305,7 +329,7 @@ def resolve_runtime_origin(storefront_port: int) -> RuntimeOrigin:
     if mode == "intranet":
         public_origin = first_env_value("INTRANET_ORIGIN", "LAN_ORIGIN")
         if not public_origin:
-            public_origin = f"https://{lan_ip}"
+            public_origin = origin_with_port(f"https://{lan_ip}", https_port)
     elif mode == "public-ip":
         public_ip = public_ip or detect_public_ip()
         public_origin = first_env_value("PUBLIC_STOREFRONT_ORIGIN", "PUBLIC_API_URL")
@@ -377,6 +401,15 @@ def normalize_origin(raw_origin: str) -> str:
     return origin.rstrip("/")
 
 
+def origin_with_port(origin: str, port: int) -> str:
+    normalized = normalize_origin(origin)
+    if port in {0, 80, 443}:
+        return normalized
+    if re.search(r":\d+$", normalized.rsplit("@", 1)[-1]):
+        return normalized
+    return f"{normalized}:{port}"
+
+
 def first_env_value(*keys: str) -> str:
     for key in keys:
         value = clean_env_value(os.getenv(key))
@@ -402,9 +435,15 @@ def ensure_admin_credentials() -> tuple[str, str]:
     return username, password
 
 
-def build_caddy_service(public_origin: str, public_ip: str) -> Service:
+def build_caddy_service(
+    public_origin: str,
+    public_ip: str,
+    https_port: int,
+    http_redirect_port: int,
+    storefront_port: int,
+) -> Service:
     caddy_exe = find_caddy_executable()
-    caddyfile = write_caddyfile(public_origin, public_ip)
+    caddyfile = write_caddyfile(public_origin, public_ip, https_port, http_redirect_port, storefront_port)
     return Service(
         name="Caddy HTTPS proxy",
         command=[
@@ -459,30 +498,45 @@ def find_executable_on_path(name: str) -> Path | None:
     return None
 
 
-def write_caddyfile(public_origin: str, public_ip: str) -> Path:
+def write_caddyfile(
+    public_origin: str,
+    public_ip: str,
+    https_port: int,
+    http_redirect_port: int,
+    storefront_port: int,
+) -> Path:
     deploy_dir = ROOT / "deploy"
     deploy_dir.mkdir(exist_ok=True)
     caddyfile = deploy_dir / "Caddyfile"
 
     host = origin_host(public_origin)
+    redirect_block = []
+    if http_redirect_port > 0:
+        target = f"https://{{host}}{{uri}}" if https_port == 443 else f"https://{{host}}:{https_port}{{uri}}"
+        redirect_block = [
+            f"http://:{http_redirect_port} {{",
+            f"\tredir {target} 308",
+            "}",
+            "",
+        ]
+
     if is_ip_address(host):
         cert_path, key_path = ensure_ip_certificate(host)
+        global_options = ["{", f"\tdefault_sni {host}"]
+        if http_redirect_port <= 0:
+            global_options.append("\tauto_https disable_redirects")
+        global_options.append("}")
         caddyfile.write_text(
             "\n".join(
                 [
-                    "{",
-                    f"\tdefault_sni {host}",
-                    "}",
+                    *global_options,
                     "",
-                    "http://:80 {",
-                    "\tredir https://{host}{uri} 308",
-                    "}",
-                    "",
-                    "https://:443 {",
+                    *redirect_block,
+                    f"https://:{https_port} {{",
                     "\tencode gzip zstd",
                     f"\ttls {to_caddy_path(cert_path)} {to_caddy_path(key_path)}",
                     "",
-                    "\treverse_proxy 127.0.0.1:8000",
+                    f"\treverse_proxy 127.0.0.1:{storefront_port}",
                     "}",
                     "",
                 ]
@@ -490,13 +544,15 @@ def write_caddyfile(public_origin: str, public_ip: str) -> Path:
             encoding="ascii",
         )
     else:
+        site_label = host if https_port == 443 else f"https://{host}:{https_port}"
         caddyfile.write_text(
             "\n".join(
                 [
-                    f"{host} {{",
+                    *redirect_block,
+                    f"{site_label} {{",
                     "\tencode gzip zstd",
                     "",
-                    "\treverse_proxy 127.0.0.1:8000",
+                    f"\treverse_proxy 127.0.0.1:{storefront_port}",
                     "}",
                     "",
                 ]
@@ -595,9 +651,22 @@ def safe_site_id(raw: str) -> str:
     return text[:80] or "ai_kart_main"
 
 
-def persist_runtime_env(site_id: str, public_origin: str, local_storefront_origin: str, deployment_mode: str) -> None:
+def persist_runtime_env(
+    site_id: str,
+    public_origin: str,
+    local_storefront_origin: str,
+    deployment_mode: str,
+    storefront_port: int,
+    backend_port: int,
+    https_port: int,
+    http_redirect_port: int,
+) -> None:
     values = {
         "DEPLOYMENT_MODE": deployment_mode,
+        "STOREFRONT_PORT": str(storefront_port),
+        "BACKEND_PORT": str(backend_port),
+        "HTTPS_PORT": str(https_port),
+        "HTTP_REDIRECT_PORT": str(http_redirect_port),
         "AI_DEFAULT_SITE_ID": site_id,
         "DEFAULT_SITE_ID": site_id,
         "CURRENT_SITE_ID": site_id,
@@ -701,6 +770,30 @@ def monitor_services() -> None:
         print("\nStopping services...")
     finally:
         cleanup_runtime()
+
+
+def start_ai_log_tail(log_file: Path) -> None:
+    if os.getenv("STREAM_AI_LOGS", "true").strip().lower() in {"0", "false", "no", "off"}:
+        return
+
+    def _tail() -> None:
+        try:
+            while not log_file.exists() and not log_tail_stop.is_set():
+                time.sleep(0.2)
+            with log_file.open("r", encoding="utf-8", errors="replace") as handle:
+                handle.seek(0, os.SEEK_END)
+                while not log_tail_stop.is_set():
+                    line = handle.readline()
+                    if not line:
+                        time.sleep(0.25)
+                        continue
+                    if "AI_CONVO |" in line:
+                        print(line.rstrip())
+        except OSError:
+            return
+
+    thread = threading.Thread(target=_tail, name="ai-log-tail", daemon=True)
+    thread.start()
 
 
 def fail_if_service_exited() -> None:
@@ -809,6 +902,7 @@ def is_port_in_use(port: int) -> bool:
 
 
 def cleanup_runtime() -> None:
+    log_tail_stop.set()
     for service in reversed(services):
         service.stop()
     PID_FILE.unlink(missing_ok=True)

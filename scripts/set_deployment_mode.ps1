@@ -5,7 +5,10 @@ param(
   [string]$Domain = "",
   [string]$LanIp = "",
   [string]$SiteId = "",
-  [int]$StorefrontPort = 8000
+  [int]$StorefrontPort = 0,
+  [int]$BackendPort = 0,
+  [int]$HttpsPort = 0,
+  [int]$HttpRedirectPort = -1
 )
 
 $ErrorActionPreference = "Stop"
@@ -110,16 +113,28 @@ if (-not $SiteId) {
 
 switch ($Mode) {
   "intranet" {
+    if ($StorefrontPort -le 0) { $StorefrontPort = 8584 }
+    if ($BackendPort -le 0) { $BackendPort = 8585 }
+    if ($HttpsPort -le 0) { $HttpsPort = 8484 }
+    if ($HttpRedirectPort -lt 0) { $HttpRedirectPort = 0 }
     if (-not $Origin) {
-      $Origin = "https://$(Get-LanIp)"
+      $Origin = "https://$(Get-LanIp):$HttpsPort"
     }
   }
   "public-ip" {
+    if ($StorefrontPort -le 0) { $StorefrontPort = 8000 }
+    if ($BackendPort -le 0) { $BackendPort = 8011 }
+    if ($HttpsPort -le 0) { $HttpsPort = 443 }
+    if ($HttpRedirectPort -lt 0) { $HttpRedirectPort = 80 }
     if (-not $Origin) {
       $Origin = "https://$(Get-PublicIp)"
     }
   }
   "domain" {
+    if ($StorefrontPort -le 0) { $StorefrontPort = 8000 }
+    if ($BackendPort -le 0) { $BackendPort = 8011 }
+    if ($HttpsPort -le 0) { $HttpsPort = 443 }
+    if ($HttpRedirectPort -lt 0) { $HttpRedirectPort = 80 }
     if (-not $Origin) {
       if (-not $Domain) {
         throw "Use -Domain your-domain.com or -Origin https://your-domain.com for domain mode."
@@ -128,6 +143,10 @@ switch ($Mode) {
     }
   }
   "custom" {
+    if ($StorefrontPort -le 0) { $StorefrontPort = 8584 }
+    if ($BackendPort -le 0) { $BackendPort = 8585 }
+    if ($HttpsPort -le 0) { $HttpsPort = 8484 }
+    if ($HttpRedirectPort -lt 0) { $HttpRedirectPort = 0 }
     if (-not $Origin) {
       throw "Use -Origin https://your-tunnel-or-custom-host for custom mode."
     }
@@ -137,6 +156,10 @@ switch ($Mode) {
 $Origin = Normalize-Origin -Value $Origin
 
 Set-DotEnv -Key "DEPLOYMENT_MODE" -Value $Mode
+Set-DotEnv -Key "STOREFRONT_PORT" -Value ([string]$StorefrontPort)
+Set-DotEnv -Key "BACKEND_PORT" -Value ([string]$BackendPort)
+Set-DotEnv -Key "HTTPS_PORT" -Value ([string]$HttpsPort)
+Set-DotEnv -Key "HTTP_REDIRECT_PORT" -Value ([string]$HttpRedirectPort)
 Set-DotEnv -Key "CURRENT_URL" -Value "http://127.0.0.1:$StorefrontPort"
 Set-DotEnv -Key "PUBLIC_STOREFRONT_ORIGIN" -Value $Origin
 Set-DotEnv -Key "PUBLIC_API_URL" -Value $Origin
@@ -147,6 +170,7 @@ Set-DotEnv -Key "PUBLIC_WIDGET_SCRIPT_URL" -Value "$Origin/shopbot.js?site=$Site
 
 Write-Host "[ok] DEPLOYMENT_MODE=$Mode"
 Write-Host "[ok] Browser origin: $Origin"
+Write-Host "[ok] Ports: HTTPS=$HttpsPort, storefront=$StorefrontPort, backend=$BackendPort, HTTP redirect=$HttpRedirectPort"
 Write-Host "[ok] Start with: python run.py"
 if ($Mode -eq "intranet") {
   Write-Host "[info] Open $Origin from devices on the same Wi-Fi/LAN."

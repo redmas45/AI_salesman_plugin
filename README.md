@@ -9,7 +9,7 @@ The core workflow:
 
 Current target example:
 ```text
-http://127.0.0.1:8000/
+https://192.168.68.71:8484/
 ```
 
 ## Flow Diagram
@@ -32,9 +32,9 @@ Ctrl+C
 
 Default intranet topology:
 ```text
-Caddy HTTPS:      https://<this-pc-lan-ip> -> http://127.0.0.1:8000
-Storefront/admin: http://0.0.0.0:8000
-Backend:          http://127.0.0.1:8011
+Caddy HTTPS:      https://<this-pc-lan-ip>:8484 -> http://127.0.0.1:8584
+Storefront/admin: http://0.0.0.0:8584
+Backend:          http://127.0.0.1:8585
 Browser routes:   /shopbot.js and /v1/* proxy through the storefront
 ```
 
@@ -116,8 +116,12 @@ DATABASE_URL=postgresql://shopbot:shopbot_password@localhost:5434/shopping_db
 HOST=0.0.0.0
 PORT=8001
 
-CURRENT_URL=http://127.0.0.1:8000/
+CURRENT_URL=http://127.0.0.1:8584/
 DEPLOYMENT_MODE=intranet
+STOREFRONT_PORT=8584
+BACKEND_PORT=8585
+HTTPS_PORT=8484
+HTTP_REDIRECT_PORT=0
 CURRENT_SITE_ID=ai_kart_main
 CRAWL_MAX_PAGES=1024
 CRAWL_MAX_DEPTH=100
