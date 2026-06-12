@@ -747,10 +747,15 @@ def _persist_catalog(
 ) -> int:
     init_tenant_schema(site_id)
 
+    import datetime
+    start_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     incoming_ids: list[int] = []
     incoming_source_ids: list[str] = []
+    changed_names: list[str] = []
     changed = 0
     deactivated = 0
+    deactivated_names: list[str] = []
     with get_db(site_id) as conn:
         for product in products:
             product_id = int(product["id"])
@@ -865,6 +870,7 @@ def _persist_catalog(
             ).fetchone()
             if row:
                 changed += 1
+                changed_names.append(product["name"])
 
         if reconcile_missing and incoming_ids:
             conn.execute(
@@ -884,10 +890,13 @@ def _persist_catalog(
                     embedding = NULL
                 WHERE is_active = 1
                   AND NOT (id = ANY(%s))
+                RETURNING name
                 """,
                 (incoming_ids,),
             )
-            deactivated = result.rowcount
+            deactivated_rows = result.fetchall()
+            deactivated = len(deactivated_rows)
+            deactivated_names = [r["name"] for r in deactivated_rows]
 
     vectorized = _vectorize(site_id)
     with get_db(site_id) as conn:
@@ -909,9 +918,13 @@ def _persist_catalog(
         vectorized,
     )
     print(
-        f"Catalog sync ({source_name}): {len(incoming_ids)} source products, "
+        f"[{start_timestamp}] Catalog sync ({source_name}): {len(incoming_ids)} source products, "
         f"{changed} changed/new, {deactivated} deactivated, {vectorized} vectorized"
     )
+    if changed_names:
+        print(f"  -> Added/Changed: {', '.join(changed_names)}")
+    if deactivated_names:
+        print(f"  -> Deactivated/Removed: {', '.join(deactivated_names)}")
     return changed
 
 async def async_web_crawl(
