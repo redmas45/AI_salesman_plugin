@@ -187,6 +187,29 @@ class TestOutputGuardrails:
         result = validate_output(resp, site_id="site_1")
         assert result["ui_actions"] == []
 
+    def test_static_customer_service_navigation_allowed(self):
+        resp = self._make_response(
+            ui_actions=[
+                {"action": "NAVIGATE_TO", "params": {"page": "/support/"}},
+                {
+                    "action": "NAVIGATE_TO",
+                    "params": {"page": "frequently-asked-questions"},
+                },
+                {"action": "NAVIGATE_TO", "params": {"page": "shipping-policy"}},
+                {"action": "NAVIGATE_TO", "params": {"page": "return-policy"}},
+            ]
+        )
+        result = validate_output(resp, site_id="site_1")
+        assert result["ui_actions"] == [
+            {"action": "NAVIGATE_TO", "params": {"page": "support"}},
+            {
+                "action": "NAVIGATE_TO",
+                "params": {"page": "frequently-asked-questions"},
+            },
+            {"action": "NAVIGATE_TO", "params": {"page": "shipping-policy"}},
+            {"action": "NAVIGATE_TO", "params": {"page": "return-policy"}},
+        ]
+
     def test_invalid_sort_removed(self):
         resp = self._make_response(
             ui_actions=[

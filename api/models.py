@@ -75,10 +75,17 @@ class UIAction(BaseModel):
         return self
 
 
+class CheckoutRequestItem(BaseModel):
+    id: str
+    name: str
+    price: float
+    quantity: int
+
 class CheckoutRequest(BaseModel):
     site_id: str = "site_1"
     address: str = "N/A"
     payment_method: str = "N/A"
+    items: Optional[list[CheckoutRequestItem]] = None
 
 class ShopResponse(BaseModel):
     transcript: str = Field(..., description="What the customer said")

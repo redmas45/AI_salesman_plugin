@@ -87,6 +87,16 @@ export function injectStyles() {
     }
     #shopbot-msgs {
       padding-right: 2px;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    #shopbot-msgs::-webkit-scrollbar {
+      width: 0;
+      height: 0;
+      display: none;
+    }
+    #shopbot-chat:not(.visible) #shopbot-msgs {
+      overflow: hidden !important;
     }
     .shopbot-msg {
       max-width: 88%;

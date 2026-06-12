@@ -1,3 +1,13 @@
+function navigationTarget(page) {
+  const raw = String(page || "").trim();
+  if (!raw) return "";
+  if (/^https?:\/\//i.test(raw)) return "";
+  if (raw === "home" || raw === "/") return "/";
+
+  const path = raw.replace(/^\/+|\/+$/g, "");
+  return path ? `/${path}/` : "/";
+}
+
 export function executeActions(actions) {
   actions.forEach(action => {
     console.log("ShopBot executing action:", action);
@@ -33,11 +43,16 @@ export function executeActions(actions) {
         window.ShopCart.open();
         return;
       }
+      if (action.action === "CHECKOUT" && window.ShopCart.checkout) {
+        window.ShopCart.checkout(action.parameters);
+        return;
+      }
     }
 
     // Default behaviors
     if (action.action === "NAVIGATE_TO") {
-      if (action.parameters?.page) window.location.href = action.parameters.page;
+      const target = navigationTarget(action.parameters?.page);
+      if (target) window.location.href = target;
     }
     
     // Dispatch custom events so the host app (like React) can react

@@ -538,7 +538,11 @@ async def api_clear_cart(site_id: str = config.DEFAULT_SITE_ID):
 async def api_checkout_cart(req: CheckoutRequest):
     """Generate a PDF bill and clear the cart."""
     try:
-        items = get_cart_items(req.site_id)
+        if req.items:
+            items = [{"id": it.id, "name": it.name, "price": it.price, "quantity": it.quantity} for it in req.items]
+        else:
+            items = get_cart_items(req.site_id)
+            
         if not items:
             raise HTTPException(status_code=400, detail="Cart is empty.")
 

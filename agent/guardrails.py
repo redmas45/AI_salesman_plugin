@@ -18,6 +18,10 @@ _VALID_NAV_PAGES = {
     "home",
     "cart",
     "checkout",
+    "support",
+    "frequently-asked-questions",
+    "shipping-policy",
+    "return-policy",
     "category/beauty",
     "category/fragrances",
     "category/furniture",
@@ -362,8 +366,8 @@ def _validate_filter_params(params: dict) -> dict:
 
 def _validate_navigation_params(params: dict) -> dict | None:
     """Validate navigation targets for the frontend router."""
-    page = str(params.get("page", "")).strip().lower()
-    if page in ("home", "cart", "checkout") or page.startswith("category/"):
+    page = str(params.get("page", "")).strip().lower().strip("/")
+    if page in _VALID_NAV_PAGES or page.startswith("category/"):
         return {"page": page}
     logger.warning("Guardrail | Invalid navigation page: %r - skipping.", page)
     return None
