@@ -85,3 +85,18 @@ The active widget voice path is the legacy turn-based HTTP flow:
 3. Backend returns transcript, response text, optional `audio_b64`, and `ui_actions`.
 4. Widget plays the returned audio and executes storefront actions.
 
+---
+
+## L3 - Fallback Point (Milestone)
+**Date:** 2026-06-12
+**Status:** Stable Fallback
+
+The current state of both `AI_salesman_plugin` and `Vercel_website` serves as our **L3 Fallback Point**. If any future modifications break the system, we will revert to this stable state.
+
+**Key achievements in this milestone:**
+- **Crawler Automation & Logging:** Implemented auto-schedule (2 mins) and terminal logging in `agent/ingestion.py`.
+- **Admin Panel Enhancements:** Added functional JS search bar, manual "Run Crawler" trigger, and local image upload endpoint.
+- **Frontend Polish:** Stripped useless statistics, cleaned up header nav (auto-hiding category links), overhauled footer with new links and boilerplate pages, and fixed static text-search filtering.
+- **Premium Invoices:** Redesigned PDF generation in `api/main.py` using `reportlab` with premium styling (custom border, styled headers, and tables).
+- **Checkout Action:** Wired up `CHECKOUT` UI action in frontend (`cart.js`) to securely hit the backend checkout API, generate the PDF invoice, and download it locally.
+- **Syntax Fixes:** Fixed f-string javascript injection bugs in `Vercel_website/api/index.py` that caused startup crashes.
