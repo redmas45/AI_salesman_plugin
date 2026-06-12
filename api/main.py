@@ -23,6 +23,8 @@ from fastapi.responses import StreamingResponse
 import config
 from agent import orchestrator
 from api.middleware import RequestTracingMiddleware
+from api.turn_logging import print_turn_summary, turn_timer
+from api.ws_shop import ws_shop_handler
 from pydantic import BaseModel
 
 
@@ -160,7 +162,7 @@ async def health():
         },
     )
 
-@app.post("/v1/admin/crawler/run", tags=["Utility"])
+@app.post("/v1/catalog/crawler/run", tags=["Utility"])
 async def trigger_crawler():
     """Manually trigger the crawler."""
     import config
@@ -253,6 +255,7 @@ async def shop(
 
     parsed_history = _parse_conversation_history(conversation_history)
 
+    started_at = turn_timer()
     result = orchestrator.run(
         site_id=site_id,
         audio_bytes=audio_bytes,
@@ -260,6 +263,15 @@ async def shop(
         audio_filename=audio_filename,
         skip_tts=skip_tts,
         conversation_history=parsed_history,
+    )
+    print_turn_summary(
+        transport="legacy-http",
+        site_id=site_id,
+        started_at=started_at,
+        transcript=result.get("transcript", ""),
+        response_text=result.get("response_text", ""),
+        ui_actions=result.get("ui_actions", []),
+        latency_ms=result.get("latency_ms", {}),
     )
 
     return ShopResponse(**result)
@@ -303,17 +315,51 @@ async def shop_stream(
     parsed_history = _parse_conversation_history(conversation_history)
 
     def event_generator():
-        for event in orchestrator.run_stream(
-            site_id=site_id,
-            audio_bytes=audio_bytes,
-            text_input=text,
-            audio_filename=audio_filename,
-            skip_tts=skip_tts,
-            conversation_history=parsed_history,
-        ):
-            yield f"data: {json.dumps(event)}\n\n"
+        started_at = turn_timer()
+        transcript = text or ""
+        response_text = ""
+        ui_actions = []
+        status_label = "ok"
+        try:
+            for event in orchestrator.run_stream(
+                site_id=site_id,
+                audio_bytes=audio_bytes,
+                text_input=text,
+                audio_filename=audio_filename,
+                skip_tts=skip_tts,
+                conversation_history=parsed_history,
+            ):
+                event_name = event.get("event")
+                data = event.get("data") or {}
+                if event_name == "transcript":
+                    transcript = data.get("transcript") or transcript
+                elif event_name == "actions":
+                    ui_actions = data.get("ui_actions") or []
+                elif event_name == "audio":
+                    response_text = data.get("response_text") or response_text
+                elif event_name == "error":
+                    status_label = "error"
+                    response_text = data.get("error") or response_text
+                yield f"data: {json.dumps(event)}\n\n"
+        finally:
+            print_turn_summary(
+                transport="legacy-sse",
+                site_id=site_id,
+                started_at=started_at,
+                transcript=transcript,
+                response_text=response_text,
+                ui_actions=ui_actions,
+                status=status_label,
+            )
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.websocket("/v1/ws/shop")
+async def websocket_shop(websocket: WebSocket, site_id: str = config.DEFAULT_SITE_ID):
+    """Persistent one-script voice transport for spoke websites."""
+    await ws_shop_handler(websocket, site_id)
+
 
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
@@ -337,6 +383,11 @@ async def websocket_chat(websocket: WebSocket):
             parsed_history = _parse_conversation_history(json.dumps(raw_history))
             site_id = payload.get("site_id", config.DEFAULT_SITE_ID)
 
+            started_at = turn_timer()
+            transcript = text_input or ""
+            response_text = ""
+            ui_actions = []
+            status_label = "ok"
             for event in orchestrator.run_stream(
                 site_id=site_id,
                 audio_bytes=audio_bytes,
@@ -345,7 +396,27 @@ async def websocket_chat(websocket: WebSocket):
                 skip_tts=payload.get("skip_tts", False),
                 conversation_history=parsed_history,
             ):
+                event_name = event.get("event")
+                data = event.get("data") or {}
+                if event_name == "transcript":
+                    transcript = data.get("transcript") or transcript
+                elif event_name == "actions":
+                    ui_actions = data.get("ui_actions") or []
+                elif event_name == "audio":
+                    response_text = data.get("response_text") or response_text
+                elif event_name == "error":
+                    status_label = "error"
+                    response_text = data.get("error") or response_text
                 await websocket.send_json(event)
+            print_turn_summary(
+                transport="legacy-ws",
+                site_id=site_id,
+                started_at=started_at,
+                transcript=transcript,
+                response_text=response_text,
+                ui_actions=ui_actions,
+                status=status_label,
+            )
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
 
@@ -444,7 +515,7 @@ async def list_categories(site_id: str = config.DEFAULT_SITE_ID):
 
 @app.get("/v1/catalog/status", tags=["Products"])
 async def catalog_status(site_id: str = config.DEFAULT_SITE_ID):
-    """Return catalog/RAG sync status for the storefront admin panel."""
+    """Return catalog/RAG sync status for a tenant site."""
     try:
         source_stats = catalog_source_stats(site_id)
         preview_source = source_stats[0]["source_name"] if source_stats else "custom_url_crawler"

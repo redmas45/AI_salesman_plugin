@@ -1,0 +1,63 @@
+"""WebSocket voice transport contract tests."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from fastapi.testclient import TestClient
+
+
+def test_ws_config_and_empty_audio_are_safe():
+    from api.main import app
+
+    client = TestClient(app)
+    with client.websocket_connect("/v1/ws/shop?site_id=site_1") as ws:
+        assert ws.receive_json()["type"] == "ready"
+
+        ws.send_json({"type": "config", "history": []})
+        configured = ws.receive_json()
+        assert configured["type"] == "configured"
+        assert configured["history_size"] == 0
+
+        ws.send_json({"type": "audio_end"})
+        error = ws.receive_json()
+        assert error["type"] == "error"
+        assert "No audio or text" in error["message"]
+
+
+def test_ws_text_turn_streams_pipeline_events(monkeypatch):
+    from api.main import app
+    from api import ws_shop
+
+    def fake_run_stream(**kwargs):
+        assert kwargs["site_id"] == "site_1"
+        assert kwargs["text_input"] == "hello"
+        yield {"event": "transcript", "data": {"transcript": "hello"}}
+        yield {"event": "actions", "data": {"ui_actions": []}}
+        yield {
+            "event": "audio",
+            "data": {"response_text": "Welcome to AI-KART.", "audio_b64": "UklGRg=="},
+        }
+
+    monkeypatch.setattr(ws_shop.orchestrator, "run_stream", fake_run_stream)
+
+    client = TestClient(app)
+    with client.websocket_connect("/v1/ws/shop?site_id=site_1") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "config", "history": []})
+        assert ws.receive_json()["type"] == "configured"
+
+        ws.send_json({"type": "text", "text": "hello"})
+        assert ws.receive_json() == {"type": "transcript", "text": "hello"}
+        assert ws.receive_json() == {"type": "text_chunk", "text": "Welcome to AI-KART."}
+        assert ws.receive_json() == {"type": "audio_chunk", "audio_b64": "UklGRg=="}
+
+        done = ws.receive_json()
+        assert done["type"] == "done"
+        assert done["response_text"] == "Welcome to AI-KART."
+        assert done["ui_actions"] == []
+        assert done["history"][-2:] == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "Welcome to AI-KART."},
+        ]

@@ -4,7 +4,6 @@ import atexit
 import json
 import os
 import re
-import secrets
 import signal
 import socket
 import subprocess
@@ -162,8 +161,6 @@ def main() -> None:
 
     local_storefront_origin = f"http://127.0.0.1:{storefront_port}"
     backend_origin = f"http://127.0.0.1:{backend_port}"
-    admin_username, admin_password = ensure_admin_credentials()
-
     persist_runtime_env(
         site_id,
         public_origin,
@@ -183,7 +180,7 @@ def main() -> None:
     print(f"- deployment mode: {runtime_origin.mode}")
     print(f"- storefront root: {storefront_root}")
     print(f"- site_id: {site_id}")
-    print(f"- storefront/admin: 0.0.0.0:{storefront_port}")
+    print(f"- client storefront: 0.0.0.0:{storefront_port}")
     print(f"- backend/private: 127.0.0.1:{backend_port}")
     print(f"- https proxy: 0.0.0.0:{https_port}")
     print(f"- local URL: {local_storefront_origin}")
@@ -191,19 +188,23 @@ def main() -> None:
     if public_ip:
         print(f"- public IP: {public_ip}")
     print(f"- browser URL target: {public_origin}")
-    print(f"- admin URL: {public_origin}/admin")
-    print(f"- admin username: {admin_username}")
-    print("- admin password: stored in .env as ADMIN_PASSWORD")
     if is_ip_https_origin(public_origin):
         print("[warning] IP-based HTTPS uses a local self-signed certificate. Browsers may warn on other devices.")
 
-    caddy = build_caddy_service(public_origin, public_ip, https_port, http_redirect_port, storefront_port)
+    caddy = build_caddy_service(
+        public_origin,
+        public_ip,
+        https_port,
+        http_redirect_port,
+        storefront_port,
+        backend_port,
+    )
     stop_stale_runtime_processes(
         [port for port in [storefront_port, backend_port, http_redirect_port, https_port] if port > 0]
     )
 
     storefront = Service(
-        name="AI-KART storefront/admin",
+        name="AI-KART client storefront",
         command=[
             sys.executable,
             "-m",
@@ -216,12 +217,10 @@ def main() -> None:
         ],
         cwd=storefront_root,
         env={
-            "LAB_INJECTION_HTML": f'<script src="/shopbot.js?site={site_id}"></script>',
+            "LAB_INJECTION_HTML": client_embed_snippet(site_id, public_origin),
             "LAB_ALLOWED_SCRIPT_ORIGINS": public_origin,
             "SHOPBOT_BACKEND_ORIGIN": backend_origin,
             "AI_DEFAULT_SITE_ID": site_id,
-            "ADMIN_USERNAME": admin_username,
-            "ADMIN_PASSWORD": admin_password,
             "PUBLIC_HTTPS_ORIGIN": os.getenv("PUBLIC_HTTPS_ORIGIN", "").strip(),
             "FORCE_HTTPS": os.getenv("FORCE_HTTPS", "").strip(),
         },
@@ -267,12 +266,29 @@ def main() -> None:
 
     print("\nReady.")
     print(f"- Open storefront: {local_storefront_origin}")
-    print(f"- Open admin:      {local_storefront_origin}/admin")
     print(f"- Wi-Fi/LAN URL:   {public_origin}")
-    print(f"- Wi-Fi/LAN admin: {public_origin}/admin")
     print("\nPress Ctrl+C to stop all services.")
 
     monitor_services()
+
+
+def html_attr(value: str) -> str:
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def client_embed_snippet(site_id: str, api_url: str) -> str:
+    site_id_attr = html_attr(site_id)
+    api_url_attr = html_attr(api_url)
+    return (
+        f'<script defer src="{api_url_attr}/shopbot.js?site={site_id_attr}" '
+        f'data-site-id="{site_id_attr}" data-brand="AI-KART"></script>'
+    )
 
 
 def detect_public_ip() -> str:
@@ -422,28 +438,23 @@ def clean_env_value(value: str | None) -> str:
     return (value or "").strip().strip("\"'")
 
 
-def ensure_admin_credentials() -> tuple[str, str]:
-    username = os.getenv("ADMIN_USERNAME", "admin").strip() or "admin"
-    password = os.getenv("ADMIN_PASSWORD", "").strip()
-    if not password or password == "admin":
-        password = secrets.token_urlsafe(24)
-        set_key(str(ENV_FILE), "ADMIN_USERNAME", username)
-        set_key(str(ENV_FILE), "ADMIN_PASSWORD", password)
-        os.environ["ADMIN_USERNAME"] = username
-        os.environ["ADMIN_PASSWORD"] = password
-        print("[ok] Generated a strong ADMIN_PASSWORD and saved it to .env.")
-    return username, password
-
-
 def build_caddy_service(
     public_origin: str,
     public_ip: str,
     https_port: int,
     http_redirect_port: int,
     storefront_port: int,
+    backend_port: int,
 ) -> Service:
     caddy_exe = find_caddy_executable()
-    caddyfile = write_caddyfile(public_origin, public_ip, https_port, http_redirect_port, storefront_port)
+    caddyfile = write_caddyfile(
+        public_origin,
+        public_ip,
+        https_port,
+        http_redirect_port,
+        storefront_port,
+        backend_port,
+    )
     return Service(
         name="Caddy HTTPS proxy",
         command=[
@@ -504,6 +515,7 @@ def write_caddyfile(
     https_port: int,
     http_redirect_port: int,
     storefront_port: int,
+    backend_port: int,
 ) -> Path:
     deploy_dir = ROOT / "deploy"
     deploy_dir.mkdir(exist_ok=True)
@@ -526,6 +538,7 @@ def write_caddyfile(
         if http_redirect_port <= 0:
             global_options.append("\tauto_https disable_redirects")
         global_options.append("}")
+        route_block = backend_route_block(backend_port, storefront_port)
         caddyfile.write_text(
             "\n".join(
                 [
@@ -536,7 +549,7 @@ def write_caddyfile(
                     "\tencode gzip zstd",
                     f"\ttls {to_caddy_path(cert_path)} {to_caddy_path(key_path)}",
                     "",
-                    f"\treverse_proxy 127.0.0.1:{storefront_port}",
+                    *route_block,
                     "}",
                     "",
                 ]
@@ -545,6 +558,7 @@ def write_caddyfile(
         )
     else:
         site_label = host if https_port == 443 else f"https://{host}:{https_port}"
+        route_block = backend_route_block(backend_port, storefront_port)
         caddyfile.write_text(
             "\n".join(
                 [
@@ -552,7 +566,7 @@ def write_caddyfile(
                     f"{site_label} {{",
                     "\tencode gzip zstd",
                     "",
-                    f"\treverse_proxy 127.0.0.1:{storefront_port}",
+                    *route_block,
                     "}",
                     "",
                 ]
@@ -561,6 +575,30 @@ def write_caddyfile(
         )
 
     return caddyfile
+
+
+def backend_route_block(backend_port: int, storefront_port: int) -> list[str]:
+    """Route HUB API/widget traffic to backend and page traffic to storefront."""
+    return [
+        f"\thandle /shopbot.js {{",
+        f"\t\treverse_proxy 127.0.0.1:{backend_port}",
+        "\t}",
+        f"\thandle /shopbot-widget.js {{",
+        f"\t\treverse_proxy 127.0.0.1:{backend_port}",
+        "\t}",
+        f"\thandle /shopbot-frame {{",
+        f"\t\treverse_proxy 127.0.0.1:{backend_port}",
+        "\t}",
+        f"\thandle /v1/* {{",
+        f"\t\treverse_proxy 127.0.0.1:{backend_port}",
+        "\t}",
+        f"\thandle /health {{",
+        f"\t\treverse_proxy 127.0.0.1:{backend_port}",
+        "\t}",
+        "\thandle {",
+        f"\t\treverse_proxy 127.0.0.1:{storefront_port}",
+        "\t}",
+    ]
 
 
 def origin_host(origin: str) -> str:
@@ -675,7 +713,7 @@ def persist_runtime_env(
         "PUBLIC_API_URL": public_origin,
         "PUBLIC_HTTPS_ORIGIN": public_origin,
         "FORCE_HTTPS": "true",
-        "MANUAL_WIDGET_SCRIPT": f'<script src="{public_origin}/shopbot.js?site={site_id}"></script>',
+        "MANUAL_WIDGET_SCRIPT": f'<script defer src="{public_origin}/shopbot.js?site={site_id}" data-site-id="{site_id}"></script>',
         "PUBLIC_WIDGET_SCRIPT_URL": f"{public_origin}/shopbot.js?site={site_id}",
     }
     for key, value in values.items():
@@ -787,13 +825,17 @@ def start_ai_log_tail(log_file: Path) -> None:
                     if not line:
                         time.sleep(0.25)
                         continue
-                    if "AI_CONVO |" in line:
+                    if is_ai_turn_log_line(line):
                         print(line.rstrip())
         except OSError:
             return
 
     thread = threading.Thread(target=_tail, name="ai-log-tail", daemon=True)
     thread.start()
+
+
+def is_ai_turn_log_line(line: str) -> bool:
+    return "AI_CONVO |" in line or "[SHOPBOT TURN]" in line
 
 
 def fail_if_service_exited() -> None:

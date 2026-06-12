@@ -38,4 +38,11 @@ export function addMessage(elements, text, role) {
   div.innerText = text;
   elements.msgs.appendChild(div);
   elements.msgs.scrollTop = elements.msgs.scrollHeight;
+  return div;
+}
+
+export function updateMessage(elements, node, text) {
+  if (!node) return;
+  node.innerText = text;
+  elements.msgs.scrollTop = elements.msgs.scrollHeight;
 }

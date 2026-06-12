@@ -1,7 +1,8 @@
 import { injectStyles } from "./styles";
-import { initWidget, addMessage } from "./widget";
+import { initWidget, addMessage, updateMessage } from "./widget";
 import { setupRecorder } from "./recorder";
 import { processAudio } from "./api";
+import { config } from "./config";
 
 // Initialize UI
 window.__shopbot_identifier = "voice-orb";
@@ -54,6 +55,8 @@ function boot() {
 
   // Message history cache (limit to last 12 messages)
   const conversationHistory = [];
+  let activeStreamNode = null;
+  let activeStreamText = "";
 
   // Extract product IDs from ui_actions and append them as context to assistant content.
   // This lets the backend resolve ordinal references like "add the first one" in follow-up turns.
@@ -79,16 +82,36 @@ function boot() {
 
   // Stop Callback
   async function handleStop(blob) {
+    activeStreamNode = null;
+    activeStreamText = "";
     await processAudio(blob, elements, {
-      onMessage: (text, role, uiActions) => {
-        addMessage(elements, text, role);
-        const apiRole = role === "ai" ? "assistant" : role;
-        // For assistant messages, embed product IDs so next turn has context
-        const content = apiRole === "assistant" ? buildAssistantContent(text, uiActions) : text;
-        conversationHistory.push({ role: apiRole, content });
+      onUserMessage: (text) => {
+        addMessage(elements, text, "user");
+        conversationHistory.push({ role: "user", content: text });
         if (conversationHistory.length > 12) {
           conversationHistory.shift();
         }
+      },
+      onAssistantChunk: (_chunk, fullText) => {
+        activeStreamText = fullText;
+        if (!activeStreamNode) {
+          activeStreamNode = addMessage(elements, "", "ai");
+        }
+        updateMessage(elements, activeStreamNode, activeStreamText);
+      },
+      onAssistantMessage: (text, uiActions, meta = {}) => {
+        if (meta.streamed && activeStreamNode) {
+          updateMessage(elements, activeStreamNode, text);
+        } else {
+          addMessage(elements, text, "ai");
+        }
+        const content = buildAssistantContent(text, uiActions);
+        conversationHistory.push({ role: "assistant", content });
+        if (conversationHistory.length > 12) {
+          conversationHistory.shift();
+        }
+        activeStreamNode = null;
+        activeStreamText = "";
       },
       onStatusChange: handleStatusChange,
       onComplete: () => scheduleVisibleReset()
@@ -102,6 +125,54 @@ function boot() {
   elements.btn.addEventListener("click", () => {
     recorder.toggle();
   });
+
+  if (shouldAutoGreet()) {
+    markAutoGreeted();
+    window.setTimeout(() => {
+      if (conversationHistory.length > 0) return;
+      const greeting = `Welcome to ${config.brandName}. How can I help you today?`;
+      addMessage(elements, greeting, "ai");
+      handleStatusChange("ready");
+      scheduleVisibleReset(4200);
+      try {
+        if ("speechSynthesis" in window) {
+          const utterance = new SpeechSynthesisUtterance(greeting);
+          utterance.rate = 1;
+          utterance.pitch = 1;
+          window.speechSynthesis.speak(utterance);
+        }
+      } catch (_err) {
+        // Browser speech synthesis is best-effort only.
+      }
+    }, 900);
+  }
+}
+
+function shouldAutoGreet() {
+  if (!config.autoGreet || !isHomePage()) return false;
+  try {
+    return window.sessionStorage.getItem(autoGreetKey()) !== "1";
+  } catch (_err) {
+    return !window.__shopbotAutoGreeted;
+  }
+}
+
+function markAutoGreeted() {
+  window.__shopbotAutoGreeted = true;
+  try {
+    window.sessionStorage.setItem(autoGreetKey(), "1");
+  } catch (_err) {
+    // sessionStorage may be unavailable in some embedded/privacy contexts.
+  }
+}
+
+function autoGreetKey() {
+  return `shopbot:auto-greeted:${config.siteId}`;
+}
+
+function isHomePage() {
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
+  return path === "/" || path.endsWith("/index.html");
 }
 
 if (document.readyState === "loading") {

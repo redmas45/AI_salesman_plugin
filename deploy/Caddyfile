@@ -7,5 +7,22 @@ https://:8484 {
 	encode gzip zstd
 	tls C:/Users/admin/Desktop/AI_salesman_plugin/deploy/certs/ip-192_168_68_74.crt C:/Users/admin/Desktop/AI_salesman_plugin/deploy/certs/ip-192_168_68_74.key
 
-	reverse_proxy 127.0.0.1:8584
+	handle /shopbot.js {
+		reverse_proxy 127.0.0.1:8585
+	}
+	handle /shopbot-widget.js {
+		reverse_proxy 127.0.0.1:8585
+	}
+	handle /shopbot-frame {
+		reverse_proxy 127.0.0.1:8585
+	}
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:8585
+	}
+	handle /health {
+		reverse_proxy 127.0.0.1:8585
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8584
+	}
 }

@@ -149,6 +149,10 @@ def run(
                 if str(hp["id"]) not in existing_ids:
                     retrieved_products.append(hp)
                     existing_ids.add(str(hp["id"]))
+        retrieved_products = _merge_products(
+            retrieved_products,
+            _exact_products_from_query(safe_transcript, site_id),
+        )
     except Exception as exc:
         logger.error("PIPELINE | RAG failed: %s", exc)
         retrieved_products = []  # Degrade gracefully — LLM can still respond
@@ -254,6 +258,7 @@ def run(
             "ui_actions": [],
         }
     _promote_comparison_action(validated, safe_transcript)
+    _ensure_named_comparison_response(validated, safe_transcript, retrieved_products)
     timings["guardrail_output_ms"] = _ms(t)
 
     print(f'🧠 LLM RESPONSE: "{validated["response_text"][:150]}"')
@@ -397,6 +402,10 @@ def run_stream(
                 if str(hp["id"]) not in existing_ids:
                     retrieved_products.append(hp)
                     existing_ids.add(str(hp["id"]))
+        retrieved_products = _merge_products(
+            retrieved_products,
+            _exact_products_from_query(safe_transcript, site_id),
+        )
     except Exception as exc:
         logger.error("PIPELINE | RAG failed: %s", exc)
         retrieved_products = []
@@ -481,6 +490,7 @@ def run_stream(
             "ui_actions": [],
         }
     _promote_comparison_action(validated, safe_transcript)
+    _ensure_named_comparison_response(validated, safe_transcript, retrieved_products)
 
     # Inject variant_id for ADD_TO_CART actions so the frontend can hit Shopify's native Cart API
     final_actions = validated.get("ui_actions", [])
@@ -523,13 +533,105 @@ def _ms(since: float) -> float:
     return round((time.perf_counter() - since) * 1000, 1)
 
 
-def _promote_comparison_action(response: dict[str, Any], transcript: str) -> None:
-    text = (transcript or "").lower()
-    wants_comparison = any(
-        token in text
-        for token in ("compare", "comparison", "difference", "better", "versus", " vs ")
+def _merge_products(primary: list[dict], supplemental: list[dict], limit: int | None = None) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for product in [*(supplemental or []), *(primary or [])]:
+        product_id = str(product.get("id", ""))
+        if not product_id or product_id in seen:
+            continue
+        seen.add(product_id)
+        merged.append(product)
+    return merged[:limit] if limit else merged
+
+
+def _exact_products_from_query(query: str, site_id: str, limit: int = 6) -> list[dict]:
+    text = _normalize_lookup_text(query)
+    if not text:
+        return []
+
+    try:
+        from db.database import get_all_products
+
+        products = get_all_products(site_id, limit=1000)
+    except Exception as exc:
+        logger.warning("PIPELINE | Exact product lookup failed: %s", exc)
+        return []
+
+    matches: list[tuple[int, dict]] = []
+    for product in products:
+        score = _product_name_match_score(product, text)
+        if score <= 0:
+            continue
+        product_copy = dict(product)
+        product_copy["_semantic_score"] = max(float(product_copy.get("_semantic_score") or 0.0), 0.98)
+        product_copy["_exact_name_match"] = True
+        matches.append((score, product_copy))
+
+    matches.sort(
+        key=lambda item: (
+            -item[0],
+            len(_normalize_lookup_text(item[1].get("name", ""))),
+            str(item[1].get("name", "")),
+        )
     )
-    if not wants_comparison:
+    result = [product for _, product in matches[:limit]]
+    if result:
+        logger.info(
+            "PIPELINE | Exact product name lookup added %d products: %s",
+            len(result),
+            [p.get("name") for p in result],
+        )
+    return result
+
+
+def _product_name_match_score(product: dict, normalized_query: str) -> int:
+    name = _normalize_lookup_text(product.get("name", ""))
+    if not name:
+        return 0
+
+    if _phrase_in_text(name, normalized_query):
+        return 100
+
+    aliases = _product_aliases(name)
+    best = 0
+    for alias in aliases:
+        if not alias or not _phrase_in_text(alias, normalized_query):
+            continue
+        token_count = len(alias.split())
+        score = 80 if token_count >= 2 else 35
+        best = max(best, score)
+    return best
+
+
+def _product_aliases(normalized_name: str) -> list[str]:
+    tokens = normalized_name.split()
+    aliases = {normalized_name}
+    brand_tokens = {"nova", "acme", "ai", "kart"}
+    while tokens and tokens[0] in brand_tokens:
+        tokens = tokens[1:]
+        if tokens:
+            aliases.add(" ".join(tokens))
+    if len(tokens) >= 2:
+        aliases.add(" ".join(tokens[-2:]))
+    elif len(tokens) == 1 and len(tokens[0]) >= 4:
+        aliases.add(tokens[0])
+    return sorted(aliases, key=lambda item: (-len(item.split()), item))
+
+
+def _phrase_in_text(phrase: str, text: str) -> bool:
+    return f" {phrase} " in f" {text} "
+
+
+def _normalize_lookup_text(value: Any) -> str:
+    text = str(value or "").lower()
+    text = text.replace("t-shirt", "t shirt").replace("tee-shirt", "tee shirt")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _promote_comparison_action(response: dict[str, Any], transcript: str) -> None:
+    if not _wants_comparison(transcript):
         return
 
     for action in response.get("ui_actions", []):
@@ -540,6 +642,48 @@ def _promote_comparison_action(response: dict[str, Any], transcript: str) -> Non
                 action["params"] = {"product_ids": product_ids[:4]}
                 response["intent"] = "product_compare"
                 return
+
+
+def _ensure_named_comparison_response(
+    response: dict[str, Any],
+    transcript: str,
+    retrieved_products: list[dict],
+) -> None:
+    if not _wants_comparison(transcript):
+        return
+    if any(action.get("action") == "SHOW_COMPARISON" for action in response.get("ui_actions", [])):
+        return
+
+    exact_products = [p for p in retrieved_products if p.get("_exact_name_match")]
+    if len(exact_products) < 2:
+        return
+
+    selected = exact_products[:4]
+    product_ids = [str(product["id"]) for product in selected]
+    response["intent"] = "product_compare"
+    response["confidence"] = max(float(response.get("confidence") or 0.0), 0.9)
+    response["ui_actions"] = [{"action": "SHOW_COMPARISON", "params": {"product_ids": product_ids}}]
+    response["response_text"] = _comparison_fallback_text(selected)
+
+
+def _comparison_fallback_text(products: list[dict]) -> str:
+    names = " and ".join(str(product.get("name", "this product")) for product in products[:2])
+    bullets = []
+    for product in products[:4]:
+        bullets.append(
+            f"- {product.get('name')}: {product.get('category_name') or product.get('category') or 'Product'}, "
+            f"priced at ${float(product.get('price') or 0):.2f}. "
+            f"{str(product.get('description') or '').strip()[:120]}"
+        )
+    return f"I found {names}. Here's a quick comparison:\n" + "\n".join(bullets)
+
+
+def _wants_comparison(transcript: str) -> bool:
+    text = (transcript or "").lower()
+    return any(
+        token in text
+        for token in ("compare", "comparison", "difference", "better", "versus", " vs ")
+    )
 
 
 def _is_simple_greeting(transcript: str) -> bool:

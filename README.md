@@ -2,10 +2,18 @@
 
 This project is the backend and AI agent engine for the Voice Orb. It is designed to sync with the AI-KART storefront and can run on localhost, the local Wi-Fi/LAN, a public static IP, a DNS domain, or a tunnel.
 
+## Current Milestone
+
+**L3.5** is the current fallback point.
+
+- GitHub sync comment: `L 3.5`
+- Date: 2026-06-12
+- Meaning: if later changes break the hub/spoke setup, roll back to this synced state before debugging forward.
+
 The core workflow:
 1. Crawls a public website from `CURRENT_URL` to build the catalog database.
 2. Starts the FastAPI backend, which handles chat, voice, cart, checkout, and RAG status.
-3. Serves the storefront/admin site through a same-origin proxy so `/shopbot.js` and `/v1/*` route to the backend cleanly.
+3. Serves the Voice Orb script and `/v1/*` APIs through the HTTPS entrypoint used by the client/spoke test site.
 
 Current target example:
 ```text
@@ -18,7 +26,7 @@ https://192.168.68.71:8484/
 
 ## Modular Startup Workflow
 
-Use `run.py` to start the HTTPS proxy, storefront/admin, and backend:
+Use `run.py` to start the HTTPS proxy, local spoke storefront simulator, and backend:
 
 ```powershell
 python run.py
@@ -32,10 +40,10 @@ Ctrl+C
 
 Default intranet topology:
 ```text
-Caddy HTTPS:      https://<this-pc-lan-ip>:8484 -> http://127.0.0.1:8584
-Storefront/admin: http://0.0.0.0:8584
-Backend:          http://127.0.0.1:8585
-Browser routes:   /shopbot.js and /v1/* proxy through the storefront
+Caddy HTTPS:       https://<this-pc-lan-ip>:8484
+Spoke storefront:  http://0.0.0.0:8584
+AI HUB backend:    http://127.0.0.1:8585
+Browser routes:    /shopbot.js and /v1/* proxy to the HUB
 ```
 
 For intranet mode, open the printed `Wi-Fi/LAN URL` from other devices on the same Wi-Fi. Caddy uses a local self-signed certificate for the LAN IP, so browsers may show a warning. Accepting the warning is enough for internal testing; a real customer URL should use a domain with trusted HTTPS.
@@ -67,34 +75,52 @@ After switching, restart:
 python run.py
 ```
 
-## Admin Panel
+## Client Admin Boundary
 
-The storefront admin panel is available at:
+This repo is the AI HUB. It does not own or inject a client admin page.
 
-```text
-/admin
+For the local AI-KART spoke simulator, admin/product editing lives in the separate `Vercel_website` project. The HUB only exposes neutral catalog APIs such as `/v1/catalog/status` and `/v1/catalog/crawler/run`.
+
+The backend crawler treats `/api/products.json` as the authoritative storefront catalog when present, so client-side catalog edits are picked up by periodic RAG sync.
+
+## Local Spoke Simulator
+
+`C:\Users\admin\Desktop\Vercel_website` is treated as a customer/spoke website.
+
+Standalone spoke mode:
+
+```powershell
+cd C:\Users\admin\Desktop\Vercel_website
+python run.py
 ```
 
-Default development credentials:
+This starts the storefront/admin without the Voice Orb. Its search bar reads `out/api/products.json`.
 
-```text
-admin / admin
+AI-enabled spoke simulation:
+
+```powershell
+cd C:\Users\admin\Desktop\Vercel_website
+$env:ENABLE_AI_WIDGET="true"
+$env:SHOPBOT_HUB_ORIGIN="http://127.0.0.1:8585"
+python run.py
 ```
 
-Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` before any real public exposure.
+That injects one client-style script at request time. The static `out/*.html` files stay clean by default.
 
-Admin capabilities:
-- Add/update/delete catalog products.
-- Replenish stock.
-- View catalog/RAG sync status from `/v1/catalog/status`.
+The AI HUB `python run.py` still starts the full intranet stack and injects/proxies the one-script widget through Caddy.
 
-The backend crawler treats `/api/products.json` as the authoritative storefront catalog when present, so admin edits are picked up by periodic RAG sync.
+## Terminal Turn Logs
 
-## Legacy Vercel / Ngrok Integration
+Every completed turn now prints readable terminal diagnostics:
 
-The Vercel storefront (`Vercel_website`) has been customized with the following integrations:
-1. **Auto-Injection:** A custom script (`scripts/inject-shopbot.mjs`) automatically reads the `SHOPBOT_API_URL` environment variable and injects the Voice Orb `<script>` tag into all static HTML files during the Vercel build process.
-2. **CSP Fixes:** The backend proxy in Vercel (`api/index.py`) has been modified to allow `script-src` and `media-src` from `https://*.ngrok-free.app`, ensuring that the Voice Orb and its text-to-speech audio are not blocked by the browser.
+```text
+AI_CONVO | user: show me caps
+AI_CONVO | ai_reply: Here are two cap options.
+AI_CONVO | method_used: websocket | status: ok | time_taken: 1842ms | pipeline: 1750ms | actions: 1
+[SHOPBOT TURN] transport=websocket status=ok site=ai_kart_main elapsed=1842ms pipeline=1750ms actions=1 transcript="show me caps" response="Here are two cap options."
+```
+
+`method_used` / `transport` shows whether the turn used `websocket`, `legacy-http`, `legacy-sse`, or `legacy-ws`.
 
 ## Crawler Architecture (100% Accuracy)
 
