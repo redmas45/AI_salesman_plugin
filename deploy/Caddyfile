@@ -1,11 +1,11 @@
 {
-	default_sni 192.168.68.71
+	default_sni 192.168.68.74
 	auto_https disable_redirects
 }
 
 https://:8484 {
 	encode gzip zstd
-	tls C:/Users/admin/Desktop/AI_salesman_plugin/deploy/certs/ip-192_168_68_71.crt C:/Users/admin/Desktop/AI_salesman_plugin/deploy/certs/ip-192_168_68_71.key
+	tls C:/Users/admin/Desktop/AI_salesman_plugin/deploy/certs/ip-192_168_68_74.crt C:/Users/admin/Desktop/AI_salesman_plugin/deploy/certs/ip-192_168_68_74.key
 
 	reverse_proxy 127.0.0.1:8584
 }

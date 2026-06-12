@@ -14,11 +14,11 @@ export async function processAudio(blob, elements, callbacks, conversationHistor
       method: "POST",
       body: formData,
     });
-    
+
     if (!res.ok) throw new Error("API Error");
 
     const data = await res.json();
-    
+
     if (data.transcript) callbacks.onMessage(data.transcript, "user");
     if (data.response_text) {
       // Pass ui_actions alongside response so history can track product IDs

@@ -48,11 +48,6 @@ An AI-powered voice shopping assistant ("Voice Orb") injected into the storefron
 - **Multi-tenant isolation**: Sites schema separation backed by `tenant_ai_kart_main`.
 - **Crawler Stabilization**: Incremental vectorization of new catalog items only, with startup crawler sync.
 
-### What is Pending & Blocked ❌
-- **Router Port Forwarding**: External access to the public IP is blocked by the router. To make the service accessible over the public internet, router port forwarding for ports `80` and `443` is required.
-- **Self-Signed Certificate Warning**: Intranet/LAN IP HTTPS runs on a self-signed certificate, triggering browser warnings. True production deployment requires a public domain with Caddy/Let's Encrypt certificates.
-- **Catalog/Inventory Expansion**: Expand `products.json` inventory to cover wider test cases without disrupting existing IDs or RAG embeddings.
-- **UX Fine-tuning**: Improve product card clickable areas and refine category/sorting menu positions.
 
 ---
 
@@ -72,12 +67,6 @@ Controlled via `DEPLOYMENT_MODE` in `.env`:
 
 ---
 
-## Verification & QA
-
-### Automation Tests
-- Running `pytest` runs contract tests, DB seed checks, and endpoint schema validation.
-- Run tests: `pytest`
-
 ### Manual Smoke Test Checklist
 1. Start stack: `python run.py`
 2. Open storefront: `https://192.168.68.71:8484` (verify widget renders).
@@ -88,21 +77,11 @@ Controlled via `DEPLOYMENT_MODE` in `.env`:
 
 ---
 
-## Next Step: Real-time Voice Streaming via WebSockets (Option 1)
+## Voice Transport Status
 
-### Planned Architecture: Sentence-Buffered Parallel Streaming
-We will implement a high-performance streaming pipeline to achieve sub-second voice response latency using our existing standard OpenAI API key and models (without ElevenLabs):
-1. **Audio Input Streaming**: Client streams mic audio in small binary chunks (100–200ms WebM/Opus or WAV) via WebSockets to `/ws/chat`.
-2. **Text Generation Streaming**: The FastAPI backend invokes OpenAI LLM Chat Completions with `stream=True`.
-3. **Sentence Buffering & Parallel TTS**: As response tokens arrive, they are accumulated on the backend. When a sentence boundary (punctuation like `.`, `?`, `!`) is reached:
-   - A concurrent background task is spun up to call OpenAI TTS (`tts-1` model) for just that sentence.
-   - The resulting audio chunk is immediately streamed back to the client over the WebSocket.
-4. **Seamless Playback Queue**: The frontend uses the browser's Web Audio API to queue incoming audio chunks and play them back sequentially without pauses.
-5. **Barge-in (Interruption Handling)**: If the user starts speaking during playback, the client sends an `INTERRUPT` frame, prompting the backend to immediately cancel all active LLM/TTS generation tasks, and the client stops audio playback.
-
-### Implementation Checklist
-- [ ] Refactor `/ws/chat` in [api/main.py](file:///c:/Users/admin/Desktop/AI_salesman_plugin/api/main.py) to orchestrate sentence-level parallel synthesis and streaming.
-- [ ] Implement browser microphone chunk streaming in the frontend widget (source code in `plugin/src/index.js` or separate helper).
-- [ ] Build the audio queueing and playing mechanism in the frontend using standard browser Web Audio API.
-- [ ] Implement client-side interrupt triggers (e.g. user speaks/clicks) and server-side task cancellation.
+The active widget voice path is the legacy turn-based HTTP flow:
+1. Browser records one `audio.webm` blob with `MediaRecorder`.
+2. Widget posts the blob to `POST /v1/shop` with `site_id` and conversation history.
+3. Backend returns transcript, response text, optional `audio_b64`, and `ui_actions`.
+4. Widget plays the returned audio and executes storefront actions.
 

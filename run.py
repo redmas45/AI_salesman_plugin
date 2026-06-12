@@ -512,7 +512,7 @@ def write_caddyfile(
     host = origin_host(public_origin)
     redirect_block = []
     if http_redirect_port > 0:
-        target = f"https://{{host}}{{uri}}" if https_port == 443 else f"https://{{host}}:{https_port}{{uri}}"
+        target = "https://{host}{uri}" if https_port == 443 else f"https://{{host}}:{https_port}" + "{uri}"
         redirect_block = [
             f"http://:{http_redirect_port} {{",
             f"\tredir {target} 308",

@@ -290,20 +290,20 @@ async def websocket_chat(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             payload = json.loads(data)
-            
+
             text_input = payload.get("text")
             audio_b64 = payload.get("audio_b64")
             audio_bytes = None
             if audio_b64:
                 import base64
                 audio_bytes = base64.b64decode(audio_b64)
-            
+
             # For simplicity, we assume conversation history is passed per request
             # In a real app, we could manage it in memory or Postgres.
             raw_history = payload.get("conversation_history", [])
             parsed_history = _parse_conversation_history(json.dumps(raw_history))
             site_id = payload.get("site_id", config.DEFAULT_SITE_ID)
-            
+
             for event in orchestrator.run_stream(
                 site_id=site_id,
                 audio_bytes=audio_bytes,
