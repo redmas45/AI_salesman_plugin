@@ -115,8 +115,10 @@ class WebSocketShopSession:
         transcript = ""
         response_text = ""
         ui_actions: list[dict[str, Any]] = []
+        latency_ms: dict[str, Any] = {}
         status = "ok"
         error_message = ""
+        response_sent = False
 
         while True:
             event = await queue.get()
@@ -135,12 +137,25 @@ class WebSocketShopSession:
                 ui_actions = data.get("ui_actions") or []
                 continue
 
-            if event_name == "audio":
-                response_text = str(data.get("response_text") or "")
+            if event_name == "response":
+                response_text = str(data.get("response_text") or response_text)
                 if response_text:
+                    response_sent = True
+                    await self.send({"type": "text_chunk", "text": response_text})
+                continue
+
+            if event_name == "audio":
+                response_text = str(data.get("response_text") or response_text)
+                latency_ms = data.get("latency_ms") or latency_ms
+                if response_text and not response_sent:
+                    response_sent = True
                     await self.send({"type": "text_chunk", "text": response_text})
                 if data.get("audio_b64"):
                     await self.send({"type": "audio_chunk", "audio_b64": data["audio_b64"]})
+                continue
+
+            if event_name == "metrics":
+                latency_ms = data.get("latency_ms") or latency_ms
                 continue
 
             if event_name == "error":
@@ -156,6 +171,7 @@ class WebSocketShopSession:
                 "response_text": response_text,
                 "ui_actions": ui_actions,
                 "history": self.history,
+                "latency_ms": latency_ms,
             }
         )
         print_turn_summary(
@@ -165,6 +181,7 @@ class WebSocketShopSession:
             transcript=transcript or (text_input or ""),
             response_text=response_text or error_message,
             ui_actions=ui_actions,
+            latency_ms=latency_ms,
             status=status,
         )
 

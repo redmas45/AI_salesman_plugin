@@ -6,6 +6,7 @@ Accepts raw audio bytes in any format and returns a transcript string.
 import io
 import logging
 from pathlib import Path
+from typing import Any
 
 from openai import OpenAI
 
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 # Lazy-loaded client (created once per process)
 _client: OpenAI | None = None
+_groq_client: Any | None = None
 
 
 def _get_client() -> OpenAI:
@@ -24,6 +26,17 @@ def _get_client() -> OpenAI:
             raise RuntimeError("OPENAI_API_KEY is not set. Add it to your .env file.")
         _client = OpenAI(api_key=config.OPENAI_API_KEY)
     return _client
+
+
+def _get_groq_client() -> Any:
+    global _groq_client
+    if _groq_client is None:
+        if not config.GROQ_API_KEY:
+            raise RuntimeError("GROQ_API_KEY is not set. Add it to your .env file.")
+        from groq import Groq
+
+        _groq_client = Groq(api_key=config.GROQ_API_KEY)
+    return _groq_client
 
 
 from tenacity import (
@@ -73,6 +86,29 @@ def _call_stt(audio_file: tuple, language: str) -> str:
         raise last_exc
 
 
+@retry(
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=0.25, min=0.25, max=1),
+    retry=retry_if_exception_type(Exception),
+    reraise=True,
+)
+def _call_groq_stt(audio_file: tuple, language: str) -> str:
+    request = {
+        "model": config.GROQ_STT_MODEL,
+        "file": audio_file,
+        "response_format": "text",
+        "temperature": 0.0,
+        "prompt": "The user is talking to an AI shopping assistant. Please transcribe their speech.",
+    }
+    if language:
+        request["language"] = language
+
+    response = _get_groq_client().audio.transcriptions.create(**request)
+    if isinstance(response, str):
+        return response.strip()
+    return (getattr(response, "text", "") or "").strip()
+
+
 def transcribe(audio_bytes: bytes, filename: str = "audio.wav") -> str:
     """
     Transcribe audio bytes to text using OpenAI Whisper.
@@ -88,10 +124,18 @@ def transcribe(audio_bytes: bytes, filename: str = "audio.wav") -> str:
         RuntimeError: On API failure.
     """
     # Wrap bytes in a file-like object — OpenAI SDK expects a tuple or file path
-    audio_file = (filename, io.BytesIO(audio_bytes), _mime_type(filename))
-
     try:
-        transcript = _call_stt(audio_file, config.STT_LANGUAGE)
+        if config.STT_PROVIDER == "groq":
+            try:
+                transcript = _call_groq_stt(_audio_file(audio_bytes, filename), config.STT_LANGUAGE)
+                logger.info("STT | Groq model=%s length=%d", config.GROQ_STT_MODEL, len(transcript))
+            except Exception:
+                if not config.GROQ_FALLBACK_TO_OPENAI:
+                    raise
+                logger.exception("STT | Groq failed; falling back to OpenAI")
+                transcript = _call_stt(_audio_file(audio_bytes, filename), config.STT_LANGUAGE)
+        else:
+            transcript = _call_stt(_audio_file(audio_bytes, filename), config.STT_LANGUAGE)
         
         # Whisper on OpenAI frequently hallucinates these on short/silent audio
         hallucinations = ["thank you.", "thank you", "thanks for watching.", "thanks for watching", "you"]
@@ -103,8 +147,12 @@ def transcribe(audio_bytes: bytes, filename: str = "audio.wav") -> str:
         return transcript
 
     except Exception as exc:
-        logger.exception("STT | OpenAI Whisper failed")
+        logger.exception("STT | transcription failed")
         raise RuntimeError("I didn't catch that. Please try again.") from exc
+
+
+def _audio_file(audio_bytes: bytes, filename: str) -> tuple:
+    return (filename, io.BytesIO(audio_bytes), _mime_type(filename))
 
 
 def _mime_type(filename: str) -> str:

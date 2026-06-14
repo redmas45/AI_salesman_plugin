@@ -6,6 +6,7 @@ pydantic>=2.10.0
 
 # OpenAI SDK (STT + LLM + TTS)
 openai>=1.55.0
+groq>=0.31.0
 
 # RAG — Embeddings + Vector Search
 sentence-transformers>=3.3.0

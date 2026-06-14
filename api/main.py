@@ -155,9 +155,13 @@ async def health():
     return HealthResponse(
         status="ok",
         models={
-            "stt": config.STT_MODEL,
+            "stt": f"{config.STT_PROVIDER}:{config.GROQ_STT_MODEL if config.STT_PROVIDER == 'groq' else config.STT_MODEL}",
             "llm": config.LLM_MODEL,
-            "tts": f"{config.TTS_MODEL} / {config.TTS_VOICE}",
+            "tts": (
+                f"groq:{config.GROQ_TTS_MODEL} / {config.GROQ_TTS_VOICE}"
+                if config.TTS_PROVIDER == "groq"
+                else f"openai:{config.TTS_MODEL} / {config.TTS_VOICE}"
+            ),
             "embedding": config.EMBEDDING_MODEL,
         },
     )
@@ -319,6 +323,7 @@ async def shop_stream(
         transcript = text or ""
         response_text = ""
         ui_actions = []
+        latency_ms = {}
         status_label = "ok"
         try:
             for event in orchestrator.run_stream(
@@ -333,10 +338,15 @@ async def shop_stream(
                 data = event.get("data") or {}
                 if event_name == "transcript":
                     transcript = data.get("transcript") or transcript
+                elif event_name == "response":
+                    response_text = data.get("response_text") or response_text
                 elif event_name == "actions":
                     ui_actions = data.get("ui_actions") or []
                 elif event_name == "audio":
                     response_text = data.get("response_text") or response_text
+                    latency_ms = data.get("latency_ms") or latency_ms
+                elif event_name == "metrics":
+                    latency_ms = data.get("latency_ms") or latency_ms
                 elif event_name == "error":
                     status_label = "error"
                     response_text = data.get("error") or response_text
@@ -349,6 +359,7 @@ async def shop_stream(
                 transcript=transcript,
                 response_text=response_text,
                 ui_actions=ui_actions,
+                latency_ms=latency_ms,
                 status=status_label,
             )
 
@@ -387,6 +398,7 @@ async def websocket_chat(websocket: WebSocket):
             transcript = text_input or ""
             response_text = ""
             ui_actions = []
+            latency_ms = {}
             status_label = "ok"
             for event in orchestrator.run_stream(
                 site_id=site_id,
@@ -400,10 +412,15 @@ async def websocket_chat(websocket: WebSocket):
                 data = event.get("data") or {}
                 if event_name == "transcript":
                     transcript = data.get("transcript") or transcript
+                elif event_name == "response":
+                    response_text = data.get("response_text") or response_text
                 elif event_name == "actions":
                     ui_actions = data.get("ui_actions") or []
                 elif event_name == "audio":
                     response_text = data.get("response_text") or response_text
+                    latency_ms = data.get("latency_ms") or latency_ms
+                elif event_name == "metrics":
+                    latency_ms = data.get("latency_ms") or latency_ms
                 elif event_name == "error":
                     status_label = "error"
                     response_text = data.get("error") or response_text
@@ -415,6 +432,7 @@ async def websocket_chat(websocket: WebSocket):
                 transcript=transcript,
                 response_text=response_text,
                 ui_actions=ui_actions,
+                latency_ms=latency_ms,
                 status=status_label,
             )
     except WebSocketDisconnect:

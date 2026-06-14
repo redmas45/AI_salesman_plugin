@@ -138,6 +138,14 @@ This allows the crawler to directly reconstruct the exact JSON data structures t
 
 ```env
 OPENAI_API_KEY=
+GROQ_API_KEY=
+STT_PROVIDER=groq
+GROQ_STT_MODEL=whisper-large-v3-turbo
+TTS_PROVIDER=groq
+GROQ_TTS_MODEL=canopylabs/orpheus-v1-english
+GROQ_TTS_VOICE=troy
+GROQ_TTS_RESPONSE_FORMAT=wav
+GROQ_FALLBACK_TO_OPENAI=true
 DATABASE_URL=postgresql://shopbot:shopbot_password@localhost:5434/shopping_db
 HOST=0.0.0.0
 PORT=8001

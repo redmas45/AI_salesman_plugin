@@ -48,3 +48,35 @@ def test_named_comparison_response_is_forced_when_llm_misses_exact_products():
     ]
     assert "NOVA Sticker" in response["response_text"]
     assert "NOVA T-Shirt" in response["response_text"]
+
+
+def test_false_empty_inventory_claim_is_rewritten_for_cart_language(monkeypatch):
+    response = {
+        "response_text": "Right now, it seems we don't have any items available in our inventory.",
+        "intent": "out_of_stock",
+        "confidence": 0.6,
+        "ui_actions": [],
+    }
+
+    monkeypatch.setattr(orchestrator, "tenant_inventory_summary", lambda site_id: {"in_stock_products": 12})
+    monkeypatch.setattr(
+        orchestrator,
+        "get_all_products",
+        lambda site_id, limit=1000: [
+            {"category_name": "Headwear"},
+            {"category_name": "Drinkware"},
+            {"category_name": "Stickers"},
+        ],
+    )
+
+    orchestrator._prevent_false_empty_inventory_claim(
+        response,
+        "If you don't have any item in my tray, how could a shop?",
+        "ai_kart_main",
+    )
+
+    assert "cart or tray looks empty" in response["response_text"]
+    assert "plenty of products in stock" in response["response_text"]
+    assert "Headwear" in response["response_text"]
+    assert response["intent"] == "chitchat"
+    assert response["ui_actions"] == []

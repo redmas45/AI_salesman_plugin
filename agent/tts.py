@@ -5,6 +5,10 @@ Returns WAV audio bytes that can be base64-encoded and sent to the frontend.
 
 import base64
 import logging
+import os
+import tempfile
+from pathlib import Path
+from typing import Any
 
 from openai import OpenAI
 
@@ -13,6 +17,7 @@ import config
 logger = logging.getLogger(__name__)
 
 _client: OpenAI | None = None
+_groq_client: Any | None = None
 
 
 def _get_client() -> OpenAI:
@@ -22,6 +27,17 @@ def _get_client() -> OpenAI:
             raise RuntimeError("OPENAI_API_KEY is not set.")
         _client = OpenAI(api_key=config.OPENAI_API_KEY)
     return _client
+
+
+def _get_groq_client() -> Any:
+    global _groq_client
+    if _groq_client is None:
+        if not config.GROQ_API_KEY:
+            raise RuntimeError("GROQ_API_KEY is not set.")
+        from groq import Groq
+
+        _groq_client = Groq(api_key=config.GROQ_API_KEY)
+    return _groq_client
 
 
 from tenacity import (
@@ -73,6 +89,52 @@ def _call_tts(text: str) -> bytes:
         raise last_exc
 
 
+@retry(
+    stop=stop_after_attempt(2),
+    wait=wait_exponential(multiplier=0.25, min=0.25, max=1),
+    retry=retry_if_exception_type(Exception),
+    reraise=True,
+)
+def _call_groq_tts(text: str) -> bytes:
+    response = _get_groq_client().audio.speech.create(
+        model=config.GROQ_TTS_MODEL,
+        voice=config.GROQ_TTS_VOICE,
+        input=text,
+        response_format=config.GROQ_TTS_RESPONSE_FORMAT,
+    )
+    return _binary_response_to_bytes(response)
+
+
+def _binary_response_to_bytes(response: Any) -> bytes:
+    content = getattr(response, "content", None)
+    if isinstance(content, bytes):
+        return content
+
+    read = getattr(response, "read", None)
+    if callable(read):
+        data = read()
+        if isinstance(data, bytes):
+            return data
+
+    write_to_file = getattr(response, "write_to_file", None)
+    if callable(write_to_file):
+        suffix = f".{config.GROQ_TTS_RESPONSE_FORMAT or 'wav'}"
+        temp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+                temp_path = handle.name
+            write_to_file(temp_path)
+            return Path(temp_path).read_bytes()
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+    raise RuntimeError("Groq TTS response did not contain audio bytes.")
+
+
 def synthesize(text: str) -> bytes:
     """
     Convert text to speech using OpenAI TTS.
@@ -84,9 +146,25 @@ def synthesize(text: str) -> bytes:
         text = text[:3997] + "..."
 
     try:
-        audio_bytes = _call_tts(text)
+        if config.TTS_PROVIDER == "groq":
+            try:
+                audio_bytes = _call_groq_tts(text)
+                logger.info(
+                    "TTS | Groq model=%s voice=%s bytes=%d chars=%d",
+                    config.GROQ_TTS_MODEL,
+                    config.GROQ_TTS_VOICE,
+                    len(audio_bytes),
+                    len(text),
+                )
+            except Exception:
+                if not config.GROQ_FALLBACK_TO_OPENAI:
+                    raise
+                logger.exception("TTS | Groq failed; falling back to OpenAI")
+                audio_bytes = _call_tts(text)
+        else:
+            audio_bytes = _call_tts(text)
     except Exception as exc:
-        logger.error("TTS | OpenAI TTS failed: %s", exc)
+        logger.error("TTS | synthesis failed: %s", exc)
         raise RuntimeError(f"Text-to-speech failed: {exc}") from exc
 
     logger.info("TTS | synthesized %d bytes for %d chars", len(audio_bytes), len(text))

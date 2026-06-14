@@ -22,6 +22,7 @@ from agent import guardrails, llm, rag, stt, tts
 from agent.guardrails import InputGuardrailError, OutputGuardrailError
 from agent.prompt import format_cart_for_prompt
 from db.database import (
+    get_all_products,
     get_cart_items,
     get_user_profile,
     tenant_inventory_summary,
@@ -123,6 +124,12 @@ def run(
 
     if _is_inventory_stats_query(safe_transcript):
         return _inventory_stats_response(site_id, transcript, skip_tts, timings, t0)
+
+    inventory_type = _extract_inventory_type_query(safe_transcript)
+    if inventory_type:
+        return _inventory_type_count_response(
+            site_id, transcript, inventory_type, skip_tts, timings, t0
+        )
 
     # Stage 3: RAG Retrieval
     t = time.perf_counter()
@@ -259,6 +266,7 @@ def run(
         }
     _promote_comparison_action(validated, safe_transcript)
     _ensure_named_comparison_response(validated, safe_transcript, retrieved_products)
+    _prevent_false_empty_inventory_claim(validated, safe_transcript, site_id)
     timings["guardrail_output_ms"] = _ms(t)
 
     print(f'🧠 LLM RESPONSE: "{validated["response_text"][:150]}"')
@@ -320,19 +328,27 @@ def run_stream(
     Generator that yields JSON strings for Server-Sent Events.
     Events:
       - transcript: { "transcript": str }
+      - response: { "response_text": str }
       - actions: { "ui_actions": list }
       - audio: { "audio_b64": str, "response_text": str }
+      - metrics: { "latency_ms": dict }
       - error: { "error": str }
     """
+    timings: dict[str, float] = {}
+    t0 = time.perf_counter()
+
     # Stage 1: STT
+    t = time.perf_counter()
     if text_input:
         transcript = text_input
+        timings["stt_ms"] = 0
     elif audio_bytes:
         try:
             transcript = stt.transcribe(audio_bytes, audio_filename)
         except RuntimeError as exc:
             yield {"event": "error", "data": {"error": str(exc)}}
             return
+        timings["stt_ms"] = _ms(t)
     else:
         yield {"event": "error", "data": {"error": "No audio or text input provided."}}
         return
@@ -341,46 +357,48 @@ def run_stream(
     yield {"event": "transcript", "data": {"transcript": transcript}}
 
     # Stage 2: Input Guardrails
+    t = time.perf_counter()
     try:
         safe_transcript = guardrails.validate_input(transcript)
     except InputGuardrailError as exc:
         msg = str(exc)
         yield {"event": "actions", "data": {"ui_actions": []}}
+        yield {"event": "response", "data": {"response_text": msg}}
 
         audio_b64 = ""
         if not skip_tts:
+            tts_t = time.perf_counter()
             try:
                 audio_b64 = tts.synthesize_b64(msg)
             except Exception:
                 pass
+            timings["tts_ms"] = _ms(tts_t)
+        timings["total_ms"] = _ms(t0)
         yield {"event": "audio", "data": {"response_text": msg, "audio_b64": audio_b64}}
+        yield {"event": "metrics", "data": {"latency_ms": timings}}
         return
+    timings["guardrail_input_ms"] = _ms(t)
 
     if _is_simple_greeting(safe_transcript):
-        result = _greeting_response(transcript, skip_tts, {}, time.perf_counter())
-        yield {"event": "actions", "data": {"ui_actions": []}}
-        yield {
-            "event": "audio",
-            "data": {
-                "response_text": result["response_text"],
-                "audio_b64": result["audio_b64"],
-            },
-        }
+        result = _greeting_response(transcript, skip_tts, timings, t0)
+        yield from _stream_final_result(result)
         return
 
     if _is_inventory_stats_query(safe_transcript):
-        result = _inventory_stats_response(site_id, transcript, skip_tts, {}, time.perf_counter())
-        yield {"event": "actions", "data": {"ui_actions": []}}
-        yield {
-            "event": "audio",
-            "data": {
-                "response_text": result["response_text"],
-                "audio_b64": result["audio_b64"],
-            },
-        }
+        result = _inventory_stats_response(site_id, transcript, skip_tts, timings, t0)
+        yield from _stream_final_result(result)
+        return
+
+    inventory_type = _extract_inventory_type_query(safe_transcript)
+    if inventory_type:
+        result = _inventory_type_count_response(
+            site_id, transcript, inventory_type, skip_tts, timings, t0
+        )
+        yield from _stream_final_result(result)
         return
 
     # Stage 3: RAG
+    t = time.perf_counter()
     try:
         profile = get_user_profile(site_id)
         prefs = profile.get("preferences")
@@ -410,9 +428,13 @@ def run_stream(
         logger.error("PIPELINE | RAG failed: %s", exc)
         retrieved_products = []
         price_constraints = {}
+        profile = {}
+    timings["rag_ms"] = _ms(t)
 
     # Stage 4: LLM
-    profile = get_user_profile(site_id)
+    t = time.perf_counter()
+    if not profile:
+        profile = get_user_profile(site_id)
     profile_context = f"Address: {profile.get('address') or 'None'} | Payment Method: {profile.get('payment_method') or 'None'} | Preferences: {profile.get('preferences') or 'None'}"
     
     cart_context = format_cart_for_prompt(get_cart_items(site_id))
@@ -425,6 +447,7 @@ def run_stream(
         cart_context=cart_context,
         profile_context=profile_context,
     )
+    timings["llm_ms"] = _ms(t)
 
     # If the LLM tried to search for products but we found none, it shouldn't filter the UI
     # This prevents the 8B model from randomly filtering to "Groceries" when asked for "Snacks" (which we don't have)
@@ -458,6 +481,7 @@ def run_stream(
                 update_user_preferences(site_id, prefs)
 
     # Stage 5: Output Guardrails
+    t = time.perf_counter()
     try:
         allowed_product_ids = [p["id"] for p in retrieved_products]
         
@@ -491,6 +515,8 @@ def run_stream(
         }
     _promote_comparison_action(validated, safe_transcript)
     _ensure_named_comparison_response(validated, safe_transcript, retrieved_products)
+    _prevent_false_empty_inventory_claim(validated, safe_transcript, site_id)
+    timings["guardrail_output_ms"] = _ms(t)
 
     # Inject variant_id for ADD_TO_CART actions so the frontend can hit Shopify's native Cart API
     final_actions = validated.get("ui_actions", [])
@@ -507,14 +533,19 @@ def run_stream(
 
     # Yield actions so UI can update immediately
     yield {"event": "actions", "data": {"ui_actions": final_actions}}
+    yield {"event": "response", "data": {"response_text": validated["response_text"]}}
 
     # Stage 6: TTS
     audio_b64 = ""
     if not skip_tts:
+        t = time.perf_counter()
         try:
             audio_b64 = tts.synthesize_b64(validated["response_text"])
         except RuntimeError as exc:
             logger.error("PIPELINE | TTS failed: %s — continuing without audio.", exc)
+
+        timings["tts_ms"] = _ms(t)
+    timings["total_ms"] = _ms(t0)
 
     # Yield audio
     yield {
@@ -522,11 +553,30 @@ def run_stream(
         "data": {
             "response_text": validated["response_text"],
             "audio_b64": audio_b64,
+            "latency_ms": timings,
         },
     }
+    yield {"event": "metrics", "data": {"latency_ms": timings}}
 
 
 # Helpers
+
+
+def _stream_final_result(result: dict[str, Any]) -> Generator[dict[str, Any], None, None]:
+    ui_actions = result.get("ui_actions", [])
+    response_text = result.get("response_text", "")
+    latency_ms = result.get("latency_ms", {})
+    yield {"event": "actions", "data": {"ui_actions": ui_actions}}
+    yield {"event": "response", "data": {"response_text": response_text}}
+    yield {
+        "event": "audio",
+        "data": {
+            "response_text": response_text,
+            "audio_b64": result.get("audio_b64", ""),
+            "latency_ms": latency_ms,
+        },
+    }
+    yield {"event": "metrics", "data": {"latency_ms": latency_ms}}
 
 
 def _ms(since: float) -> float:
@@ -666,6 +716,58 @@ def _ensure_named_comparison_response(
     response["response_text"] = _comparison_fallback_text(selected)
 
 
+def _prevent_false_empty_inventory_claim(response: dict[str, Any], transcript: str, site_id: str) -> None:
+    text = str(response.get("response_text") or "")
+    if not _claims_store_inventory_empty(text):
+        return
+
+    try:
+        stats = tenant_inventory_summary(site_id)
+        in_stock = int(stats.get("in_stock_products") or 0)
+    except Exception:
+        in_stock = 0
+
+    if in_stock <= 0:
+        return
+
+    categories: list[str] = []
+    try:
+        categories = _available_category_names(get_all_products(site_id, limit=1000))
+    except Exception:
+        categories = []
+
+    category_text = f" We have categories like {', '.join(categories[:5])}." if categories else ""
+    if _mentions_cart_or_tray(transcript):
+        response["response_text"] = (
+            "Your cart or tray looks empty right now, but we do have plenty of products in stock."
+            f"{category_text} Tell me what you need and I'll help you find it."
+        )
+    else:
+        response["response_text"] = (
+            "We do have plenty of products in stock. I just couldn't find an exact match for that request."
+            f"{category_text} Tell me what you need and I'll help you shop."
+        )
+    response["intent"] = "chitchat"
+    response["confidence"] = max(float(response.get("confidence") or 0.0), 0.9)
+    response["ui_actions"] = []
+
+
+def _claims_store_inventory_empty(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (text or "").lower()).strip()
+    patterns = [
+        r"\b(no|not|don't|do not|doesn't|does not|couldn't|could not)\b.{0,40}\b(items?|products?)\b.{0,40}\b(inventory|catalog|store)\b",
+        r"\b(inventory|catalog|store)\b.{0,30}\b(empty|no items|no products|nothing available)\b",
+        r"\b(no items|no products|nothing)\b.{0,30}\bavailable\b.{0,30}\b(inventory|catalog|store)\b",
+    ]
+    return any(re.search(pattern, normalized) for pattern in patterns)
+
+
+def _mentions_cart_or_tray(text: str) -> bool:
+    normalized = re.sub(r"[^a-z\s]", " ", (text or "").lower())
+    words = set(normalized.split())
+    return bool(words & {"cart", "tray", "basket", "bag"})
+
+
 def _comparison_fallback_text(products: list[dict]) -> str:
     names = " and ".join(str(product.get("name", "this product")) for product in products[:2])
     bullets = []
@@ -708,6 +810,50 @@ def _is_inventory_stats_query(transcript: str) -> bool:
     return has_inventory_word and has_count_word
 
 
+def _extract_inventory_type_query(transcript: str) -> str | None:
+    text = re.sub(r"[^a-z0-9\s-]", " ", (transcript or "").lower())
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return None
+
+    patterns = [
+        r"\bhow many (?:types|kinds|options|varieties) of ([a-z0-9\s-]+?)(?: do you have| are available| available| in stock| right now|$)",
+        r"\bhow many ([a-z0-9\s-]+?)(?: do you have| are available| available| in stock| right now|$)",
+        r"\bdo you have (?:any )?([a-z0-9\s-]+?)(?: available| in stock| right now|$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        term = _clean_inventory_type_term(match.group(1))
+        if term:
+            return term
+    return None
+
+
+def _clean_inventory_type_term(raw: str) -> str:
+    term = re.sub(
+        r"\b(products?|items?|types?|kinds?|options?|varieties|stock|inventory|catalog|catalogue)\b",
+        " ",
+        raw or "",
+    )
+    term = re.sub(r"\s+", " ", term).strip(" -")
+    if not term:
+        return ""
+    words = term.split()
+    if len(words) > 4:
+        return ""
+    normalized_words = []
+    for word in words:
+        if word.endswith("ies") and len(word) > 4:
+            normalized_words.append(f"{word[:-3]}y")
+        elif word.endswith("s") and len(word) > 3:
+            normalized_words.append(word[:-1])
+        else:
+            normalized_words.append(word)
+    return " ".join(normalized_words)
+
+
 def _greeting_response(
     transcript: str,
     skip_tts: bool,
@@ -738,6 +884,128 @@ def _greeting_response(
         "audio_b64": audio_b64,
         "latency_ms": timings,
     }
+
+
+def _inventory_type_count_response(
+    site_id: str,
+    transcript: str,
+    item_type: str,
+    skip_tts: bool,
+    timings: dict[str, float],
+    start_time: float,
+) -> dict[str, Any]:
+    t = time.perf_counter()
+    try:
+        products = get_all_products(site_id, limit=1000)
+    except Exception as exc:
+        logger.error("Inventory type lookup failed: %s", exc)
+        products = []
+    timings["inventory_lookup_ms"] = _ms(t)
+
+    matches = _matching_inventory_products(products, item_type)
+    plural = _pluralize(item_type, len(matches))
+    final_actions: list[dict[str, Any]] = []
+
+    if matches:
+        names = [str(product.get("name") or product.get("title") or "").strip() for product in matches[:3]]
+        shown_names = ", ".join(name for name in names if name)
+        response_text = f"I found {len(matches)} {plural} in stock"
+        if shown_names:
+            response_text += f": {shown_names}"
+        response_text += "."
+        final_actions = [
+            {
+                "action": "SHOW_PRODUCTS",
+                "params": {
+                    "product_ids": [str(product.get("id")) for product in matches[:8] if product.get("id")],
+                    "search_query": item_type,
+                },
+            }
+        ]
+    else:
+        categories = _available_category_names(products)
+        if categories:
+            response_text = (
+                f"I don't have {item_type}s right now. "
+                f"I do have categories like {', '.join(categories[:5])}."
+            )
+        else:
+            response_text = f"I don't have {item_type}s right now."
+
+    _ai_log("assistant", response_text)
+    _ai_log("actions", final_actions)
+
+    audio_b64 = ""
+    if not skip_tts:
+        t = time.perf_counter()
+        try:
+            audio_b64 = tts.synthesize_b64(response_text)
+        except RuntimeError as exc:
+            logger.error("PIPELINE | TTS failed for inventory type count: %s", exc)
+        timings["tts_ms"] = _ms(t)
+
+    timings["total_ms"] = _ms(start_time)
+    return {
+        "transcript": transcript,
+        "response_text": response_text,
+        "intent": "inventory_status",
+        "confidence": 1.0,
+        "ui_actions": final_actions,
+        "audio_b64": audio_b64,
+        "latency_ms": timings,
+    }
+
+
+def _matching_inventory_products(products: list[dict], item_type: str) -> list[dict]:
+    normalized_type = _normalize_lookup_text(item_type)
+    matches = []
+    for product in products:
+        search_text = _product_search_text(product)
+        if normalized_type and normalized_type in search_text:
+            matches.append(product)
+    return matches
+
+
+def _product_search_text(product: dict) -> str:
+    values = [
+        product.get("name"),
+        product.get("title"),
+        product.get("brand"),
+        product.get("vendor"),
+        product.get("category"),
+        product.get("category_name"),
+        product.get("category_slug"),
+        product.get("description"),
+        product.get("tags"),
+    ]
+    return _normalize_lookup_text(" ".join(str(value or "") for value in values))
+
+
+def _available_category_names(products: list[dict]) -> list[str]:
+    seen: set[str] = set()
+    names: list[str] = []
+    for product in products:
+        category = str(product.get("category_name") or product.get("category") or "").strip()
+        if not category:
+            continue
+        key = category.lower()
+        if key in {"product", "products"}:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(category.replace("-", " ").title())
+    return names
+
+
+def _pluralize(term: str, count: int) -> str:
+    if count == 1:
+        return term
+    if term.endswith("y"):
+        return f"{term[:-1]}ies"
+    if term.endswith("s"):
+        return term
+    return f"{term}s"
 
 
 def _inventory_stats_response(

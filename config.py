@@ -8,12 +8,29 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 OPENAI_API_KEY: str = (os.getenv("OPENAI_API_KEY", "") or os.getenv("\ufeffOPENAI_API_KEY", "")).strip()
+GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
 
 STT_MODEL: str = os.getenv("STT_MODEL", "gpt-4o-mini-transcribe")
+GROQ_STT_MODEL: str = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
+STT_PROVIDER: str = os.getenv("STT_PROVIDER", "groq" if GROQ_API_KEY else "openai").strip().lower()
 STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "").strip()
 LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
-TTS_MODEL: str = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
+FAST_VOICE_MODE: bool = _env_bool("FAST_VOICE_MODE", True)
+_RAW_TTS_MODEL: str = os.getenv("TTS_MODEL", "tts-1")
+TTS_MODEL: str = os.getenv("FAST_TTS_MODEL", "tts-1") if FAST_VOICE_MODE else _RAW_TTS_MODEL
 TTS_VOICE: str = os.getenv("TTS_VOICE", "alloy")
+GROQ_TTS_MODEL: str = os.getenv("GROQ_TTS_MODEL", "canopylabs/orpheus-v1-english")
+GROQ_TTS_VOICE: str = os.getenv("GROQ_TTS_VOICE", "troy")
+GROQ_TTS_RESPONSE_FORMAT: str = os.getenv("GROQ_TTS_RESPONSE_FORMAT", "wav")
+TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "groq" if GROQ_API_KEY else "openai").strip().lower()
+GROQ_FALLBACK_TO_OPENAI: bool = _env_bool("GROQ_FALLBACK_TO_OPENAI", True)
 
 EMBEDDING_MODEL: str = os.getenv(
     "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
@@ -22,7 +39,11 @@ RAG_TOP_K: int = int(os.getenv("RAG_TOP_K", "10"))
 RAG_TOP_N: int = int(os.getenv("RAG_TOP_N", "3"))
 
 LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.20"))
-LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "1024"))
+LLM_MAX_TOKENS_HARD_CAP: int = int(os.getenv("LLM_MAX_TOKENS_HARD_CAP", "320"))
+LLM_MAX_TOKENS: int = min(
+    int(os.getenv("LLM_MAX_TOKENS", "320")),
+    LLM_MAX_TOKENS_HARD_CAP,
+)
 
 HOST: str = os.getenv("HOST", "0.0.0.0")
 PORT: int = int(os.getenv("PORT", "8001"))
