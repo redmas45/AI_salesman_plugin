@@ -10,6 +10,23 @@ import re
 from typing import Any
 
 import config
+from api.models import (
+    ACTION_ADD_TO_CART,
+    ACTION_CLEAR_CART,
+    ACTION_CLEAR_FILTERS,
+    ACTION_FILTER_PRODUCTS,
+    ACTION_NAVIGATE_TO,
+    ACTION_REMOVE_FROM_CART,
+    ACTION_SHOW_COMPARISON,
+    ACTION_SHOW_PRODUCT_DETAIL,
+    ACTION_SHOW_PRODUCTS,
+    ACTION_SORT_PRODUCTS,
+    ACTION_UPDATE_CART_QUANTITY,
+    PAGE_PARAM,
+    PRODUCT_ID_PARAM,
+    PRODUCT_IDS_PARAM,
+    QUANTITY_PARAM,
+)
 from db.database import product_exists
 
 logger = logging.getLogger(__name__)
@@ -98,8 +115,6 @@ _PII_PATTERNS = [
 class InputGuardrailError(Exception):
     """Raised when the input fails safety checks."""
 
-    pass
-
 
 def validate_input(transcript: str) -> str:
     """
@@ -155,8 +170,6 @@ def validate_input(transcript: str) -> str:
 
 class OutputGuardrailError(Exception):
     """Raised when the LLM output fails safety checks."""
-
-    pass
 
 
 def validate_output(
@@ -238,36 +251,36 @@ def validate_output(
 
         # Validate product IDs exist in DB (prevent hallucinated products)
         if action_type in (
-            "SHOW_PRODUCTS",
-            "SHOW_COMPARISON",
-            "SHOW_PRODUCT_DETAIL",
-            "ADD_TO_CART",
-            "REMOVE_FROM_CART",
+            ACTION_SHOW_PRODUCTS,
+            ACTION_SHOW_COMPARISON,
+            ACTION_SHOW_PRODUCT_DETAIL,
+            ACTION_ADD_TO_CART,
+            ACTION_REMOVE_FROM_CART,
         ):
             params = _validate_product_ids(action_type, params, site_id, allowed_product_ids)
             if params is None:
                 continue
 
         # Validate price ranges make sense
-        if action_type == "FILTER_PRODUCTS":
+        if action_type == ACTION_FILTER_PRODUCTS:
             params = _validate_filter_params(params)
             if not params:
                 continue
 
-        if action_type == "NAVIGATE_TO":
+        if action_type == ACTION_NAVIGATE_TO:
             params = _validate_navigation_params(params)
             if params is None:
                 continue
 
-        if action_type == "SORT_PRODUCTS":
+        if action_type == ACTION_SORT_PRODUCTS:
             params = _validate_sort_params(params)
             if params is None:
                 continue
 
-        if action_type == "CLEAR_FILTERS":
+        if action_type == ACTION_CLEAR_FILTERS:
             params = {}
 
-        if action_type == "CLEAR_CART":
+        if action_type == ACTION_CLEAR_CART:
             params = {}
 
         validated_actions.append({"action": action_type, "params": params})
@@ -280,8 +293,8 @@ def _validate_product_ids(
     action_type: str, params: dict, site_id: str, allowed_product_ids: list[int] | None = None
 ) -> dict | None:
     """Validate product actions and drop commands that target missing products."""
-    if action_type in ("SHOW_PRODUCTS", "SHOW_COMPARISON"):
-        raw_ids = params.get("product_ids", [])
+    if action_type in (ACTION_SHOW_PRODUCTS, ACTION_SHOW_COMPARISON):
+        raw_ids = params.get(PRODUCT_IDS_PARAM, [])
         if not isinstance(raw_ids, list):
             logger.warning(
                 "Guardrail | %s product_ids is not a list - skipping.",
@@ -306,33 +319,33 @@ def _validate_product_ids(
             )
         if not valid_ids:
             return None
-        if action_type == "SHOW_COMPARISON":
-            return {"product_ids": valid_ids[:4]}
-        return {"product_ids": valid_ids}
+        if action_type == ACTION_SHOW_COMPARISON:
+            return {PRODUCT_IDS_PARAM: valid_ids[:4]}
+        return {PRODUCT_IDS_PARAM: valid_ids}
 
     if action_type in (
-        "SHOW_PRODUCT_DETAIL",
-        "ADD_TO_CART",
-        "REMOVE_FROM_CART",
-        "UPDATE_CART_QUANTITY",
+        ACTION_SHOW_PRODUCT_DETAIL,
+        ACTION_ADD_TO_CART,
+        ACTION_REMOVE_FROM_CART,
+        ACTION_UPDATE_CART_QUANTITY,
     ):
-        pid = _coerce_product_id(params.get("product_id"))
+        pid = _coerce_product_id(params.get(PRODUCT_ID_PARAM))
         if pid is None or not product_exists(site_id, pid):
             logger.warning(
                 "Guardrail | product_id=%r is invalid - removing action.",
-                params.get("product_id"),
+                params.get(PRODUCT_ID_PARAM),
             )
             return None
 
-        result = {"product_id": str(pid)}
+        result = {PRODUCT_ID_PARAM: str(pid)}
         if (
-            action_type in ("ADD_TO_CART", "UPDATE_CART_QUANTITY")
-            and "quantity" in params
+            action_type in (ACTION_ADD_TO_CART, ACTION_UPDATE_CART_QUANTITY)
+            and QUANTITY_PARAM in params
         ):
             try:
-                result["quantity"] = int(params["quantity"])
+                result[QUANTITY_PARAM] = int(params[QUANTITY_PARAM])
             except (ValueError, TypeError):
-                pass
+                logger.warning("Guardrail | Invalid quantity for %s: %r", action_type, params[QUANTITY_PARAM])
         return result
 
     return params

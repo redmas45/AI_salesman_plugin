@@ -251,13 +251,13 @@ def _decode_next_payload(raw: str) -> Any | None:
         attempts.append(candidate[1:-1])
         try:
             attempts.append(bytes(candidate[1:-1], "utf-8").decode("unicode_escape"))
-        except Exception:
-            pass
+        except UnicodeDecodeError as exc:
+            logger.debug("Embedded JSON unicode escape decode failed: %s", exc)
 
     for attempt in attempts:
         try:
             return json.loads(attempt)
-        except Exception:
+        except json.JSONDecodeError:
             continue
     return None
 
@@ -384,10 +384,7 @@ def _extract_nextjs_flight_products(html_text: str, source_url: str) -> list[dic
             continue
 
         if isinstance(decoded, str) and ":" in decoded[:40]:
-            try:
-                decoded = decoded.split(":", 1)[1]
-            except Exception:
-                continue
+            decoded = decoded.split(":", 1)[1]
         elif isinstance(decoded, str) and decoded.startswith("[") is False:
             continue
 
@@ -698,8 +695,8 @@ def _iter_script_json_payloads(script_text: str) -> list[Any]:
         try:
             payload, _ = decoder.raw_decode(text)
             payloads.append(payload)
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as exc:
+            logger.debug("Embedded JSON raw decode failed: %s", exc)
 
     for match in re.finditer(r"=\s*([\{\[])", text):
         if len(payloads) >= 25:
@@ -1211,7 +1208,8 @@ def _decode_sitemap_response(response: httpx.Response, sitemap_url: str) -> str:
     if sitemap_url.lower().endswith(".gz"):
         try:
             return gzip.decompress(content).decode(response.encoding or "utf-8", errors="replace")
-        except Exception:
+        except (gzip.BadGzipFile, OSError, UnicodeDecodeError) as exc:
+            logger.debug("Sitemap gzip decode failed for %s: %s", sitemap_url, exc)
             return response.text
     return response.text
 

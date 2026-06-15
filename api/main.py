@@ -7,30 +7,43 @@ Endpoints:
   GET  /health           Health check
 """
 
+import asyncio
+import base64
+import binascii
+import concurrent.futures
+import datetime
+import functools
+import io
 import json
 import logging
 import os
 import re
-import sys
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Iterator, Optional
+from xml.sax.saxutils import escape
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+import psycopg
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 import config
 from agent import orchestrator
 from api.middleware import RequestTracingMiddleware
 from api.turn_logging import print_turn_summary, turn_timer
 from api.ws_shop import ws_shop_handler
-from pydantic import BaseModel
 
 
 class ClientLogRequest(BaseModel):
     event: str
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 from api.models import (
     AddToCartRequest,
@@ -57,12 +70,61 @@ from db.database import (
     remove_from_cart,
     update_user_profile,
 )
-from db.seed import seed as seed_db
 
 # Module-level logger — file handler is added inside lifespan() AFTER
 # uvicorn has called its own logging.config.dictConfig(), so we don't
 # conflict with its formatter configuration.
 logger = logging.getLogger(__name__)
+
+DEFAULT_AUDIO_FILENAME = "audio.wav"
+CRAWLER_SOURCE_NAME = "custom_url_crawler"
+CRAWLER_POLL_INTERVAL_SECONDS = 120
+MAX_CONVERSATION_HISTORY_TURNS = 12
+MAX_LOG_FIELD_CHARS = 80
+MAX_LOG_VALUE_CHARS = 300
+HTTP_UNPROCESSABLE_INPUT = status.HTTP_422_UNPROCESSABLE_CONTENT
+CHECKOUT_EMPTY_VALUES = {"", "N/A", "Not Provided"}
+CHECKOUT_DEFAULT_VALUE = "Not Provided"
+INVOICE_BRAND_NAME = "AI-KART"
+INVOICE_TITLE = "PREMIUM INVOICE"
+INVOICE_FILENAME = "bill.pdf"
+INVOICE_CURRENCY = "INR"
+INVOICE_HEADER_COLOR = "#2c3e50"
+INVOICE_TEXT_COLOR = "#34495e"
+INVOICE_ACCENT_COLOR = "#1abc9c"
+INVOICE_MUTED_COLOR = "#95a5a6"
+INVOICE_TABLE_BACKGROUND = "#f8f9fa"
+INVOICE_TABLE_GRID = "#dee2e6"
+INVOICE_PAGE_MARGIN = 60
+INVOICE_BORDER_MARGIN = 30
+INVOICE_HEADER_HEIGHT = 100
+INVOICE_HEADER_TOP_OFFSET = 130
+INVOICE_TITLE_FONT_SIZE = 36
+INVOICE_SUBTITLE_FONT_SIZE = 14
+INVOICE_TABLE_COL_WIDTHS = [240, 90, 50, 110]
+INVOICE_TOP_MARGIN = 150
+
+
+@dataclass(frozen=True)
+class ShoppingTurnPayload:
+    audio_bytes: bytes | None
+    audio_filename: str
+    conversation_history: list[dict[str, str]]
+
+
+@dataclass(frozen=True)
+class TurnLogState:
+    transcript: str = ""
+    response_text: str = ""
+    ui_actions: list[Any] = field(default_factory=list)
+    latency_ms: dict[str, float] = field(default_factory=dict)
+    status: str = "ok"
+
+
+@dataclass(frozen=True)
+class CheckoutProfile:
+    address: str
+    payment_method: str
 
 
 # Startup / Shutdown
@@ -71,7 +133,7 @@ logger = logging.getLogger(__name__)
 import asyncio
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialise database, seed data, and register pgvector on startup."""
     logger.info("Starting Voice Shopping Agent API...")
     
@@ -79,10 +141,7 @@ async def lifespan(app: FastAPI):
     from agent import rag
     rag.preload()
 
-    import config
-    import functools
     from agent.ingestion import sync_web_crawl
-    import concurrent.futures
     
     async def run_crawl_once(target_url: str, site_id: str, *, initial: bool = False) -> None:
         phase = "startup" if initial else "periodic"
@@ -96,20 +155,20 @@ async def lifespan(app: FastAPI):
                 max_depth=config.CRAWL_MAX_DEPTH,
                 site_id=site_id,
                 reconcile_missing=True,
-                source_name="custom_url_crawler"
+                source_name=CRAWLER_SOURCE_NAME,
             )
             with concurrent.futures.ProcessPoolExecutor(max_workers=1) as executor:
                 await loop.run_in_executor(executor, func)
             logger.info("%s crawl completed for %s.", phase.capitalize(), target_url)
-        except Exception as e:
-            logger.error("%s crawl failed: %s", phase.capitalize(), e)
+        except (RuntimeError, OSError, ValueError) as exc:
+            logger.error("%s crawl failed: %s", phase.capitalize(), exc)
 
-    async def periodic_crawl():
+    async def periodic_crawl() -> None:
         target_url = config.CURRENT_URL
         site_id = config.CURRENT_SITE_ID or config.DEFAULT_SITE_ID
         if target_url:
             while True:
-                await asyncio.sleep(120)
+                await asyncio.sleep(CRAWLER_POLL_INTERVAL_SECONDS)
                 await run_crawl_once(target_url, site_id)
 
     startup_target_url = config.CURRENT_URL
@@ -150,7 +209,7 @@ app.add_middleware(RequestTracingMiddleware)
 # Endpoints
 
 @app.get("/health", response_model=HealthResponse, tags=["Utility"])
-async def health():
+async def health() -> HealthResponse:
     """Check API and model configuration health."""
     return HealthResponse(
         status="ok",
@@ -167,11 +226,8 @@ async def health():
     )
 
 @app.post("/v1/catalog/crawler/run", tags=["Utility"])
-async def trigger_crawler():
+async def trigger_crawler() -> dict[str, str]:
     """Manually trigger the crawler."""
-    import config
-    import asyncio
-    import concurrent.futures
     from agent.ingestion import sync_web_crawl
     
     target_url = config.CURRENT_URL
@@ -181,7 +237,7 @@ async def trigger_crawler():
 
     logger.info("Manual crawler trigger requested for %s...", target_url)
 
-    def run_sync():
+    def run_sync() -> None:
         try:
             sync_web_crawl(
                 target_url,
@@ -189,10 +245,10 @@ async def trigger_crawler():
                 max_depth=config.CRAWL_MAX_DEPTH,
                 site_id=site_id,
                 reconcile_missing=True,
-                source_name="custom_url_crawler"
+                source_name=CRAWLER_SOURCE_NAME,
             )
-        except Exception as e:
-            logger.error("Manual crawl failed: %s", e)
+        except (RuntimeError, OSError, ValueError) as exc:
+            logger.error("Manual crawl failed: %s", exc)
 
     loop = asyncio.get_running_loop()
     executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
@@ -201,15 +257,141 @@ async def trigger_crawler():
     return {"status": "ok", "message": "Crawler started in background."}
 
 @app.post("/v1/client-log", tags=["Utility"])
-async def client_log(req: ClientLogRequest):
+async def client_log(req: ClientLogRequest) -> dict[str, str]:
     """Receive browser-side diagnostics from the injected widget."""
-    safe_event = str(req.event)[:80]
+    safe_event = str(req.event)[:MAX_LOG_FIELD_CHARS]
     safe_payload = {
-        str(key)[:80]: str(value)[:300]
+        str(key)[:MAX_LOG_FIELD_CHARS]: str(value)[:MAX_LOG_VALUE_CHARS]
         for key, value in (req.payload or {}).items()
     }
     logger.info("CLIENT | %s | %s", safe_event, safe_payload)
     return {"status": "ok"}
+
+
+async def _build_shopping_turn_payload(
+    *,
+    audio: UploadFile | None,
+    text: str | None,
+    conversation_history: str | None,
+) -> ShoppingTurnPayload:
+    if audio is None and not (text and text.strip()):
+        raise HTTPException(
+            status_code=HTTP_UNPROCESSABLE_INPUT,
+            detail="Provide either an audio file or text input.",
+        )
+
+    if audio is None:
+        return ShoppingTurnPayload(
+            audio_bytes=None,
+            audio_filename=DEFAULT_AUDIO_FILENAME,
+            conversation_history=_parse_conversation_history(conversation_history),
+        )
+
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded audio file is empty.",
+        )
+
+    return ShoppingTurnPayload(
+        audio_bytes=audio_bytes,
+        audio_filename=audio.filename or DEFAULT_AUDIO_FILENAME,
+        conversation_history=_parse_conversation_history(conversation_history),
+    )
+
+
+def _update_turn_log_state(state: TurnLogState, event: dict[str, Any]) -> TurnLogState:
+    event_name = event.get("event")
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+
+    if event_name == "transcript":
+        return replace(state, transcript=data.get("transcript") or state.transcript)
+    if event_name == "response":
+        return replace(state, response_text=data.get("response_text") or state.response_text)
+    if event_name == "actions":
+        return replace(state, ui_actions=data.get("ui_actions") or [])
+    if event_name == "audio":
+        return replace(
+            state,
+            response_text=data.get("response_text") or state.response_text,
+            latency_ms=data.get("latency_ms") or state.latency_ms,
+        )
+    if event_name == "metrics":
+        return replace(state, latency_ms=data.get("latency_ms") or state.latency_ms)
+    if event_name == "error":
+        return replace(
+            state,
+            response_text=data.get("error") or state.response_text,
+            status="error",
+        )
+    return state
+
+
+def _stream_shop_events(
+    *,
+    site_id: str,
+    text: str | None,
+    skip_tts: bool,
+    payload: ShoppingTurnPayload,
+) -> Iterator[str]:
+    started_at = turn_timer()
+    state = TurnLogState(transcript=text or "")
+    try:
+        for event in orchestrator.run_stream(
+            site_id=site_id,
+            audio_bytes=payload.audio_bytes,
+            text_input=text,
+            audio_filename=payload.audio_filename,
+            skip_tts=skip_tts,
+            conversation_history=payload.conversation_history,
+        ):
+            state = _update_turn_log_state(state, event)
+            yield f"data: {json.dumps(event)}\n\n"
+    finally:
+        _print_turn_state(
+            transport="legacy-sse",
+            site_id=site_id,
+            started_at=started_at,
+            state=state,
+        )
+
+
+def _print_turn_state(
+    *,
+    transport: str,
+    site_id: str,
+    started_at: float,
+    state: TurnLogState,
+) -> None:
+    print_turn_summary(
+        transport=transport,
+        site_id=site_id,
+        started_at=started_at,
+        transcript=state.transcript,
+        response_text=state.response_text,
+        ui_actions=state.ui_actions,
+        latency_ms=state.latency_ms,
+        status=state.status,
+    )
+
+
+def _decode_audio_b64(audio_b64: Any) -> bytes | None:
+    if audio_b64 in (None, ""):
+        return None
+    if not isinstance(audio_b64, str):
+        raise ValueError("audio_b64 must be a base64 string.")
+    return base64.b64decode(audio_b64, validate=True)
+
+
+def _coerce_websocket_payload(raw_data: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(raw_data)
+    except json.JSONDecodeError as exc:
+        raise ValueError("WebSocket payload must be valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("WebSocket payload must be a JSON object.")
+    return payload
 
 @app.post("/v1/shop", response_model=ShopResponse, tags=["Shopping Agent"])
 async def shop(
@@ -224,7 +406,7 @@ async def shop(
     conversation_history: Optional[str] = Form(
         None, description="JSON array of prior conversation turns"
     ),
-):
+) -> ShopResponse:
     """
     **Main endpoint.** Send customer audio or text → receive UI actions + voice response.
 
@@ -238,35 +420,20 @@ async def shop(
     - `ui_actions` — list of website control commands for the frontend
     - `audio_b64` — base64-encoded WAV of the spoken response
     """
-    if audio is None and (text is None or text.strip() == ""):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Provide either an audio file or text input.",
-        )
-
-    audio_bytes: Optional[bytes] = None
-    audio_filename = "audio.wav"
-
-    if audio is not None:
-        audio_bytes = await audio.read()
-        audio_filename = audio.filename or "audio.wav"
-
-        if len(audio_bytes) == 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Uploaded audio file is empty.",
-            )
-
-    parsed_history = _parse_conversation_history(conversation_history)
+    payload = await _build_shopping_turn_payload(
+        audio=audio,
+        text=text,
+        conversation_history=conversation_history,
+    )
 
     started_at = turn_timer()
     result = orchestrator.run(
         site_id=site_id,
-        audio_bytes=audio_bytes,
+        audio_bytes=payload.audio_bytes,
         text_input=text,
-        audio_filename=audio_filename,
+        audio_filename=payload.audio_filename,
         skip_tts=skip_tts,
-        conversation_history=parsed_history,
+        conversation_history=payload.conversation_history,
     )
     print_turn_summary(
         transport="legacy-http",
@@ -294,146 +461,73 @@ async def shop_stream(
     conversation_history: Optional[str] = Form(
         None, description="JSON array of prior conversation turns"
     ),
-):
+) -> StreamingResponse:
     """
     **Streaming endpoint.** Send customer audio or text → receive SSE events for transcript, ui_actions, and audio.
     """
-    if audio is None and (text is None or text.strip() == ""):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Provide either an audio file or text input.",
-        )
+    payload = await _build_shopping_turn_payload(
+        audio=audio,
+        text=text,
+        conversation_history=conversation_history,
+    )
 
-    audio_bytes: Optional[bytes] = None
-    audio_filename = "audio.wav"
-
-    if audio is not None:
-        audio_bytes = await audio.read()
-        audio_filename = audio.filename or "audio.wav"
-        if len(audio_bytes) == 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Uploaded audio file is empty.",
-            )
-
-    parsed_history = _parse_conversation_history(conversation_history)
-
-    def event_generator():
-        started_at = turn_timer()
-        transcript = text or ""
-        response_text = ""
-        ui_actions = []
-        latency_ms = {}
-        status_label = "ok"
-        try:
-            for event in orchestrator.run_stream(
-                site_id=site_id,
-                audio_bytes=audio_bytes,
-                text_input=text,
-                audio_filename=audio_filename,
-                skip_tts=skip_tts,
-                conversation_history=parsed_history,
-            ):
-                event_name = event.get("event")
-                data = event.get("data") or {}
-                if event_name == "transcript":
-                    transcript = data.get("transcript") or transcript
-                elif event_name == "response":
-                    response_text = data.get("response_text") or response_text
-                elif event_name == "actions":
-                    ui_actions = data.get("ui_actions") or []
-                elif event_name == "audio":
-                    response_text = data.get("response_text") or response_text
-                    latency_ms = data.get("latency_ms") or latency_ms
-                elif event_name == "metrics":
-                    latency_ms = data.get("latency_ms") or latency_ms
-                elif event_name == "error":
-                    status_label = "error"
-                    response_text = data.get("error") or response_text
-                yield f"data: {json.dumps(event)}\n\n"
-        finally:
-            print_turn_summary(
-                transport="legacy-sse",
-                site_id=site_id,
-                started_at=started_at,
-                transcript=transcript,
-                response_text=response_text,
-                ui_actions=ui_actions,
-                latency_ms=latency_ms,
-                status=status_label,
-            )
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        _stream_shop_events(
+            site_id=site_id,
+            text=text,
+            skip_tts=skip_tts,
+            payload=payload,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @app.websocket("/v1/ws/shop")
-async def websocket_shop(websocket: WebSocket, site_id: str = config.DEFAULT_SITE_ID):
+async def websocket_shop(websocket: WebSocket, site_id: str = config.DEFAULT_SITE_ID) -> None:
     """Persistent one-script voice transport for spoke websites."""
     await ws_shop_handler(websocket, site_id)
 
 
 @app.websocket("/ws/chat")
-async def websocket_chat(websocket: WebSocket):
+async def websocket_chat(websocket: WebSocket) -> None:
     """Bi-directional WebSocket for real-time voice shopping."""
     await websocket.accept()
     try:
         while True:
-            data = await websocket.receive_text()
-            payload = json.loads(data)
+            try:
+                payload = _coerce_websocket_payload(await websocket.receive_text())
+            except ValueError as exc:
+                await websocket.send_json({"event": "error", "data": {"error": str(exc)}})
+                continue
 
             text_input = payload.get("text")
-            audio_b64 = payload.get("audio_b64")
-            audio_bytes = None
-            if audio_b64:
-                import base64
-                audio_bytes = base64.b64decode(audio_b64)
+            try:
+                audio_bytes = _decode_audio_b64(payload.get("audio_b64"))
+            except (binascii.Error, ValueError) as exc:
+                await websocket.send_json({"event": "error", "data": {"error": str(exc)}})
+                continue
 
-            # For simplicity, we assume conversation history is passed per request
-            # In a real app, we could manage it in memory or Postgres.
             raw_history = payload.get("conversation_history", [])
             parsed_history = _parse_conversation_history(json.dumps(raw_history))
             site_id = payload.get("site_id", config.DEFAULT_SITE_ID)
 
             started_at = turn_timer()
-            transcript = text_input or ""
-            response_text = ""
-            ui_actions = []
-            latency_ms = {}
-            status_label = "ok"
+            state = TurnLogState(transcript=text_input or "")
             for event in orchestrator.run_stream(
                 site_id=site_id,
                 audio_bytes=audio_bytes,
                 text_input=text_input,
-                audio_filename="audio.wav",
+                audio_filename=DEFAULT_AUDIO_FILENAME,
                 skip_tts=payload.get("skip_tts", False),
                 conversation_history=parsed_history,
             ):
-                event_name = event.get("event")
-                data = event.get("data") or {}
-                if event_name == "transcript":
-                    transcript = data.get("transcript") or transcript
-                elif event_name == "response":
-                    response_text = data.get("response_text") or response_text
-                elif event_name == "actions":
-                    ui_actions = data.get("ui_actions") or []
-                elif event_name == "audio":
-                    response_text = data.get("response_text") or response_text
-                    latency_ms = data.get("latency_ms") or latency_ms
-                elif event_name == "metrics":
-                    latency_ms = data.get("latency_ms") or latency_ms
-                elif event_name == "error":
-                    status_label = "error"
-                    response_text = data.get("error") or response_text
+                state = _update_turn_log_state(state, event)
                 await websocket.send_json(event)
-            print_turn_summary(
+            _print_turn_state(
                 transport="legacy-ws",
                 site_id=site_id,
                 started_at=started_at,
-                transcript=transcript,
-                response_text=response_text,
-                ui_actions=ui_actions,
-                latency_ms=latency_ms,
-                status=status_label,
+                state=state,
             )
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
@@ -453,7 +547,7 @@ def _parse_conversation_history(raw_history: Optional[str]) -> list[dict[str, st
         return []
 
     clean_history: list[dict[str, str]] = []
-    for item in decoded[-12:]:
+    for item in decoded[-MAX_CONVERSATION_HISTORY_TURNS:]:
         if not isinstance(item, dict):
             continue
 
@@ -479,7 +573,7 @@ def _parse_conversation_history(raw_history: Optional[str]) -> list[dict[str, st
 @app.get("/v1/products", response_model=list[ProductResponse], tags=["Products"])
 async def list_products(
     site_id: str = config.DEFAULT_SITE_ID, category: Optional[str] = None, limit: int = 50, offset: int = 0
-):
+) -> list[ProductResponse]:
     """
     Return active products in the catalog with pagination, optionally filtered by category.
     The frontend uses this to build its product grid dynamically.
@@ -492,13 +586,13 @@ async def list_products(
         else:
             products = get_all_products(site_id, limit=limit, offset=offset)
         return [ProductResponse(**p) for p in products]
-    except Exception as exc:
+    except psycopg.Error as exc:
         logger.error("GET /v1/products failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to fetch products.")
 
 
 @app.get("/v1/products/by-ids", response_model=list[ProductResponse], tags=["Products"])
-async def list_products_by_ids(ids: str, site_id: str = config.DEFAULT_SITE_ID):
+async def list_products_by_ids(ids: str, site_id: str = config.DEFAULT_SITE_ID) -> list[ProductResponse]:
     """Fetch specific products by a comma-separated list of IDs."""
     try:
         id_list = []
@@ -513,26 +607,26 @@ async def list_products_by_ids(ids: str, site_id: str = config.DEFAULT_SITE_ID):
 
         products = get_products_by_ids(site_id, id_list)
         return [ProductResponse(**p) for p in products]
-    except Exception as exc:
+    except psycopg.Error as exc:
         logger.error("GET /v1/products/by-ids failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to fetch products by IDs.")
 
 
 @app.get("/v1/categories", tags=["Products"])
-async def list_categories(site_id: str = config.DEFAULT_SITE_ID):
+async def list_categories(site_id: str = config.DEFAULT_SITE_ID) -> list[dict[str, str]]:
     """Return all active category names and slugs from the database."""
     try:
         from db.database import get_db
         with get_db(site_id) as conn:
             rows = conn.execute("SELECT name, slug FROM categories ORDER BY name ASC").fetchall()
             return [{"name": r["name"], "slug": r["slug"]} for r in rows]
-    except Exception as exc:
+    except psycopg.Error as exc:
         logger.error("GET /v1/categories failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to fetch categories.")
 
 
 @app.get("/v1/catalog/status", tags=["Products"])
-async def catalog_status(site_id: str = config.DEFAULT_SITE_ID):
+async def catalog_status(site_id: str = config.DEFAULT_SITE_ID) -> dict[str, Any]:
     """Return catalog/RAG sync status for a tenant site."""
     try:
         source_stats = catalog_source_stats(site_id)
@@ -547,24 +641,24 @@ async def catalog_status(site_id: str = config.DEFAULT_SITE_ID):
             if source_stats
             else [],
         }
-    except Exception as exc:
+    except psycopg.Error as exc:
         logger.error("GET /v1/catalog/status failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to fetch catalog status.")
 
 
 @app.get("/v1/cart", response_model=list[CartItemResponse], tags=["Cart"])
-async def get_cart(site_id: str = config.DEFAULT_SITE_ID):
+async def get_cart(site_id: str = config.DEFAULT_SITE_ID) -> list[CartItemResponse]:
     """Return all items currently in the shopping cart."""
     try:
         items = get_cart_items(site_id)
         return [CartItemResponse(**item) for item in items]
-    except Exception as exc:
+    except psycopg.Error as exc:
         logger.error("GET /v1/cart failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to fetch cart.")
 
 
 @app.post("/v1/cart/add", tags=["Cart"])
-async def api_add_to_cart(req: AddToCartRequest):
+async def api_add_to_cart(req: AddToCartRequest) -> dict[str, Any]:
     """Add a product to the cart."""
     try:
         cart_id = add_to_cart(req.site_id, req.product_id, req.quantity)
@@ -575,13 +669,13 @@ async def api_add_to_cart(req: AddToCartRequest):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
+    except psycopg.Error as exc:
         logger.error("POST /v1/cart/add failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to add to cart.")
 
 
 @app.post("/v1/cart/update", tags=["Cart"])
-async def api_update_cart(req: AddToCartRequest):
+async def api_update_cart(req: AddToCartRequest) -> dict[str, str]:
     """Update the quantity of a product in the cart."""
     try:
         from db.database import update_cart_quantity
@@ -592,13 +686,13 @@ async def api_update_cart(req: AddToCartRequest):
         return {"status": "ok"}
     except HTTPException:
         raise
-    except Exception as exc:
+    except psycopg.Error as exc:
         logger.error("POST /v1/cart/update failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to update cart.")
 
 
 @app.delete("/v1/cart/{cart_id}", tags=["Cart"])
-async def api_remove_from_cart(cart_id: int, site_id: str = config.DEFAULT_SITE_ID):
+async def api_remove_from_cart(cart_id: int, site_id: str = config.DEFAULT_SITE_ID) -> dict[str, str]:
     """Remove a product from the cart."""
     try:
         success = remove_from_cart(site_id, cart_id)
@@ -607,196 +701,258 @@ async def api_remove_from_cart(cart_id: int, site_id: str = config.DEFAULT_SITE_
         return {"status": "ok"}
     except HTTPException:
         raise
-    except Exception as exc:
+    except psycopg.Error as exc:
         logger.error("DELETE /v1/cart/{cart_id} failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to remove from cart.")
 
 
 @app.delete("/v1/cart", tags=["Cart"])
-async def api_clear_cart(site_id: str = config.DEFAULT_SITE_ID):
+async def api_clear_cart(site_id: str = config.DEFAULT_SITE_ID) -> dict[str, str]:
     """Clear the entire shopping cart."""
     try:
         clear_cart(site_id)
         return {"status": "ok"}
-    except Exception as exc:
+    except psycopg.Error as exc:
         logger.error("DELETE /v1/cart failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to clear cart.")
 
 
+def _checkout_items(req: CheckoutRequest) -> list[dict[str, Any]]:
+    if not req.items:
+        return get_cart_items(req.site_id)
+    return [
+        {
+            "id": item.id,
+            "name": item.name,
+            "price": item.price,
+            "quantity": item.quantity,
+        }
+        for item in req.items
+    ]
+
+
+def _provided_checkout_value(value: str | None) -> bool:
+    return bool(value and value.strip() not in CHECKOUT_EMPTY_VALUES)
+
+
+def _resolve_checkout_field(candidate: str | None, stored_value: Any) -> str:
+    if _provided_checkout_value(candidate):
+        return str(candidate).strip()
+    stored_text = str(stored_value or "").strip()
+    if stored_text and stored_text not in CHECKOUT_EMPTY_VALUES:
+        return stored_text
+    return CHECKOUT_DEFAULT_VALUE
+
+
+def _resolve_checkout_profile(req: CheckoutRequest) -> CheckoutProfile:
+    profile = get_user_profile(req.site_id)
+    return CheckoutProfile(
+        address=_resolve_checkout_field(req.address, profile.get("address")),
+        payment_method=_resolve_checkout_field(
+            req.payment_method,
+            profile.get("payment_method"),
+        ),
+    )
+
+
+def _draw_invoice_page(canvas: Any, _doc: Any) -> None:
+    canvas.saveState()
+    canvas.setStrokeColor(colors.HexColor(INVOICE_HEADER_COLOR))
+    canvas.setLineWidth(2)
+    canvas.rect(
+        INVOICE_BORDER_MARGIN,
+        INVOICE_BORDER_MARGIN,
+        letter[0] - (INVOICE_BORDER_MARGIN * 2),
+        letter[1] - (INVOICE_BORDER_MARGIN * 2),
+    )
+    canvas.setFillColor(colors.HexColor(INVOICE_HEADER_COLOR))
+    canvas.rect(
+        INVOICE_BORDER_MARGIN,
+        letter[1] - INVOICE_HEADER_TOP_OFFSET,
+        letter[0] - (INVOICE_BORDER_MARGIN * 2),
+        INVOICE_HEADER_HEIGHT,
+        fill=1,
+        stroke=0,
+    )
+    canvas.setFont("Helvetica-Bold", INVOICE_TITLE_FONT_SIZE)
+    canvas.setFillColor(colors.white)
+    canvas.drawString(INVOICE_PAGE_MARGIN, letter[1] - 85, INVOICE_BRAND_NAME)
+    canvas.setFont("Helvetica", INVOICE_SUBTITLE_FONT_SIZE)
+    canvas.drawString(INVOICE_PAGE_MARGIN, letter[1] - 110, INVOICE_TITLE)
+    canvas.restoreState()
+
+
+def _invoice_metadata_elements(styles: dict[str, Any]) -> list[Any]:
+    now = datetime.datetime.now()
+    meta_style = ParagraphStyle(
+        "Meta",
+        parent=styles["Normal"],
+        fontSize=11,
+        textColor=colors.HexColor(INVOICE_TEXT_COLOR),
+        alignment=2,
+    )
+    metadata = f"<b>Date:</b> {now:%B %d, %Y}<br/><b>Invoice #:</b> INV-{int(now.timestamp())}"
+    return [Paragraph(metadata, meta_style), Spacer(1, 20)]
+
+
+def _invoice_customer_elements(styles: dict[str, Any], profile: CheckoutProfile) -> list[Any]:
+    info_style = ParagraphStyle(
+        "Info",
+        parent=styles["Normal"],
+        fontSize=12,
+        leading=16,
+        textColor=colors.HexColor(INVOICE_HEADER_COLOR),
+    )
+    customer_html = (
+        f"<b>Billed To:</b><br/>{escape(profile.address)}<br/><br/>"
+        f"<b>Payment Method:</b><br/>{escape(profile.payment_method)}"
+    )
+    return [Paragraph(customer_html, info_style), Spacer(1, 30)]
+
+
+def _short_invoice_item_name(name: Any) -> str:
+    item_name = str(name or "")
+    return item_name[:50] + ("..." if len(item_name) > 50 else "")
+
+
+def _format_invoice_money(value: float) -> str:
+    return f"{INVOICE_CURRENCY} {value:.2f}"
+
+
+def _invoice_table_data(items: list[dict[str, Any]]) -> list[list[str]]:
+    rows = [["Description", "Unit Price", "Qty", "Total"]]
+    total_amount = 0.0
+    for item in items:
+        item_price = float(item["price"])
+        item_quantity = int(item["quantity"])
+        item_total = item_price * item_quantity
+        total_amount += item_total
+        rows.append(
+            [
+                _short_invoice_item_name(item["name"]),
+                _format_invoice_money(item_price),
+                str(item_quantity),
+                _format_invoice_money(item_total),
+            ]
+        )
+    rows.extend(
+        [
+            ["", "", "Subtotal:", _format_invoice_money(total_amount)],
+            ["", "", "Tax (0%):", _format_invoice_money(0.0)],
+            ["", "", "Grand Total:", _format_invoice_money(total_amount)],
+        ]
+    )
+    return rows
+
+
+def _invoice_table_style() -> TableStyle:
+    return TableStyle(
+        [
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(INVOICE_HEADER_COLOR)),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 12),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 12),
+            ("TOPPADDING", (0, 0), (-1, 0), 12),
+            ("BACKGROUND", (0, 1), (-1, -4), colors.HexColor(INVOICE_TABLE_BACKGROUND)),
+            ("GRID", (0, 0), (-1, -4), 1, colors.HexColor(INVOICE_TABLE_GRID)),
+            ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+            ("FONTSIZE", (0, 1), (-1, -1), 11),
+            ("BOTTOMPADDING", (0, 1), (-1, -1), 10),
+            ("TOPPADDING", (0, 1), (-1, -1), 10),
+            ("FONTNAME", (2, -3), (3, -1), "Helvetica-Bold"),
+            ("TEXTCOLOR", (2, -1), (3, -1), colors.HexColor(INVOICE_ACCENT_COLOR)),
+            ("FONTSIZE", (2, -1), (3, -1), 13),
+            ("LINEABOVE", (2, -3), (3, -3), 1, colors.HexColor(INVOICE_HEADER_COLOR)),
+            ("LINEABOVE", (2, -1), (3, -1), 2, colors.HexColor(INVOICE_HEADER_COLOR)),
+        ]
+    )
+
+
+def _invoice_items_element(items: list[dict[str, Any]]) -> Table:
+    table = Table(_invoice_table_data(items), colWidths=INVOICE_TABLE_COL_WIDTHS)
+    table.setStyle(_invoice_table_style())
+    return table
+
+
+def _invoice_footer_elements(styles: dict[str, Any]) -> list[Any]:
+    footer_style = ParagraphStyle(
+        "Footer",
+        parent=styles["Normal"],
+        alignment=1,
+        textColor=colors.HexColor(INVOICE_MUTED_COLOR),
+        fontSize=10,
+        fontName="Helvetica-Oblique",
+    )
+    footer = f"Thank you for choosing {INVOICE_BRAND_NAME}.<br/>This is an automatically generated receipt."
+    return [Spacer(1, 60), Paragraph(footer, footer_style)]
+
+
+def _invoice_elements(items: list[dict[str, Any]], profile: CheckoutProfile) -> list[Any]:
+    styles = getSampleStyleSheet()
+    return [
+        *_invoice_metadata_elements(styles),
+        *_invoice_customer_elements(styles, profile),
+        _invoice_items_element(items),
+        *_invoice_footer_elements(styles),
+    ]
+
+
+def _build_invoice_pdf(items: list[dict[str, Any]], profile: CheckoutProfile) -> bytes:
+    buffer = io.BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=INVOICE_PAGE_MARGIN,
+        leftMargin=INVOICE_PAGE_MARGIN,
+        topMargin=INVOICE_TOP_MARGIN,
+        bottomMargin=INVOICE_PAGE_MARGIN,
+    )
+    document.build(
+        _invoice_elements(items, profile),
+        onFirstPage=_draw_invoice_page,
+        onLaterPages=_draw_invoice_page,
+    )
+    return buffer.getvalue()
+
+
+def _invoice_response(pdf_bytes: bytes) -> Response:
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={INVOICE_FILENAME}"},
+    )
+
+
 @app.post("/v1/cart/checkout", tags=["Cart"])
-async def api_checkout_cart(req: CheckoutRequest):
+async def api_checkout_cart(req: CheckoutRequest) -> Response:
     """Generate a PDF bill and clear the cart."""
     try:
-        if req.items:
-            items = [{"id": it.id, "name": it.name, "price": it.price, "quantity": it.quantity} for it in req.items]
-        else:
-            items = get_cart_items(req.site_id)
-            
+        items = _checkout_items(req)
         if not items:
             raise HTTPException(status_code=400, detail="Cart is empty.")
 
-        profile = get_user_profile(req.site_id)
-        final_address = profile.get("address")
-        final_payment = profile.get("payment_method")
-
-        # If new details provided and they aren't default "N/A", save them
-        if req.address and req.address != "N/A" and req.address != "Not Provided":
-            final_address = req.address
-        if (
-            req.payment_method
-            and req.payment_method != "N/A"
-            and req.payment_method != "Not Provided"
-        ):
-            final_payment = req.payment_method
-
-        # Default fallbacks
-        final_address = final_address or "Not Provided"
-        final_payment = final_payment or "Not Provided"
-
-        # Update profile to persist
-        update_user_profile(req.site_id, final_address, final_payment)
-
-        import io
-
-        from reportlab.lib import colors
-        from reportlab.lib.pagesizes import letter
-        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-        from reportlab.platypus import (
-            Paragraph,
-            SimpleDocTemplate,
-            Spacer,
-            Table,
-            TableStyle,
-        )
-
-        import datetime
-        buffer = io.BytesIO()
-
-        def on_page(canvas, doc):
-            canvas.saveState()
-            # Draw premium border
-            canvas.setStrokeColor(colors.HexColor("#2c3e50"))
-            canvas.setLineWidth(2)
-            canvas.rect(30, 30, letter[0] - 60, letter[1] - 60)
-            
-            # Header background
-            canvas.setFillColor(colors.HexColor("#2c3e50"))
-            canvas.rect(30, letter[1] - 130, letter[0] - 60, 100, fill=1, stroke=0)
-            
-            # Header text
-            canvas.setFont("Helvetica-Bold", 36)
-            canvas.setFillColor(colors.white)
-            canvas.drawString(60, letter[1] - 85, "AI-KART")
-            
-            canvas.setFont("Helvetica", 14)
-            canvas.drawString(60, letter[1] - 110, "PREMIUM INVOICE")
-            
-            canvas.restoreState()
-
-        doc = SimpleDocTemplate(
-            buffer,
-            pagesize=letter,
-            rightMargin=60,
-            leftMargin=60,
-            topMargin=150,
-            bottomMargin=60,
-        )
-        styles = getSampleStyleSheet()
-        elements = []
-
-        # Invoice metadata
-        inv_date = datetime.datetime.now().strftime("%B %d, %Y")
-        inv_no = f"INV-{int(datetime.datetime.now().timestamp())}"
-        
-        meta_style = ParagraphStyle(
-            "Meta", parent=styles["Normal"], fontSize=11, textColor=colors.HexColor("#34495e"), alignment=2 # Right align
-        )
-        elements.append(Paragraph(f"<b>Date:</b> {inv_date}<br/><b>Invoice #:</b> {inv_no}", meta_style))
-        elements.append(Spacer(1, 20))
-        
-        # Customer Info
-        info_style = ParagraphStyle("Info", parent=styles["Normal"], fontSize=12, leading=16, textColor=colors.HexColor("#2c3e50"))
-        elements.append(Paragraph(f"<b>Billed To:</b><br/>{final_address}<br/><br/><b>Payment Method:</b><br/>{final_payment}", info_style))
-        elements.append(Spacer(1, 30))
-
-        # Items Table
-        data = [["Description", "Unit Price", "Qty", "Total"]]
-        total_amount = 0
-
-        for item in items:
-            item_total = item["price"] * item["quantity"]
-            total_amount += item_total
-            data.append(
-                [
-                    item["name"][:50] + ("..." if len(item["name"]) > 50 else ""),
-                    f"INR {item['price']:.2f}",
-                    str(item["quantity"]),
-                    f"INR {item_total:.2f}",
-                ]
-            )
-
-        data.append(["", "", "Subtotal:", f"INR {total_amount:.2f}"])
-        data.append(["", "", "Tax (0%):", "INR 0.00"])
-        data.append(["", "", "Grand Total:", f"INR {total_amount:.2f}"])
-
-        t = Table(data, colWidths=[240, 90, 50, 110])
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2c3e50")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                    ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, 0), 12),
-                    ("BOTTOMPADDING", (0, 0), (-1, 0), 12),
-                    ("TOPPADDING", (0, 0), (-1, 0), 12),
-                    ("BACKGROUND", (0, 1), (-1, -4), colors.HexColor("#f8f9fa")),
-                    ("GRID", (0, 0), (-1, -4), 1, colors.HexColor("#dee2e6")),
-                    ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-                    ("FONTSIZE", (0, 1), (-1, -1), 11),
-                    ("BOTTOMPADDING", (0, 1), (-1, -1), 10),
-                    ("TOPPADDING", (0, 1), (-1, -1), 10),
-                    # Totals styling
-                    ("FONTNAME", (2, -3), (3, -1), "Helvetica-Bold"),
-                    ("TEXTCOLOR", (2, -1), (3, -1), colors.HexColor("#1abc9c")),
-                    ("FONTSIZE", (2, -1), (3, -1), 13),
-                    ("LINEABOVE", (2, -3), (3, -3), 1, colors.HexColor("#2c3e50")),
-                    ("LINEABOVE", (2, -1), (3, -1), 2, colors.HexColor("#2c3e50")),
-                ]
-            )
-        )
-
-        elements.append(t)
-
-        # Footer
-        elements.append(Spacer(1, 60))
-        footer_style = ParagraphStyle("Footer", parent=styles["Normal"], alignment=1, textColor=colors.HexColor("#95a5a6"), fontSize=10, fontName="Helvetica-Oblique")
-        elements.append(Paragraph("Thank you for choosing AI-KART.<br/>This is an automatically generated receipt.", footer_style))
-
-        doc.build(elements, onFirstPage=on_page, onLaterPages=on_page)
-
+        profile = _resolve_checkout_profile(req)
+        update_user_profile(req.site_id, profile.address, profile.payment_method)
+        pdf_bytes = _build_invoice_pdf(items, profile)
         from db.database import checkout_cart
+
         checkout_cart(req.site_id)
+        return _invoice_response(pdf_bytes)
 
-        from fastapi import Response
-
-        return Response(
-            content=buffer.getvalue(),
-            media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=bill.pdf"},
-        )
     except HTTPException:
         raise
-    except Exception as exc:
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid checkout item data.") from exc
+    except psycopg.Error as exc:
         logger.error("POST /v1/cart/checkout failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to process checkout.")
+        raise HTTPException(status_code=500, detail="Failed to process checkout.") from exc
 
 
 
-def vectorize_site_catalog(site_id: str):
-    import logging
-    logger = logging.getLogger(__name__)
+def vectorize_site_catalog(site_id: str) -> None:
     logger.info("Background Vectorization started for site %s...", site_id)
     try:
         from db.database import get_db
@@ -824,7 +980,7 @@ def vectorize_site_catalog(site_id: str):
                     (embeddings[i], row["id"])
                 )
             logger.info("Vectorization complete for site %s.", site_id)
-    except Exception as exc:
+    except (psycopg.Error, RuntimeError) as exc:
         logger.error("Background Vectorization failed for site %s: %s", site_id, exc)
 
 

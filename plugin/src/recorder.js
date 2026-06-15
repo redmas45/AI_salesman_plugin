@@ -1,3 +1,5 @@
+import { AUDIO, STATUS } from "./constants";
+
 export function setupRecorder(onStop, onStatusChange) {
   let mediaRecorder = null;
   let audioChunks = [];
@@ -14,17 +16,17 @@ export function setupRecorder(onStop, onStatusChange) {
       };
 
       mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+        const audioBlob = new Blob(audioChunks, { type: AUDIO.WEBM_MIME_TYPE });
         stream.getTracks().forEach((track) => track.stop());
         await onStop(audioBlob);
       };
 
       mediaRecorder.start();
       isRecording = true;
-      onStatusChange("recording");
+      onStatusChange(STATUS.RECORDING);
     } catch (err) {
       console.error("Microphone access denied", err);
-      onStatusChange("error");
+      onStatusChange(STATUS.ERROR);
     }
   }
 
@@ -33,7 +35,7 @@ export function setupRecorder(onStop, onStatusChange) {
       mediaRecorder.stop();
     }
     isRecording = false;
-    onStatusChange("processing");
+    onStatusChange(STATUS.PROCESSING);
   }
 
   function toggle() {

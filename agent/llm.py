@@ -9,7 +9,7 @@ import logging
 import re
 from typing import Any
 
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 
 from tenacity import (
     retry,
@@ -22,12 +22,14 @@ import config
 from agent.prompt import build_system_prompt, format_products_for_prompt
 
 logger = logging.getLogger(__name__)
+LLM_RETRY_ERRORS = (OpenAIError, RuntimeError, ValueError, TypeError, KeyError, IndexError)
+MAX_HISTORY_TURNS = 6
 
 # --- ACTIVE CLIENT ---
-_openai_client = None
+_openai_client: OpenAI | None = None
 
 
-def _get_client():
+def _get_client() -> OpenAI:
     global _openai_client
 
     if _openai_client is None:
@@ -52,10 +54,10 @@ DEFAULT_RESPONSE: dict[str, Any] = {
 @retry(
     stop=stop_after_attempt(2),
     wait=wait_exponential(multiplier=1, min=1, max=8),
-    retry=retry_if_exception_type(Exception),
+    retry=retry_if_exception_type(LLM_RETRY_ERRORS),
     reraise=True,
 )
-def _call_llm(system_prompt: str, messages: list[dict]) -> str:
+def _call_llm(system_prompt: str, messages: list[dict[str, Any]]) -> str:
 
     full_messages = [
         {"role": "system", "content": system_prompt},
@@ -68,7 +70,7 @@ def _call_llm(system_prompt: str, messages: list[dict]) -> str:
     preferred_models = [config.LLM_MODEL, "gpt-4.1", "gpt-4o"]
     seen = set()
     model_chain = [m for m in preferred_models if m and not (m in seen or seen.add(m))]
-    last_error = None
+    last_error: BaseException | None = None
 
     for model in model_chain:
         try:
@@ -81,7 +83,7 @@ def _call_llm(system_prompt: str, messages: list[dict]) -> str:
                 response_format={"type": "json_object"},
             )
             return completion.choices[0].message.content or ""
-        except Exception as exc:
+        except LLM_RETRY_ERRORS as exc:
             last_error = exc
             logger.warning("LLM model %s failed: %s", model, exc)
             continue
@@ -133,10 +135,8 @@ def generate_response(
     messages: list[dict] = []
 
     if conversation_history:
-        # Keep last N turns to avoid token overflow (each turn = 2 messages)
-        max_history_turns = 6
         history_to_use = _sanitize_history(conversation_history)[
-            -(max_history_turns * 2) :
+            -(MAX_HISTORY_TURNS * 2) :
         ]
         messages.extend(history_to_use)
 
@@ -155,7 +155,7 @@ def generate_response(
         )
         return result
 
-    except Exception as exc:
+    except LLM_RETRY_ERRORS as exc:
         logger.error("LLM | Failed after retries: %s", exc)
         return DEFAULT_RESPONSE.copy()
 
@@ -182,12 +182,15 @@ def _parse_response(raw: str) -> dict[str, Any]:
         logger.error("LLM | Failed to parse JSON: %s", exc)
         return DEFAULT_RESPONSE.copy()
 
-def _sanitize_history(history: list[dict]) -> list[dict]:
+def _sanitize_history(history: list[dict]) -> list[dict[str, str]]:
     """Ensure history messages only have allowed keys."""
-    sanitized = []
+    sanitized: list[dict[str, str]] = []
     for msg in history:
-        sanitized.append({
-            "role": msg.get("role", "user"),
-            "content": msg.get("content", "")
-        })
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "user")
+        content = str(msg.get("content") or "")
+        if role not in {"user", "assistant"} or not content:
+            continue
+        sanitized.append({"role": role, "content": content[: config.MAX_TRANSCRIPT_CHARS]})
     return sanitized

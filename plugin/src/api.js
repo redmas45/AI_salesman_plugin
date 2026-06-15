@@ -1,10 +1,18 @@
 import { config } from "./config";
 import { executeActions } from "./actions";
+import {
+  API_PATHS,
+  AUDIO,
+  HTTP_METHODS,
+  STATUS,
+  WS_CONNECT_TIMEOUT_MS,
+  WS_MESSAGES,
+} from "./constants";
 
 const MAX_WS_RETRIES = 3;
 
 function wsUrlFromApiBase(apiUrl, siteId) {
-  const url = new URL("/v1/ws/shop", apiUrl);
+  const url = new URL(API_PATHS.SHOP_WS, apiUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("site_id", siteId);
   return url.toString();
@@ -37,7 +45,7 @@ class AudioQueue {
   playNext() {
     if (this.playing || this.queue.length === 0) return;
     this.playing = true;
-    const audio = new Audio("data:audio/wav;base64," + this.queue.shift());
+    const audio = new Audio(AUDIO.DATA_WAV_PREFIX + this.queue.shift());
     audio.onended = () => {
       this.playing = false;
       this.playNext();
@@ -57,23 +65,23 @@ class AudioQueue {
 class HttpTransport {
   async sendAudio(blob, callbacks, conversationHistory = []) {
     const formData = new FormData();
-    formData.append("audio", blob, "audio.webm");
+    formData.append("audio", blob, AUDIO.WEBM_FILENAME);
     formData.append("site_id", config.siteId);
     if (conversationHistory && conversationHistory.length > 0) {
       formData.append("conversation_history", JSON.stringify(conversationHistory));
     }
 
-    const res = await fetch(`${config.apiUrl}/v1/shop`, {
-      method: "POST",
+    const res = await fetch(`${config.apiUrl}${API_PATHS.SHOP}`, {
+      method: HTTP_METHODS.POST,
       body: formData,
     });
 
-    if (!res.ok) throw new Error("API Error");
+    if (!res.ok) throw new Error("ShopBot API request failed");
 
     const data = await res.json();
     if (data.transcript) callbacks.onUserMessage?.(data.transcript);
     if (data.response_text) callbacks.onAssistantMessage?.(data.response_text, data.ui_actions || []);
-    callbacks.onStatusChange?.("ready");
+    callbacks.onStatusChange?.(STATUS.READY);
 
     if (data.audio_b64) {
       playAudioBase64(data.audio_b64);
@@ -121,14 +129,14 @@ class ShopbotWebSocketTransport {
         resolve(false);
       };
 
-      const timer = window.setTimeout(fail, 2500);
+      const timer = window.setTimeout(fail, WS_CONNECT_TIMEOUT_MS);
 
       ws.onopen = () => {
         window.clearTimeout(timer);
         this.connected = true;
         this.connecting = null;
         this.retries = 0;
-        this.sendJson({ type: "config", history: conversationHistory || [] });
+        this.sendJson({ type: WS_MESSAGES.CONFIG, history: conversationHistory || [] });
         resolve(true);
       };
 
@@ -154,10 +162,10 @@ class ShopbotWebSocketTransport {
 
     this.callbacks = callbacks;
     this.turnText = "";
-    this.sendJson({ type: "config", history: conversationHistory || [] });
+    this.sendJson({ type: WS_MESSAGES.CONFIG, history: conversationHistory || [] });
     const b64 = await blobToBase64(blob);
-    this.sendJson({ type: "audio_chunk", data: b64 });
-    this.sendJson({ type: "audio_end" });
+    this.sendJson({ type: WS_MESSAGES.AUDIO_CHUNK, data: b64 });
+    this.sendJson({ type: WS_MESSAGES.AUDIO_END });
     return true;
   }
 
@@ -169,29 +177,30 @@ class ShopbotWebSocketTransport {
     try {
       msg = JSON.parse(event.data);
     } catch (_err) {
+      callbacks.onComplete?.({ error: "Invalid WebSocket message" });
       return;
     }
 
-    if (msg.type === "transcript") {
+    if (msg.type === WS_MESSAGES.TRANSCRIPT) {
       callbacks.onUserMessage?.(msg.text || "");
       return;
     }
 
-    if (msg.type === "text_chunk") {
+    if (msg.type === WS_MESSAGES.TEXT_CHUNK) {
       this.turnText += msg.text || "";
       callbacks.onAssistantChunk?.(msg.text || "", this.turnText);
       return;
     }
 
-    if (msg.type === "audio_chunk") {
+    if (msg.type === WS_MESSAGES.AUDIO_CHUNK) {
       this.audioQueue.push(msg.audio_b64);
       return;
     }
 
-    if (msg.type === "done") {
+    if (msg.type === WS_MESSAGES.DONE) {
       const finalText = msg.response_text || this.turnText;
       callbacks.onAssistantMessage?.(finalText, msg.ui_actions || [], { streamed: true });
-      callbacks.onStatusChange?.("ready");
+      callbacks.onStatusChange?.(STATUS.READY);
       if (msg.ui_actions && msg.ui_actions.length > 0) {
         await executeActions(msg.ui_actions);
       }
@@ -200,8 +209,8 @@ class ShopbotWebSocketTransport {
       return;
     }
 
-    if (msg.type === "error") {
-      callbacks.onStatusChange?.("error");
+    if (msg.type === WS_MESSAGES.ERROR) {
+      callbacks.onStatusChange?.(STATUS.ERROR);
       callbacks.onComplete?.({ error: msg.message || "WebSocket error" });
       this.callbacks = null;
     }
@@ -221,13 +230,13 @@ export async function processAudio(blob, elements, callbacks, conversationHistor
     await httpTransport.sendAudio(blob, callbacks, conversationHistory);
   } catch (err) {
     console.error(err);
-    callbacks.onStatusChange?.("error");
+    callbacks.onStatusChange?.(STATUS.ERROR);
     callbacks.onComplete?.({ error: String(err) });
   }
 }
 
 function playAudioBase64(b64) {
-  const audioSrc = "data:audio/wav;base64," + b64;
+  const audioSrc = AUDIO.DATA_WAV_PREFIX + b64;
   const audio = new Audio(audioSrc);
   audio.play().catch((e) => console.error("Audio playback failed", e));
 }

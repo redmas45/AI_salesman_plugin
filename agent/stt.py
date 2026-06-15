@@ -8,11 +8,23 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+from groq import APIConnectionError as GroqAPIConnectionError
+from groq import APIError as GroqAPIError
+from groq import RateLimitError as GroqRateLimitError
+from openai import OpenAI, OpenAIError
 
 import config
 
 logger = logging.getLogger(__name__)
+STT_PROVIDER_ERRORS = (
+    OpenAIError,
+    GroqAPIError,
+    GroqAPIConnectionError,
+    GroqRateLimitError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 # Lazy-loaded client (created once per process)
 _client: OpenAI | None = None
@@ -50,7 +62,7 @@ from tenacity import (
 @retry(
     stop=stop_after_attempt(4),
     wait=wait_exponential(multiplier=1, min=1, max=8),
-    retry=retry_if_exception_type(Exception),
+    retry=retry_if_exception_type(STT_PROVIDER_ERRORS),
     reraise=True,
 )
 def _call_stt(audio_file: tuple, language: str) -> str:
@@ -76,7 +88,7 @@ def _call_stt(audio_file: tuple, language: str) -> str:
             if isinstance(response, str):
                 return response.strip()
             return (getattr(response, "text", "") or "").strip()
-        except Exception as exc:
+        except STT_PROVIDER_ERRORS as exc:
             last_exc = exc
             logger.warning("STT failed for model %s: %s", model, exc)
             if model == config.STT_MODEL and len(models_to_try) > 1:
@@ -84,12 +96,13 @@ def _call_stt(audio_file: tuple, language: str) -> str:
 
     if last_exc:
         raise last_exc
+    raise RuntimeError("STT provider returned no transcript.")
 
 
 @retry(
     stop=stop_after_attempt(2),
     wait=wait_exponential(multiplier=0.25, min=0.25, max=1),
-    retry=retry_if_exception_type(Exception),
+    retry=retry_if_exception_type(STT_PROVIDER_ERRORS),
     reraise=True,
 )
 def _call_groq_stt(audio_file: tuple, language: str) -> str:
@@ -129,7 +142,7 @@ def transcribe(audio_bytes: bytes, filename: str = "audio.wav") -> str:
             try:
                 transcript = _call_groq_stt(_audio_file(audio_bytes, filename), config.STT_LANGUAGE)
                 logger.info("STT | Groq model=%s length=%d", config.GROQ_STT_MODEL, len(transcript))
-            except Exception:
+            except STT_PROVIDER_ERRORS:
                 if not config.GROQ_FALLBACK_TO_OPENAI:
                     raise
                 logger.exception("STT | Groq failed; falling back to OpenAI")
@@ -146,7 +159,7 @@ def transcribe(audio_bytes: bytes, filename: str = "audio.wav") -> str:
         logger.info("STT | transcript length=%d", len(transcript))
         return transcript
 
-    except Exception as exc:
+    except STT_PROVIDER_ERRORS as exc:
         logger.exception("STT | transcription failed")
         raise RuntimeError("I didn't catch that. Please try again.") from exc
 

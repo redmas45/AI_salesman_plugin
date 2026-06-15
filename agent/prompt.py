@@ -433,12 +433,14 @@ def build_system_prompt(
     """
     Inject retrieved product context and cart state into the system prompt dynamically per tenant.
     """
+    import psycopg
     from db.database import get_db
+
     try:
         with get_db(site_id) as conn:
             rows = conn.execute("SELECT name, slug FROM categories ORDER BY name ASC").fetchall()
             categories = [{"name": r["name"], "slug": r["slug"]} for r in rows]
-    except Exception:
+    except psycopg.Error:
         categories = []
 
     cat_names = [c["name"] for c in categories]

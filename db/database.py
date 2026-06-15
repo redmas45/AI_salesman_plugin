@@ -63,6 +63,7 @@ def get_db(site_id: str) -> Generator[psycopg.Connection, None, None]:
         yield conn
         conn.commit()
     except Exception:
+        # Roll back on any caller exception thrown through the context manager.
         conn.rollback()
         raise
 
@@ -77,7 +78,7 @@ def init_tenant_schema(site_id: str) -> None:
         conn.execute(sql.SQL("SET search_path TO {}, public").format(sql.Identifier(tenant_schema)))
         conn.execute(schema_sql)
         conn.commit()
-    except Exception:
+    except psycopg.Error:
         conn.rollback()
         raise
 
@@ -166,7 +167,7 @@ def tenant_catalog_stats(site_id: str) -> dict:
                 """
             ).fetchone()
             return dict(row) if row else {"total_products": 0, "active_products": 0, "missing_embeddings": 0}
-    except Exception:
+    except psycopg.Error:
         return {"total_products": 0, "active_products": 0, "missing_embeddings": 0}
 
 

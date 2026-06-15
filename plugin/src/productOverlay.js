@@ -1,4 +1,12 @@
-import { config } from "./config";
+import { fetchHubProductsByIds, resolveProductDetailUrl } from "./productResolver";
+import {
+  ACTION_PARAMS,
+  ACTIONS,
+  DEFAULT_CART_QUANTITY,
+  DEFAULT_RECOMMENDATION_TITLE,
+  EVENTS,
+  OVERLAY_COLLAPSE_DELAY_MS,
+} from "./constants";
 
 const PLACEHOLDER_IMAGE = "https://demo.vercel.store/placeholder.png";
 
@@ -9,24 +17,6 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
-}
-
-function normalizeProduct(raw) {
-  if (!raw) return null;
-  const id = String(raw.id || raw.product_id || "").trim();
-  const name = String(raw.name || raw.title || "Untitled product").trim();
-  const price = Number(raw.price || 0);
-  if (!id || !name) return null;
-
-  return {
-    id,
-    name,
-    brand: raw.brand || raw.vendor || "Unknown Brand",
-    category: raw.category || raw.category_name || "Products",
-    description: raw.description || "",
-    price: Number.isFinite(price) ? price : 0,
-    imageUrl: raw.image_url || raw.image || raw.thumbnail || "",
-  };
 }
 
 function ensureStyles() {
@@ -212,7 +202,7 @@ function ensurePanel() {
   panel.setAttribute("aria-live", "polite");
   panel.innerHTML = `
     <div class="shopbot-product-header">
-      <h2 class="shopbot-product-title">Recommended products</h2>
+      <h2 class="shopbot-product-title">${DEFAULT_RECOMMENDATION_TITLE}</h2>
       <button class="shopbot-product-close" type="button" aria-label="Close recommendations">&times;</button>
     </div>
     <div class="shopbot-product-grid"></div>
@@ -225,40 +215,42 @@ function ensurePanel() {
 }
 
 async function fetchProductsByIds(productIds) {
-  const ids = (Array.isArray(productIds) ? productIds : [])
-    .map((id) => String(id || "").trim())
-    .filter(Boolean);
-  if (!ids.length) return [];
-
-  const url = new URL("/v1/products/by-ids", config.apiUrl);
-  url.searchParams.set("site_id", config.siteId);
-  url.searchParams.set("ids", ids.join(","));
-
-  const response = await fetch(url.toString(), { headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error("Failed to fetch recommended products");
-
-  const products = (await response.json()).map(normalizeProduct).filter(Boolean);
-  const byId = new Map(products.map((product) => [String(product.id), product]));
-  return ids.map((id) => byId.get(String(id))).filter(Boolean);
+  return fetchHubProductsByIds(productIds);
 }
 
 async function requestAddToCart(productId) {
   const cart = window.ShopCart;
   if (cart && typeof cart.addItem === "function") {
-    await cart.addItem(productId, 1);
+    await cart.addItem(productId, DEFAULT_CART_QUANTITY);
     if (typeof cart.open === "function") cart.open();
     return;
   }
 
   const detail = {
-    action: "ADD_TO_CART",
-    params: { product_id: productId, quantity: 1 },
-    parameters: { product_id: productId, quantity: 1 },
+    action: ACTIONS.ADD_TO_CART,
+    params: {
+      [ACTION_PARAMS.PRODUCT_ID]: productId,
+      [ACTION_PARAMS.QUANTITY]: DEFAULT_CART_QUANTITY,
+    },
+    parameters: {
+      [ACTION_PARAMS.PRODUCT_ID]: productId,
+      [ACTION_PARAMS.QUANTITY]: DEFAULT_CART_QUANTITY,
+    },
   };
-  window.dispatchEvent(new CustomEvent("shopbot:action", { detail }));
+  window.dispatchEvent(new CustomEvent(EVENTS.SHOPBOT_ACTION, { detail }));
 }
 
 async function requestProductDetail(productId) {
+  try {
+    const productUrl = await resolveProductDetailUrl(productId);
+    if (productUrl) {
+      window.location.href = productUrl;
+      return;
+    }
+  } catch (error) {
+    console.warn("[ShopBot] Product detail URL lookup failed:", error);
+  }
+
   const cart = window.ShopCart;
   if (cart && typeof cart.showProductDetail === "function") {
     await cart.showProductDetail(productId);
@@ -266,11 +258,11 @@ async function requestProductDetail(productId) {
   }
 
   const detail = {
-    action: "SHOW_PRODUCT_DETAIL",
-    params: { product_id: productId },
-    parameters: { product_id: productId },
+    action: ACTIONS.SHOW_PRODUCT_DETAIL,
+    params: { [ACTION_PARAMS.PRODUCT_ID]: productId },
+    parameters: { [ACTION_PARAMS.PRODUCT_ID]: productId },
   };
-  window.dispatchEvent(new CustomEvent("shopbot:action", { detail }));
+  window.dispatchEvent(new CustomEvent(EVENTS.SHOPBOT_ACTION, { detail }));
 }
 
 function countClass(count) {
@@ -295,7 +287,7 @@ function renderProducts(products, title) {
   panel.classList.remove("count-1", "count-2", "count-3", "count-many");
   panel.classList.add(countClass(count));
   panel.style.setProperty("--shopbot-card-count", String(cardCount(count)));
-  heading.textContent = title || "Recommended products";
+  heading.textContent = title || DEFAULT_RECOMMENDATION_TITLE;
 
   if (!count) {
     grid.innerHTML = `<p class="shopbot-product-empty">No matching products are currently available.</p>`;
@@ -342,10 +334,10 @@ function collapseVoiceBubble() {
     const messages = document.getElementById("shopbot-msgs");
     if (messages) messages.innerHTML = "";
     if (chat) chat.classList.remove("visible");
-  }, 180);
+  }, OVERLAY_COLLAPSE_DELAY_MS);
 }
 
-export async function showProductOverlay(productIds, title = "Recommended products") {
+export async function showProductOverlay(productIds, title = DEFAULT_RECOMMENDATION_TITLE) {
   try {
     const products = await fetchProductsByIds(productIds);
     renderProducts(products, title);

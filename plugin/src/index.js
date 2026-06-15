@@ -3,8 +3,15 @@ import { initWidget, addMessage, updateMessage } from "./widget";
 import { setupRecorder } from "./recorder";
 import { processAudio } from "./api";
 import { config } from "./config";
+import {
+  AUTO_GREETING_DELAY_MS,
+  AUTO_GREETING_VISIBLE_MS,
+  ACTION_PARAMS,
+  CONVERSATION_HISTORY_LIMIT,
+  DEFAULT_VISIBLE_RESET_DELAY_MS,
+  STATUS,
+} from "./constants";
 
-// Initialize UI
 window.__shopbot_identifier = "voice-orb";
 function boot() {
   if (window.__shopbotBooted || document.getElementById("shopbot-widget")) {
@@ -15,9 +22,8 @@ function boot() {
   injectStyles();
   const elements = initWidget();
 
-  // Status Callback
   let clearTimer = null;
-  function scheduleVisibleReset(delayMs = 2400) {
+  function scheduleVisibleReset(delayMs = DEFAULT_VISIBLE_RESET_DELAY_MS) {
     if (clearTimer) window.clearTimeout(clearTimer);
     clearTimer = window.setTimeout(() => {
       elements.msgs.innerHTML = "";
@@ -27,8 +33,8 @@ function boot() {
   }
 
   function handleStatusChange(statusStr) {
-    elements.status.className = ""; // Reset all classes
-    if (statusStr === "recording") {
+    elements.status.className = "";
+    if (statusStr === STATUS.RECORDING) {
       if (clearTimer) {
         window.clearTimeout(clearTimer);
         clearTimer = null;
@@ -38,22 +44,21 @@ function boot() {
       elements.chat.classList.add("visible");
       elements.status.innerText = "Listening...";
       elements.status.classList.add("listening");
-    } else if (statusStr === "processing") {
+    } else if (statusStr === STATUS.PROCESSING) {
       elements.btn.classList.remove("recording");
       elements.chat.classList.add("visible");
       elements.status.innerText = "Analyzing...";
       elements.status.classList.add("processing");
-    } else if (statusStr === "ready") {
+    } else if (statusStr === STATUS.READY) {
       elements.status.innerText = "Ready";
       elements.status.classList.add("ready");
-    } else if (statusStr === "error") {
+    } else if (statusStr === STATUS.ERROR) {
       elements.status.innerText = "Error";
       elements.status.classList.add("error");
       elements.btn.classList.remove("recording");
     }
   }
 
-  // Message history cache (limit to last 12 messages)
   const conversationHistory = [];
   let activeStreamNode = null;
   let activeStreamText = "";
@@ -64,13 +69,13 @@ function boot() {
     const productIds = [];
     for (const action of (uiActions || [])) {
       const params = action.params || {};
-      if (params.product_ids && Array.isArray(params.product_ids)) {
-        for (const pid of params.product_ids) {
+      if (params[ACTION_PARAMS.PRODUCT_IDS] && Array.isArray(params[ACTION_PARAMS.PRODUCT_IDS])) {
+        for (const pid of params[ACTION_PARAMS.PRODUCT_IDS]) {
           if (!productIds.includes(pid)) productIds.push(pid);
         }
       }
-      if (params.product_id && !productIds.includes(params.product_id)) {
-        productIds.push(params.product_id);
+      if (params[ACTION_PARAMS.PRODUCT_ID] && !productIds.includes(params[ACTION_PARAMS.PRODUCT_ID])) {
+        productIds.push(params[ACTION_PARAMS.PRODUCT_ID]);
       }
     }
     if (productIds.length > 0) {
@@ -88,7 +93,7 @@ function boot() {
       onUserMessage: (text) => {
         addMessage(elements, text, "user");
         conversationHistory.push({ role: "user", content: text });
-        if (conversationHistory.length > 12) {
+        if (conversationHistory.length > CONVERSATION_HISTORY_LIMIT) {
           conversationHistory.shift();
         }
       },
@@ -107,7 +112,7 @@ function boot() {
         }
         const content = buildAssistantContent(text, uiActions);
         conversationHistory.push({ role: "assistant", content });
-        if (conversationHistory.length > 12) {
+        if (conversationHistory.length > CONVERSATION_HISTORY_LIMIT) {
           conversationHistory.shift();
         }
         activeStreamNode = null;
@@ -118,10 +123,8 @@ function boot() {
     }, conversationHistory);
   }
 
-  // Setup Recorder
   const recorder = setupRecorder(handleStop, handleStatusChange);
 
-  // Bind Button
   elements.btn.addEventListener("click", () => {
     recorder.toggle();
   });
@@ -132,8 +135,8 @@ function boot() {
       if (conversationHistory.length > 0) return;
       const greeting = `Welcome to ${config.brandName}. How can I help you today?`;
       addMessage(elements, greeting, "ai");
-      handleStatusChange("ready");
-      scheduleVisibleReset(4200);
+      handleStatusChange(STATUS.READY);
+      scheduleVisibleReset(AUTO_GREETING_VISIBLE_MS);
       try {
         if ("speechSynthesis" in window) {
           const utterance = new SpeechSynthesisUtterance(greeting);
@@ -144,7 +147,7 @@ function boot() {
       } catch (_err) {
         // Browser speech synthesis is best-effort only.
       }
-    }, 900);
+    }, AUTO_GREETING_DELAY_MS);
   }
 }
 

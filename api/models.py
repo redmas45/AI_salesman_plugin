@@ -3,74 +3,99 @@ Pydantic models for API request/response validation.
 """
 
 from typing import Any, Literal, Optional, Union
+from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+DEFAULT_SITE_ID = "site_1"
+MAX_SITE_ID_LENGTH = 80
+MAX_CART_QUANTITY = 99
+ACTION_SHOW_PRODUCTS = "SHOW_PRODUCTS"
+ACTION_SHOW_COMPARISON = "SHOW_COMPARISON"
+ACTION_FILTER_PRODUCTS = "FILTER_PRODUCTS"
+ACTION_NAVIGATE_TO = "NAVIGATE_TO"
+ACTION_SORT_PRODUCTS = "SORT_PRODUCTS"
+ACTION_ADD_TO_CART = "ADD_TO_CART"
+ACTION_REMOVE_FROM_CART = "REMOVE_FROM_CART"
+ACTION_SHOW_PRODUCT_DETAIL = "SHOW_PRODUCT_DETAIL"
+ACTION_CLEAR_FILTERS = "CLEAR_FILTERS"
+ACTION_CLEAR_CART = "CLEAR_CART"
+ACTION_CHECKOUT = "CHECKOUT"
+ACTION_UPDATE_CART_QUANTITY = "UPDATE_CART_QUANTITY"
+ACTION_CLEAR_HISTORY = "CLEAR_HISTORY"
+ACTION_UPDATE_PREFERENCES = "UPDATE_PREFERENCES"
+PRODUCT_IDS_PARAM = "product_ids"
+PRODUCT_ID_PARAM = "product_id"
+PAGE_PARAM = "page"
+QUANTITY_PARAM = "quantity"
+SORT_BY_PARAM = "sort_by"
+SUPPORTED_SORT_KEYS = {"price_asc", "price_desc", "rating", "newest"}
+PRODUCT_LIST_ACTIONS = {ACTION_SHOW_PRODUCTS, ACTION_SHOW_COMPARISON}
+PRODUCT_ID_ACTIONS = {
+    ACTION_ADD_TO_CART,
+    ACTION_SHOW_PRODUCT_DETAIL,
+    ACTION_UPDATE_CART_QUANTITY,
+    ACTION_REMOVE_FROM_CART,
+}
+OPEN_PARAMETER_ACTIONS = {
+    ACTION_FILTER_PRODUCTS,
+    ACTION_CLEAR_FILTERS,
+    ACTION_CLEAR_CART,
+    ACTION_CHECKOUT,
+    ACTION_CLEAR_HISTORY,
+    ACTION_UPDATE_PREFERENCES,
+}
 
 
 class UIAction(BaseModel):
     action: Literal[
-        "SHOW_PRODUCTS",
-        "SHOW_COMPARISON",
-        "FILTER_PRODUCTS",
-        "NAVIGATE_TO",
-        "SORT_PRODUCTS",
-        "ADD_TO_CART",
-        "REMOVE_FROM_CART",
-        "SHOW_PRODUCT_DETAIL",
-        "CLEAR_FILTERS",
-        "CLEAR_CART",
-        "CHECKOUT",
-        "UPDATE_CART_QUANTITY",
-        "CLEAR_HISTORY",
-        "UPDATE_PREFERENCES",
+        ACTION_SHOW_PRODUCTS,
+        ACTION_SHOW_COMPARISON,
+        ACTION_FILTER_PRODUCTS,
+        ACTION_NAVIGATE_TO,
+        ACTION_SORT_PRODUCTS,
+        ACTION_ADD_TO_CART,
+        ACTION_REMOVE_FROM_CART,
+        ACTION_SHOW_PRODUCT_DETAIL,
+        ACTION_CLEAR_FILTERS,
+        ACTION_CLEAR_CART,
+        ACTION_CHECKOUT,
+        ACTION_UPDATE_CART_QUANTITY,
+        ACTION_CLEAR_HISTORY,
+        ACTION_UPDATE_PREFERENCES,
     ] = Field(..., description="UI action type")
     params: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_params(self):
+    def validate_params(self) -> Self:
         params = self.params
         action = self.action
 
-        if action in ("SHOW_PRODUCTS", "SHOW_COMPARISON"):
-            product_ids = params.get("product_ids")
+        if action in PRODUCT_LIST_ACTIONS:
+            product_ids = params.get(PRODUCT_IDS_PARAM)
             if not isinstance(product_ids, list) or not all(
                 isinstance(pid, (int, str)) for pid in product_ids
             ):
                 raise ValueError(f"{action} requires product_ids: list[int|str]")
+            return self
 
-        elif action in ("ADD_TO_CART", "SHOW_PRODUCT_DETAIL", "UPDATE_CART_QUANTITY"):
-            if not isinstance(params.get("product_id"), (int, str)):
+        if action in PRODUCT_ID_ACTIONS:
+            if not isinstance(params.get(PRODUCT_ID_PARAM), (int, str)):
                 raise ValueError(f"{action} requires product_id: int|str")
+            return self
 
-        elif action == "FILTER_PRODUCTS":
-            # Allow any filter params as we handle unsupported ones gracefully
-            pass
-
-        elif action == "NAVIGATE_TO":
-            if not isinstance(params.get("page"), str):
+        if action == ACTION_NAVIGATE_TO:
+            if not isinstance(params.get(PAGE_PARAM), str):
                 raise ValueError("NAVIGATE_TO requires page: str")
+            return self
 
-        elif action == "SORT_PRODUCTS":
-            if params.get("sort_by") not in {
-                "price_asc",
-                "price_desc",
-                "rating",
-                "newest",
-            }:
+        if action == ACTION_SORT_PRODUCTS:
+            if params.get(SORT_BY_PARAM) not in SUPPORTED_SORT_KEYS:
                 raise ValueError("SORT_PRODUCTS requires a supported sort_by value")
+            return self
 
-        elif action == "CLEAR_FILTERS":
-            pass
-
-        elif action == "CLEAR_CART":
-            pass
-
-        elif action == "REMOVE_FROM_CART":
-            if not isinstance(params.get("product_id"), (int, str)):
-                raise ValueError("REMOVE_FROM_CART requires product_id: int|str")
-
-        elif action == "CHECKOUT":
-            pass  # No strict parameter requirements
+        if action in OPEN_PARAMETER_ACTIONS:
+            return self
 
         return self
 
@@ -78,11 +103,11 @@ class UIAction(BaseModel):
 class CheckoutRequestItem(BaseModel):
     id: str
     name: str
-    price: float
-    quantity: int
+    price: float = Field(ge=0)
+    quantity: int = Field(ge=1, le=MAX_CART_QUANTITY)
 
 class CheckoutRequest(BaseModel):
-    site_id: str = "site_1"
+    site_id: str = Field(default=DEFAULT_SITE_ID, min_length=1, max_length=MAX_SITE_ID_LENGTH)
     address: str = "N/A"
     payment_method: str = "N/A"
     items: Optional[list[CheckoutRequestItem]] = None
@@ -125,9 +150,9 @@ class HealthResponse(BaseModel):
     models: dict[str, str]
 
 class AddToCartRequest(BaseModel):
-    site_id: str = "site_1"
+    site_id: str = Field(default=DEFAULT_SITE_ID, min_length=1, max_length=MAX_SITE_ID_LENGTH)
     product_id: Union[int, str]
-    quantity: int = Field(default=1, ge=1, le=99)
+    quantity: int = Field(default=1, ge=1, le=MAX_CART_QUANTITY)
 
 
 class CartItemResponse(ProductResponse):

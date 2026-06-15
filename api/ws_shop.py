@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
 import logging
 from typing import Any
@@ -20,6 +21,30 @@ from api.turn_logging import print_turn_summary, turn_timer
 import config
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_AUDIO_FILENAME = "audio.webm"
+MAX_HISTORY_TURNS = 12
+WS_TYPE_READY = "ready"
+WS_TYPE_CONFIGURED = "configured"
+WS_TYPE_CONFIG = "config"
+WS_TYPE_AUDIO_CHUNK = "audio_chunk"
+WS_TYPE_AUDIO_END = "audio_end"
+WS_TYPE_TEXT = "text"
+WS_TYPE_ERROR = "error"
+WS_TYPE_TRANSCRIPT = "transcript"
+WS_TYPE_ACTIONS = "actions"
+WS_TYPE_RESPONSE = "response"
+WS_TYPE_METRICS = "metrics"
+WS_TYPE_DONE = "done"
+WS_TYPE_TEXT_CHUNK = "text_chunk"
+ORCHESTRATOR_EVENT_AUDIO = "audio"
+WS_STATUS_OK = "ok"
+WS_STATUS_ERROR = "error"
+ERROR_INVALID_JSON_FRAME = "Invalid JSON frame"
+ERROR_FRAME_NOT_OBJECT = "Frame must be an object"
+ERROR_NO_AUDIO_OR_TEXT = "No audio or text received."
+PIPELINE_ERROR_MESSAGE = "Pipeline error"
+RECOVERABLE_WS_ERRORS = (RuntimeError, ValueError, TypeError, OSError)
 
 
 class WebSocketShopSession:
@@ -33,50 +58,56 @@ class WebSocketShopSession:
 
     async def run(self) -> None:
         await self.websocket.accept()
-        await self.send({"type": "ready", "site_id": self.site_id})
+        await self.send({"type": WS_TYPE_READY, "site_id": self.site_id})
 
         try:
             while True:
                 payload = await self.receive_payload()
                 message_type = payload.get("type")
 
-                if message_type == "config":
-                    self.history = _sanitize_history(payload.get("history", []))
-                    await self.send({"type": "configured", "history_size": len(self.history)})
+                if message_type == WS_TYPE_ERROR:
+                    await self.send({"type": WS_TYPE_ERROR, "message": payload["message"]})
                     continue
 
-                if message_type == "audio_chunk":
+                if message_type == WS_TYPE_CONFIG:
+                    self.history = _sanitize_history(payload.get("history", []))
+                    await self.send({"type": WS_TYPE_CONFIGURED, "history_size": len(self.history)})
+                    continue
+
+                if message_type == WS_TYPE_AUDIO_CHUNK:
                     self.audio_chunks.append(_decode_audio_chunk(payload))
                     continue
 
-                if message_type == "audio_end":
+                if message_type == WS_TYPE_AUDIO_END:
                     audio = b"".join(self.audio_chunks)
                     self.audio_chunks = []
                     await self.process_turn(audio_bytes=audio or None)
                     continue
 
-                if message_type == "text":
+                if message_type == WS_TYPE_TEXT:
                     await self.process_turn(text_input=str(payload.get("text") or ""))
                     continue
 
-                await self.send({"type": "error", "message": f"Unsupported message type: {message_type}"})
+                await self.send({"type": WS_TYPE_ERROR, "message": f"Unsupported message type: {message_type}"})
         except WebSocketDisconnect:
             logger.info("WS_SHOP | disconnected site=%s", self.site_id)
-        except Exception as exc:
+        except RECOVERABLE_WS_ERRORS as exc:
             logger.exception("WS_SHOP | fatal error")
             try:
-                await self.send({"type": "error", "message": str(exc)})
+                await self.send({"type": WS_TYPE_ERROR, "message": str(exc)})
                 await self.websocket.close()
-            except Exception:
-                pass
+            except RuntimeError as close_error:
+                logger.warning("WS_SHOP | failed to close websocket cleanly: %s", close_error)
 
     async def receive_payload(self) -> dict[str, Any]:
         raw = await self.websocket.receive_text()
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            return {"type": "error", "message": "Invalid JSON frame"}
-        return payload if isinstance(payload, dict) else {"type": "error", "message": "Frame must be an object"}
+            return {"type": WS_TYPE_ERROR, "message": ERROR_INVALID_JSON_FRAME}
+        if not isinstance(payload, dict):
+            return {"type": WS_TYPE_ERROR, "message": ERROR_FRAME_NOT_OBJECT}
+        return payload
 
     async def process_turn(
         self,
@@ -85,7 +116,7 @@ class WebSocketShopSession:
         text_input: str | None = None,
     ) -> None:
         if not audio_bytes and not (text_input or "").strip():
-            await self.send({"type": "error", "message": "No audio or text received."})
+            await self.send({"type": WS_TYPE_ERROR, "message": ERROR_NO_AUDIO_OR_TEXT})
             return
 
         started_at = turn_timer()
@@ -98,15 +129,15 @@ class WebSocketShopSession:
                     site_id=self.site_id,
                     audio_bytes=audio_bytes,
                     text_input=text_input,
-                    audio_filename="audio.webm",
+                    audio_filename=DEFAULT_AUDIO_FILENAME,
                     skip_tts=False,
                     conversation_history=self.history,
                 ):
                     asyncio.run_coroutine_threadsafe(queue.put(event), loop).result()
-            except Exception as exc:  # pragma: no cover - defensive bridge
+            except RECOVERABLE_WS_ERRORS as exc:  # pragma: no cover - defensive bridge
                 logger.exception("WS_SHOP | pipeline failed")
                 asyncio.run_coroutine_threadsafe(
-                    queue.put({"event": "error", "data": {"error": str(exc)}}), loop
+                    queue.put({"event": WS_TYPE_ERROR, "data": {"error": str(exc)}}), loop
                 ).result()
             finally:
                 asyncio.run_coroutine_threadsafe(queue.put(None), loop).result()
@@ -116,7 +147,7 @@ class WebSocketShopSession:
         response_text = ""
         ui_actions: list[dict[str, Any]] = []
         latency_ms: dict[str, Any] = {}
-        status = "ok"
+        status = WS_STATUS_OK
         error_message = ""
         response_sent = False
 
@@ -128,46 +159,46 @@ class WebSocketShopSession:
             event_name = event.get("event")
             data = event.get("data") or {}
 
-            if event_name == "transcript":
+            if event_name == WS_TYPE_TRANSCRIPT:
                 transcript = str(data.get("transcript") or "")
-                await self.send({"type": "transcript", "text": transcript})
+                await self.send({"type": WS_TYPE_TRANSCRIPT, "text": transcript})
                 continue
 
-            if event_name == "actions":
+            if event_name == WS_TYPE_ACTIONS:
                 ui_actions = data.get("ui_actions") or []
                 continue
 
-            if event_name == "response":
+            if event_name == WS_TYPE_RESPONSE:
                 response_text = str(data.get("response_text") or response_text)
                 if response_text:
                     response_sent = True
-                    await self.send({"type": "text_chunk", "text": response_text})
+                    await self.send({"type": WS_TYPE_TEXT_CHUNK, "text": response_text})
                 continue
 
-            if event_name == "audio":
+            if event_name == ORCHESTRATOR_EVENT_AUDIO:
                 response_text = str(data.get("response_text") or response_text)
                 latency_ms = data.get("latency_ms") or latency_ms
                 if response_text and not response_sent:
                     response_sent = True
-                    await self.send({"type": "text_chunk", "text": response_text})
+                    await self.send({"type": WS_TYPE_TEXT_CHUNK, "text": response_text})
                 if data.get("audio_b64"):
-                    await self.send({"type": "audio_chunk", "audio_b64": data["audio_b64"]})
+                    await self.send({"type": WS_TYPE_AUDIO_CHUNK, "audio_b64": data["audio_b64"]})
                 continue
 
-            if event_name == "metrics":
+            if event_name == WS_TYPE_METRICS:
                 latency_ms = data.get("latency_ms") or latency_ms
                 continue
 
-            if event_name == "error":
-                status = "error"
-                error_message = str(data.get("error") or "Pipeline error")
-                await self.send({"type": "error", "message": error_message})
+            if event_name == WS_TYPE_ERROR:
+                status = WS_STATUS_ERROR
+                error_message = str(data.get("error") or PIPELINE_ERROR_MESSAGE)
+                await self.send({"type": WS_TYPE_ERROR, "message": error_message})
 
         await worker_task
         self.update_history(transcript, response_text)
         await self.send(
             {
-                "type": "done",
+                "type": WS_TYPE_DONE,
                 "response_text": response_text,
                 "ui_actions": ui_actions,
                 "history": self.history,
@@ -190,7 +221,7 @@ class WebSocketShopSession:
             self.history.append({"role": "user", "content": transcript[: config.MAX_TRANSCRIPT_CHARS]})
         if response_text:
             self.history.append({"role": "assistant", "content": response_text[: config.MAX_RESPONSE_CHARS]})
-        self.history = self.history[-12:]
+        self.history = self.history[-MAX_HISTORY_TURNS:]
 
     async def send(self, payload: dict[str, Any]) -> None:
         await self.websocket.send_json(payload)
@@ -207,8 +238,8 @@ def _decode_audio_chunk(payload: dict[str, Any]) -> bytes:
     if "," in data:
         data = data.split(",", 1)[1]
     try:
-        return base64.b64decode(data)
-    except Exception:
+        return base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError):
         return b""
 
 
@@ -217,7 +248,7 @@ def _sanitize_history(raw_history: Any) -> list[dict[str, str]]:
         return []
 
     history: list[dict[str, str]] = []
-    for item in raw_history[-12:]:
+    for item in raw_history[-MAX_HISTORY_TURNS:]:
         if not isinstance(item, dict):
             continue
         role = item.get("role")

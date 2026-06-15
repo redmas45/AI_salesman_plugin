@@ -58,8 +58,9 @@ class TeeLogger:
         try:
             with self.log_file.open("a", encoding="utf-8") as handle:
                 handle.write(str(data))
-        except OSError:
-            pass
+        except OSError as exc:
+            self.original_stream.write(f"[warning] Could not write tee log: {exc}\n")
+            self.original_stream.flush()
 
     def flush(self):
         self.original_stream.flush()
@@ -110,8 +111,8 @@ class Service:
             try:
                 if handle:
                     handle.close()
-            except OSError:
-                pass
+            except OSError as exc:
+                print(f"[warning] Could not close service log handle: {exc}")
 
     def exited(self) -> bool:
         return self.process is not None and self.process.poll() is not None
@@ -314,14 +315,14 @@ def detect_lan_ip() -> str:
             if detected and not detected.startswith("127."):
                 return detected
     except OSError:
-        pass
+        detected = ""
 
     try:
         detected = socket.gethostbyname(socket.gethostname())
         if detected and not detected.startswith("127."):
             return detected
     except OSError:
-        pass
+        detected = ""
 
     return "127.0.0.1"
 
@@ -764,7 +765,7 @@ def is_windows_admin() -> bool:
         import ctypes
 
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
+    except (AttributeError, OSError):
         return False
 
 
@@ -932,7 +933,7 @@ def listening_pids(ports: list[int]) -> set[int]:
             try:
                 pids.add(int(parts[-1]))
             except ValueError:
-                pass
+                continue
         return pids
     return set()
 

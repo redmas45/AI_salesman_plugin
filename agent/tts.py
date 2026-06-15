@@ -10,11 +10,23 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+from groq import APIConnectionError as GroqAPIConnectionError
+from groq import APIError as GroqAPIError
+from groq import RateLimitError as GroqRateLimitError
+from openai import OpenAI, OpenAIError
 
 import config
 
 logger = logging.getLogger(__name__)
+TTS_PROVIDER_ERRORS = (
+    OpenAIError,
+    GroqAPIError,
+    GroqAPIConnectionError,
+    GroqRateLimitError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
 
 _client: OpenAI | None = None
 _groq_client: Any | None = None
@@ -51,7 +63,7 @@ from tenacity import (
 @retry(
     stop=stop_after_attempt(4),
     wait=wait_exponential(multiplier=1, min=1, max=8),
-    retry=retry_if_exception_type(Exception),
+    retry=retry_if_exception_type(TTS_PROVIDER_ERRORS),
     reraise=True,
 )
 def _call_tts(text: str) -> bytes:
@@ -79,7 +91,7 @@ def _call_tts(text: str) -> bytes:
                 response_format="wav",
             )
             return response.content
-        except Exception as exc:
+        except TTS_PROVIDER_ERRORS as exc:
             last_exc = exc
             logger.warning("TTS failed for model %s: %s", model, exc)
             if model == config.TTS_MODEL and len(models_to_try) > 1:
@@ -87,12 +99,13 @@ def _call_tts(text: str) -> bytes:
 
     if last_exc:
         raise last_exc
+    raise RuntimeError("TTS provider returned no audio bytes.")
 
 
 @retry(
     stop=stop_after_attempt(2),
     wait=wait_exponential(multiplier=0.25, min=0.25, max=1),
-    retry=retry_if_exception_type(Exception),
+    retry=retry_if_exception_type(TTS_PROVIDER_ERRORS),
     reraise=True,
 )
 def _call_groq_tts(text: str) -> bytes:
@@ -129,8 +142,8 @@ def _binary_response_to_bytes(response: Any) -> bytes:
             if temp_path:
                 try:
                     os.unlink(temp_path)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.warning("TTS | temporary file cleanup failed: %s", exc)
 
     raise RuntimeError("Groq TTS response did not contain audio bytes.")
 
@@ -156,14 +169,14 @@ def synthesize(text: str) -> bytes:
                     len(audio_bytes),
                     len(text),
                 )
-            except Exception:
+            except TTS_PROVIDER_ERRORS:
                 if not config.GROQ_FALLBACK_TO_OPENAI:
                     raise
                 logger.exception("TTS | Groq failed; falling back to OpenAI")
                 audio_bytes = _call_tts(text)
         else:
             audio_bytes = _call_tts(text)
-    except Exception as exc:
+    except TTS_PROVIDER_ERRORS as exc:
         logger.error("TTS | synthesis failed: %s", exc)
         raise RuntimeError(f"Text-to-speech failed: {exc}") from exc
 

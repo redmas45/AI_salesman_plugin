@@ -9,7 +9,7 @@ esbuild
     format: "iife", // immediately-invoked function expression
     target: ["es2020"],
   })
-  .then(() => console.log("Plugin built successfully!"))
+  .then(() => process.stdout.write("Plugin built successfully!\n"))
   .catch((err) => {
     console.error(err);
     process.exit(1);

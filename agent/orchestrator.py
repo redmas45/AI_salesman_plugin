@@ -16,11 +16,22 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import Any, Generator, Optional
+
+import psycopg
 
 from agent import guardrails, llm, rag, stt, tts
 from agent.guardrails import InputGuardrailError, OutputGuardrailError
 from agent.prompt import format_cart_for_prompt
+from api.models import (
+    ACTION_ADD_TO_CART,
+    ACTION_SHOW_COMPARISON,
+    ACTION_SHOW_PRODUCTS,
+    ACTION_UPDATE_PREFERENCES,
+    PRODUCT_ID_PARAM,
+    PRODUCT_IDS_PARAM,
+)
 from db.database import (
     get_all_products,
     get_cart_items,
@@ -31,6 +42,23 @@ from db.database import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_AUDIO_FILENAME = "audio.wav"
+PIPELINE_RECOVERABLE_ERRORS = (
+    KeyError,
+    LookupError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+    psycopg.Error,
+)
+
+
+@dataclass(frozen=True)
+class RetrievalContext:
+    profile: dict[str, Any]
+    price_constraints: dict[str, Any]
+    products: list[dict[str, Any]]
 
 
 def print(*args, **kwargs):
@@ -64,7 +92,7 @@ def run(
     site_id: str,
     audio_bytes: Optional[bytes] = None,
     text_input: Optional[str] = None,
-    audio_filename: str = "audio.wav",
+    audio_filename: str = DEFAULT_AUDIO_FILENAME,
     skip_tts: bool = False,
     conversation_history: Optional[list] = None,
 ) -> dict[str, Any]:
@@ -91,19 +119,14 @@ def run(
     timings: dict[str, float] = {}
     t0 = time.perf_counter()
 
-    # Stage 1: Speech-to-Text
-    if text_input:
-        transcript = text_input
-        timings["stt_ms"] = 0
-    elif audio_bytes:
-        t = time.perf_counter()
-        try:
-            transcript = stt.transcribe(audio_bytes, audio_filename)
-        except RuntimeError as exc:
-            return _error_response(str(exc), timings)
-        timings["stt_ms"] = _ms(t)
-    else:
-        return _error_response("No audio or text input provided.", timings)
+    transcript, transcript_error = _resolve_transcript(
+        audio_bytes=audio_bytes,
+        text_input=text_input,
+        audio_filename=audio_filename,
+        timings=timings,
+    )
+    if transcript_error:
+        return _error_response(transcript_error, timings)
 
     logger.info("PIPELINE | transcript: %r", transcript[:120])
     _ai_log("user", transcript)
@@ -133,37 +156,10 @@ def run(
 
     # Stage 3: RAG Retrieval
     t = time.perf_counter()
-    profile = {}
-    try:
-        profile = get_user_profile(site_id)
-        prefs = profile.get("preferences")
-        rag_query = safe_transcript
-        if prefs:
-            rag_query = f"{safe_transcript} (User preferences: {prefs})"
-            
-        # Extract price constraints once, reuse for RAG filter + LLM prompt
-        price_constraints = rag.extract_price_constraints(rag_query)
-        retrieved_products = rag.retrieve(
-            rag_query, site_id=site_id, price_constraints=price_constraints
-        )
-        
-        # Dialogue context: fetch previously discussed products
-        history_products = _extract_products_from_history(conversation_history or [], site_id)
-        if history_products:
-            # Merge lists, avoiding duplicates by product ID
-            existing_ids = {str(p["id"]) for p in retrieved_products}
-            for hp in history_products:
-                if str(hp["id"]) not in existing_ids:
-                    retrieved_products.append(hp)
-                    existing_ids.add(str(hp["id"]))
-        retrieved_products = _merge_products(
-            retrieved_products,
-            _exact_products_from_query(safe_transcript, site_id),
-        )
-    except Exception as exc:
-        logger.error("PIPELINE | RAG failed: %s", exc)
-        retrieved_products = []  # Degrade gracefully — LLM can still respond
-        price_constraints = {}
+    retrieval_context = _retrieve_context(site_id, safe_transcript, conversation_history)
+    profile = retrieval_context.profile
+    price_constraints = retrieval_context.price_constraints
+    retrieved_products = retrieval_context.products
     timings["rag_ms"] = _ms(t)
 
     logger.info(
@@ -182,13 +178,7 @@ def run(
     # Stage 4: LLM Agent
     t = time.perf_counter()
     cart_context = format_cart_for_prompt(get_cart_items(site_id))
-
-    if not profile:
-        try:
-            profile = get_user_profile(site_id)
-        except Exception:
-            profile = {}
-    profile_context = f"Address: {profile.get('address') or 'None'} | Payment Method: {profile.get('payment_method') or 'None'} | Preferences: {profile.get('preferences') or 'None'}"
+    profile_context = _profile_context(profile)
 
     llm_response = llm.generate_response(
         site_id,
@@ -200,73 +190,20 @@ def run(
         profile_context=profile_context,
     )
 
-    if not retrieved_products and llm_response.get("intent") == "product_search":
-        llm_response["ui_actions"] = []
-        llm_response["intent"] = "out_of_stock"
-
-    if llm_response.get("intent") == "out_of_stock":
-        llm_response["ui_actions"] = []
-
-    if llm_response.get("intent") == "error" and retrieved_products:
-        logger.info(
-            "PIPELINE | LLM failed, falling back to local FAISS search results."
-        )
-        llm_response = {
-            "response_text": f"I had trouble processing that, but I found {len(retrieved_products)} products matching your search.",
-            "intent": "search_fallback",
-            "confidence": 1.0,
-            "ui_actions": [
-                {
-                    "action": "SHOW_PRODUCTS",
-                    "params": {"product_ids": [str(p["id"]) for p in retrieved_products]},
-                }
-            ],
-        }
-    
-    for action in llm_response.get("ui_actions", []):
-        if action.get("action") == "UPDATE_PREFERENCES":
-            prefs = action.get("params", {}).get("preferences")
-            if prefs:
-                update_user_preferences(site_id, prefs)
+    llm_response = _normalize_llm_response(llm_response, retrieved_products)
+    _persist_preference_actions(site_id, llm_response.get("ui_actions", []))
 
     timings["llm_ms"] = _ms(t)
 
     # Stage 5: Output Guardrails
     t = time.perf_counter()
-    try:
-        allowed_product_ids = [p["id"] for p in retrieved_products]
-        
-        orig_actions = [
-            a.get("action")
-            for a in llm_response.get("ui_actions", [])
-            if isinstance(a, dict)
-        ]
-        
-        validated = guardrails.validate_output(llm_response, site_id, allowed_product_ids)
-
-        # Check if the LLM hallucinated fake product IDs and they were all blocked
-        val_actions = [a.get("action") for a in validated.get("ui_actions", [])]
-        if "SHOW_PRODUCTS" in orig_actions and "SHOW_PRODUCTS" not in val_actions:
-            logger.warning(
-                "PIPELINE | Detected LLM hallucination: SHOW_PRODUCTS was completely blocked. Overriding response."
-            )
-            validated["intent"] = "out_of_stock"
-            validated["ui_actions"] = []
-            validated["response_text"] = (
-                "I'm sorry, I couldn't find any products matching your request in our current inventory."
-            )
-
-    except OutputGuardrailError as exc:
-        logger.error("PIPELINE | Output guardrail blocked response: %s", exc)
-        validated = {
-            "response_text": "Whoops! Looks like I got my shopping bags in a twist. How can I help you find what you need?",
-            "intent": "blocked",
-            "confidence": 1.0,
-            "ui_actions": [],
-        }
-    _promote_comparison_action(validated, safe_transcript)
-    _ensure_named_comparison_response(validated, safe_transcript, retrieved_products)
-    _prevent_false_empty_inventory_claim(validated, safe_transcript, site_id)
+    validated = _validate_agent_response(
+        llm_response,
+        site_id=site_id,
+        safe_transcript=safe_transcript,
+        retrieved_products=retrieved_products,
+        blocked_text="Whoops! Looks like I got my shopping bags in a twist. How can I help you find what you need?",
+    )
     timings["guardrail_output_ms"] = _ms(t)
 
     print(f'🧠 LLM RESPONSE: "{validated["response_text"][:150]}"')
@@ -275,15 +212,9 @@ def run(
     )
     print(f"   UI Actions: {validated.get('ui_actions', [])}")
 
-    # Stage 6: Text-to-Speech
-    audio_b64 = ""
-    if not skip_tts:
-        t = time.perf_counter()
-        try:
-            audio_b64 = tts.synthesize_b64(validated["response_text"])
-        except RuntimeError as exc:
-            logger.error("PIPELINE | TTS failed: %s — continuing without audio.", exc)
-        timings["tts_ms"] = _ms(t)
+    audio_b64, tts_ms = _synthesize_audio_b64(validated["response_text"], skip_tts)
+    if tts_ms is not None:
+        timings["tts_ms"] = tts_ms
 
     timings["total_ms"] = _ms(t0)
     logger.info("PIPELINE | Done in %.0fms", timings["total_ms"])
@@ -293,17 +224,9 @@ def run(
     print(f"⏱️  Total: {timings['total_ms']:.0f}ms")
     print(f"{'=' * 60}\n")
 
-    final_actions = validated.get("ui_actions", [])
+    final_actions = _add_variant_ids_to_cart_actions(site_id, validated.get("ui_actions", []))
     _ai_log("assistant", validated["response_text"])
     _ai_log("actions", final_actions)
-    for a in final_actions:
-        if a.get("action") == "ADD_TO_CART":
-            pid = a.get("params", {}).get("product_id")
-            if pid:
-                with get_db(site_id) as conn:
-                    res = conn.execute("SELECT variant_id FROM products WHERE id = %s", (pid,)).fetchone()
-                    if res and res["variant_id"]:
-                        a["params"]["variant_id"] = str(res["variant_id"])
 
     return {
         "transcript": transcript,
@@ -320,7 +243,7 @@ def run_stream(
     site_id: str,
     audio_bytes: Optional[bytes] = None,
     text_input: Optional[str] = None,
-    audio_filename: str = "audio.wav",
+    audio_filename: str = DEFAULT_AUDIO_FILENAME,
     skip_tts: bool = False,
     conversation_history: Optional[list] = None,
 ) -> Generator[str, None, None]:
@@ -337,20 +260,14 @@ def run_stream(
     timings: dict[str, float] = {}
     t0 = time.perf_counter()
 
-    # Stage 1: STT
-    t = time.perf_counter()
-    if text_input:
-        transcript = text_input
-        timings["stt_ms"] = 0
-    elif audio_bytes:
-        try:
-            transcript = stt.transcribe(audio_bytes, audio_filename)
-        except RuntimeError as exc:
-            yield {"event": "error", "data": {"error": str(exc)}}
-            return
-        timings["stt_ms"] = _ms(t)
-    else:
-        yield {"event": "error", "data": {"error": "No audio or text input provided."}}
+    transcript, transcript_error = _resolve_transcript(
+        audio_bytes=audio_bytes,
+        text_input=text_input,
+        audio_filename=audio_filename,
+        timings=timings,
+    )
+    if transcript_error:
+        yield {"event": "error", "data": {"error": transcript_error}}
         return
 
     _ai_log("user", transcript)
@@ -365,14 +282,9 @@ def run_stream(
         yield {"event": "actions", "data": {"ui_actions": []}}
         yield {"event": "response", "data": {"response_text": msg}}
 
-        audio_b64 = ""
-        if not skip_tts:
-            tts_t = time.perf_counter()
-            try:
-                audio_b64 = tts.synthesize_b64(msg)
-            except Exception:
-                pass
-            timings["tts_ms"] = _ms(tts_t)
+        audio_b64, tts_ms = _synthesize_audio_b64(msg, skip_tts)
+        if tts_ms is not None:
+            timings["tts_ms"] = tts_ms
         timings["total_ms"] = _ms(t0)
         yield {"event": "audio", "data": {"response_text": msg, "audio_b64": audio_b64}}
         yield {"event": "metrics", "data": {"latency_ms": timings}}
@@ -399,44 +311,15 @@ def run_stream(
 
     # Stage 3: RAG
     t = time.perf_counter()
-    try:
-        profile = get_user_profile(site_id)
-        prefs = profile.get("preferences")
-        rag_query = safe_transcript
-        if prefs:
-            rag_query = f"{safe_transcript} (User preferences: {prefs})"
-            
-        price_constraints = rag.extract_price_constraints(rag_query)
-        retrieved_products = rag.retrieve(
-            rag_query, site_id=site_id, price_constraints=price_constraints
-        )
-        
-        # Dialogue context: fetch previously discussed products
-        history_products = _extract_products_from_history(conversation_history or [], site_id)
-        if history_products:
-            # Merge lists, avoiding duplicates by product ID
-            existing_ids = {str(p["id"]) for p in retrieved_products}
-            for hp in history_products:
-                if str(hp["id"]) not in existing_ids:
-                    retrieved_products.append(hp)
-                    existing_ids.add(str(hp["id"]))
-        retrieved_products = _merge_products(
-            retrieved_products,
-            _exact_products_from_query(safe_transcript, site_id),
-        )
-    except Exception as exc:
-        logger.error("PIPELINE | RAG failed: %s", exc)
-        retrieved_products = []
-        price_constraints = {}
-        profile = {}
+    retrieval_context = _retrieve_context(site_id, safe_transcript, conversation_history)
+    profile = retrieval_context.profile
+    price_constraints = retrieval_context.price_constraints
+    retrieved_products = retrieval_context.products
     timings["rag_ms"] = _ms(t)
 
     # Stage 4: LLM
     t = time.perf_counter()
-    if not profile:
-        profile = get_user_profile(site_id)
-    profile_context = f"Address: {profile.get('address') or 'None'} | Payment Method: {profile.get('payment_method') or 'None'} | Preferences: {profile.get('preferences') or 'None'}"
-    
+    profile_context = _profile_context(profile)
     cart_context = format_cart_for_prompt(get_cart_items(site_id))
     llm_response = llm.generate_response(
         site_id,
@@ -447,104 +330,32 @@ def run_stream(
         cart_context=cart_context,
         profile_context=profile_context,
     )
+    llm_response = _normalize_llm_response(llm_response, retrieved_products)
+    _persist_preference_actions(site_id, llm_response.get("ui_actions", []))
     timings["llm_ms"] = _ms(t)
-
-    # If the LLM tried to search for products but we found none, it shouldn't filter the UI
-    # This prevents the 8B model from randomly filtering to "Groceries" when asked for "Snacks" (which we don't have)
-    if not retrieved_products and llm_response.get("intent") == "product_search":
-        llm_response["ui_actions"] = []
-        llm_response["intent"] = "out_of_stock"
-
-    if llm_response.get("intent") == "out_of_stock":
-        llm_response["ui_actions"] = []
-
-    if llm_response.get("intent") == "error" and retrieved_products:
-        logger.info(
-            "PIPELINE | LLM failed, falling back to local FAISS search results."
-        )
-        llm_response = {
-            "response_text": f"I had trouble processing that, but I found {len(retrieved_products)} products matching your search.",
-            "intent": "search_fallback",
-            "confidence": 1.0,
-            "ui_actions": [
-                {
-                    "action": "SHOW_PRODUCTS",
-                    "params": {"product_ids": [str(p["id"]) for p in retrieved_products]},
-                }
-            ],
-        }
-
-    for action in llm_response.get("ui_actions", []):
-        if action.get("action") == "UPDATE_PREFERENCES":
-            prefs = action.get("params", {}).get("preferences")
-            if prefs:
-                update_user_preferences(site_id, prefs)
 
     # Stage 5: Output Guardrails
     t = time.perf_counter()
-    try:
-        allowed_product_ids = [p["id"] for p in retrieved_products]
-        
-        orig_actions = [
-            a.get("action")
-            for a in llm_response.get("ui_actions", [])
-            if isinstance(a, dict)
-        ]
-        
-        validated = guardrails.validate_output(llm_response, site_id, allowed_product_ids)
-
-        # Check if the LLM hallucinated fake product IDs and they were all blocked
-        val_actions = [a.get("action") for a in validated.get("ui_actions", [])]
-        if "SHOW_PRODUCTS" in orig_actions and "SHOW_PRODUCTS" not in val_actions:
-            logger.warning(
-                "PIPELINE | Detected LLM hallucination: SHOW_PRODUCTS was completely blocked. Overriding response."
-            )
-            validated["intent"] = "out_of_stock"
-            validated["ui_actions"] = []
-            validated["response_text"] = (
-                "I'm sorry, I couldn't find any products matching your request in our current inventory."
-            )
-
-    except OutputGuardrailError as exc:
-        logger.error("PIPELINE | Output guardrail blocked response: %s", exc)
-        validated = {
-            "response_text": "I'm sorry, I can't respond to that. How can I help you shop?",
-            "intent": "blocked",
-            "confidence": 1.0,
-            "ui_actions": [],
-        }
-    _promote_comparison_action(validated, safe_transcript)
-    _ensure_named_comparison_response(validated, safe_transcript, retrieved_products)
-    _prevent_false_empty_inventory_claim(validated, safe_transcript, site_id)
+    validated = _validate_agent_response(
+        llm_response,
+        site_id=site_id,
+        safe_transcript=safe_transcript,
+        retrieved_products=retrieved_products,
+        blocked_text="I'm sorry, I can't respond to that. How can I help you shop?",
+    )
     timings["guardrail_output_ms"] = _ms(t)
 
-    # Inject variant_id for ADD_TO_CART actions so the frontend can hit Shopify's native Cart API
-    final_actions = validated.get("ui_actions", [])
+    final_actions = _add_variant_ids_to_cart_actions(site_id, validated.get("ui_actions", []))
     _ai_log("assistant", validated["response_text"])
     _ai_log("actions", final_actions)
-    for a in final_actions:
-        if a.get("action") == "ADD_TO_CART":
-            pid = a.get("params", {}).get("product_id")
-            if pid:
-                with get_db(site_id) as conn:
-                    res = conn.execute("SELECT variant_id FROM products WHERE id = %s", (pid,)).fetchone()
-                    if res and res["variant_id"]:
-                        a["params"]["variant_id"] = str(res["variant_id"])
 
     # Yield actions so UI can update immediately
     yield {"event": "actions", "data": {"ui_actions": final_actions}}
     yield {"event": "response", "data": {"response_text": validated["response_text"]}}
 
-    # Stage 6: TTS
-    audio_b64 = ""
-    if not skip_tts:
-        t = time.perf_counter()
-        try:
-            audio_b64 = tts.synthesize_b64(validated["response_text"])
-        except RuntimeError as exc:
-            logger.error("PIPELINE | TTS failed: %s — continuing without audio.", exc)
-
-        timings["tts_ms"] = _ms(t)
+    audio_b64, tts_ms = _synthesize_audio_b64(validated["response_text"], skip_tts)
+    if tts_ms is not None:
+        timings["tts_ms"] = tts_ms
     timings["total_ms"] = _ms(t0)
 
     # Yield audio
@@ -583,6 +394,221 @@ def _ms(since: float) -> float:
     return round((time.perf_counter() - since) * 1000, 1)
 
 
+def _resolve_transcript(
+    *,
+    audio_bytes: bytes | None,
+    text_input: str | None,
+    audio_filename: str,
+    timings: dict[str, float],
+) -> tuple[str | None, str | None]:
+    if text_input:
+        timings["stt_ms"] = 0
+        return text_input, None
+    if not audio_bytes:
+        return None, "No audio or text input provided."
+
+    started_at = time.perf_counter()
+    try:
+        transcript = stt.transcribe(audio_bytes, audio_filename)
+    except RuntimeError as exc:
+        return None, str(exc)
+    timings["stt_ms"] = _ms(started_at)
+    return transcript, None
+
+
+def _safe_user_profile(site_id: str) -> dict[str, Any]:
+    try:
+        return get_user_profile(site_id)
+    except PIPELINE_RECOVERABLE_ERRORS as exc:
+        logger.warning("PIPELINE | user profile unavailable for %s: %s", site_id, exc)
+        return {}
+
+
+def _profile_context(profile: dict[str, Any]) -> str:
+    return (
+        f"Address: {profile.get('address') or 'None'} | "
+        f"Payment Method: {profile.get('payment_method') or 'None'} | "
+        f"Preferences: {profile.get('preferences') or 'None'}"
+    )
+
+
+def _retrieve_context(
+    site_id: str,
+    safe_transcript: str,
+    conversation_history: list | None,
+) -> RetrievalContext:
+    profile = _safe_user_profile(site_id)
+    rag_query = safe_transcript
+    if profile.get("preferences"):
+        rag_query = f"{safe_transcript} (User preferences: {profile['preferences']})"
+
+    try:
+        price_constraints = rag.extract_price_constraints(rag_query)
+        retrieved_products = rag.retrieve(
+            rag_query,
+            site_id=site_id,
+            price_constraints=price_constraints,
+        )
+        products = _merge_products(
+            _merge_history_products(retrieved_products, conversation_history or [], site_id),
+            _exact_products_from_query(safe_transcript, site_id),
+        )
+        return RetrievalContext(profile, price_constraints, products)
+    except PIPELINE_RECOVERABLE_ERRORS as exc:
+        logger.error("PIPELINE | RAG failed: %s", exc)
+        return RetrievalContext(profile, {}, [])
+
+
+def _merge_history_products(
+    retrieved_products: list[dict[str, Any]],
+    conversation_history: list,
+    site_id: str,
+) -> list[dict[str, Any]]:
+    history_products = _extract_products_from_history(conversation_history, site_id)
+    return _merge_products(history_products, retrieved_products)
+
+
+def _fallback_search_response(retrieved_products: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "response_text": f"I had trouble processing that, but I found {len(retrieved_products)} products matching your search.",
+        "intent": "search_fallback",
+        "confidence": 1.0,
+        "ui_actions": [
+            {
+                "action": ACTION_SHOW_PRODUCTS,
+                "params": {
+                    PRODUCT_IDS_PARAM: [str(product["id"]) for product in retrieved_products]
+                },
+            }
+        ],
+    }
+
+
+def _normalize_llm_response(
+    llm_response: dict[str, Any],
+    retrieved_products: list[dict[str, Any]],
+) -> dict[str, Any]:
+    normalized = dict(llm_response)
+    if not retrieved_products and normalized.get("intent") == "product_search":
+        normalized["ui_actions"] = []
+        normalized["intent"] = "out_of_stock"
+    if normalized.get("intent") == "out_of_stock":
+        normalized["ui_actions"] = []
+    if normalized.get("intent") == "error" and retrieved_products:
+        logger.info("PIPELINE | LLM failed, falling back to local FAISS search results.")
+        return _fallback_search_response(retrieved_products)
+    return normalized
+
+
+def _persist_preference_actions(site_id: str, actions: list[dict[str, Any]]) -> None:
+    for action in actions:
+        if action.get("action") != ACTION_UPDATE_PREFERENCES:
+            continue
+        preferences = action.get("params", {}).get("preferences")
+        if not preferences:
+            continue
+        try:
+            update_user_preferences(site_id, preferences)
+        except PIPELINE_RECOVERABLE_ERRORS as exc:
+            logger.warning("PIPELINE | failed to update preferences: %s", exc)
+
+
+def _validate_agent_response(
+    response: dict[str, Any],
+    *,
+    site_id: str,
+    safe_transcript: str,
+    retrieved_products: list[dict[str, Any]],
+    blocked_text: str,
+) -> dict[str, Any]:
+    try:
+        original_actions = [
+            action.get("action")
+            for action in response.get("ui_actions", [])
+            if isinstance(action, dict)
+        ]
+        validated = guardrails.validate_output(
+            response,
+            site_id,
+            [product["id"] for product in retrieved_products],
+        )
+        _override_hallucinated_product_search(validated, original_actions)
+    except OutputGuardrailError as exc:
+        logger.error("PIPELINE | Output guardrail blocked response: %s", exc)
+        validated = _blocked_response(blocked_text)
+
+    _promote_comparison_action(validated, safe_transcript)
+    _ensure_named_comparison_response(validated, safe_transcript, retrieved_products)
+    _prevent_false_empty_inventory_claim(validated, safe_transcript, site_id)
+    return validated
+
+
+def _override_hallucinated_product_search(
+    validated: dict[str, Any],
+    original_actions: list[str],
+) -> None:
+    validated_actions = [action.get("action") for action in validated.get("ui_actions", [])]
+    if ACTION_SHOW_PRODUCTS not in original_actions or ACTION_SHOW_PRODUCTS in validated_actions:
+        return
+    logger.warning(
+        "PIPELINE | Detected LLM hallucination: SHOW_PRODUCTS was completely blocked. Overriding response."
+    )
+    validated["intent"] = "out_of_stock"
+    validated["ui_actions"] = []
+    validated["response_text"] = (
+        "I'm sorry, I couldn't find any products matching your request in our current inventory."
+    )
+
+
+def _blocked_response(response_text: str) -> dict[str, Any]:
+    return {
+        "response_text": response_text,
+        "intent": "blocked",
+        "confidence": 1.0,
+        "ui_actions": [],
+    }
+
+
+def _synthesize_audio_b64(response_text: str, skip_tts: bool) -> tuple[str, float | None]:
+    if skip_tts:
+        return "", None
+    started_at = time.perf_counter()
+    try:
+        return tts.synthesize_b64(response_text), _ms(started_at)
+    except RuntimeError as exc:
+        logger.error("PIPELINE | TTS failed: %s - continuing without audio.", exc)
+        return "", _ms(started_at)
+
+
+def _add_variant_ids_to_cart_actions(
+    site_id: str,
+    actions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    for action in actions:
+        if action.get("action") != ACTION_ADD_TO_CART:
+            continue
+        product_id = action.get("params", {}).get(PRODUCT_ID_PARAM)
+        if not product_id:
+            continue
+        try:
+            with get_db(site_id) as conn:
+                row = conn.execute(
+                    "SELECT variant_id FROM products WHERE id = %s",
+                    (product_id,),
+                ).fetchone()
+        except psycopg.Error as exc:
+            logger.warning("PIPELINE | variant lookup failed for %s: %s", product_id, exc)
+            continue
+        if row and row["variant_id"]:
+            action["params"]["variant_id"] = str(row["variant_id"])
+    return actions
+
+
+def _guardrail_audio_b64(message: str, skip_tts: bool) -> str:
+    audio_b64, _duration_ms = _synthesize_audio_b64(message, skip_tts)
+    return audio_b64
+
+
 def _merge_products(primary: list[dict], supplemental: list[dict], limit: int | None = None) -> list[dict]:
     merged: list[dict] = []
     seen: set[str] = set()
@@ -604,7 +630,7 @@ def _exact_products_from_query(query: str, site_id: str, limit: int = 6) -> list
         from db.database import get_all_products
 
         products = get_all_products(site_id, limit=1000)
-    except Exception as exc:
+    except PIPELINE_RECOVERABLE_ERRORS as exc:
         logger.warning("PIPELINE | Exact product lookup failed: %s", exc)
         return []
 
@@ -685,11 +711,11 @@ def _promote_comparison_action(response: dict[str, Any], transcript: str) -> Non
         return
 
     for action in response.get("ui_actions", []):
-        if action.get("action") == "SHOW_PRODUCTS":
-            product_ids = action.get("params", {}).get("product_ids", [])
+        if action.get("action") == ACTION_SHOW_PRODUCTS:
+            product_ids = action.get("params", {}).get(PRODUCT_IDS_PARAM, [])
             if isinstance(product_ids, list) and len(product_ids) >= 2:
-                action["action"] = "SHOW_COMPARISON"
-                action["params"] = {"product_ids": product_ids[:4]}
+                action["action"] = ACTION_SHOW_COMPARISON
+                action["params"] = {PRODUCT_IDS_PARAM: product_ids[:4]}
                 response["intent"] = "product_compare"
                 return
 
@@ -701,7 +727,7 @@ def _ensure_named_comparison_response(
 ) -> None:
     if not _wants_comparison(transcript):
         return
-    if any(action.get("action") == "SHOW_COMPARISON" for action in response.get("ui_actions", [])):
+    if any(action.get("action") == ACTION_SHOW_COMPARISON for action in response.get("ui_actions", [])):
         return
 
     exact_products = [p for p in retrieved_products if p.get("_exact_name_match")]
@@ -712,7 +738,9 @@ def _ensure_named_comparison_response(
     product_ids = [str(product["id"]) for product in selected]
     response["intent"] = "product_compare"
     response["confidence"] = max(float(response.get("confidence") or 0.0), 0.9)
-    response["ui_actions"] = [{"action": "SHOW_COMPARISON", "params": {"product_ids": product_ids}}]
+    response["ui_actions"] = [
+        {"action": ACTION_SHOW_COMPARISON, "params": {PRODUCT_IDS_PARAM: product_ids}}
+    ]
     response["response_text"] = _comparison_fallback_text(selected)
 
 
@@ -724,7 +752,8 @@ def _prevent_false_empty_inventory_claim(response: dict[str, Any], transcript: s
     try:
         stats = tenant_inventory_summary(site_id)
         in_stock = int(stats.get("in_stock_products") or 0)
-    except Exception:
+    except PIPELINE_RECOVERABLE_ERRORS as exc:
+        logger.warning("PIPELINE | inventory summary unavailable: %s", exc)
         in_stock = 0
 
     if in_stock <= 0:
@@ -733,7 +762,8 @@ def _prevent_false_empty_inventory_claim(response: dict[str, Any], transcript: s
     categories: list[str] = []
     try:
         categories = _available_category_names(get_all_products(site_id, limit=1000))
-    except Exception:
+    except PIPELINE_RECOVERABLE_ERRORS as exc:
+        logger.warning("PIPELINE | category lookup unavailable: %s", exc)
         categories = []
 
     category_text = f" We have categories like {', '.join(categories[:5])}." if categories else ""
@@ -897,7 +927,7 @@ def _inventory_type_count_response(
     t = time.perf_counter()
     try:
         products = get_all_products(site_id, limit=1000)
-    except Exception as exc:
+    except PIPELINE_RECOVERABLE_ERRORS as exc:
         logger.error("Inventory type lookup failed: %s", exc)
         products = []
     timings["inventory_lookup_ms"] = _ms(t)
@@ -915,9 +945,9 @@ def _inventory_type_count_response(
         response_text += "."
         final_actions = [
             {
-                "action": "SHOW_PRODUCTS",
+                "action": ACTION_SHOW_PRODUCTS,
                 "params": {
-                    "product_ids": [str(product.get("id")) for product in matches[:8] if product.get("id")],
+                    PRODUCT_IDS_PARAM: [str(product.get("id")) for product in matches[:8] if product.get("id")],
                     "search_query": item_type,
                 },
             }
@@ -1018,7 +1048,7 @@ def _inventory_stats_response(
     try:
         stats = tenant_inventory_summary(site_id)
         logger.info("Inventory stats requested; internal counts hidden from customer: %s", stats)
-    except Exception as exc:
+    except PIPELINE_RECOVERABLE_ERRORS as exc:
         logger.error("Inventory stats lookup failed: %s", exc)
     response_text = (
         "I have plenty of products available to browse. "
@@ -1066,12 +1096,7 @@ def _guardrail_response(
     timings: dict,
 ) -> dict[str, Any]:
     """Return a guardrail rejection response with TTS if requested."""
-    audio_b64 = ""
-    if not skip_tts:
-        try:
-            audio_b64 = tts.synthesize_b64(message)
-        except Exception:
-            pass
+    audio_b64 = _guardrail_audio_b64(message, skip_tts)
     return {
         "transcript": transcript,
         "response_text": message,
@@ -1128,14 +1153,14 @@ def _extract_products_from_history(history: list[dict], site_id: str) -> list[di
                 p_copy = dict(product)
                 p_copy["_semantic_score"] = 0.95
                 mentioned.append(p_copy)
-        except Exception as exc:
+        except PIPELINE_RECOVERABLE_ERRORS as exc:
             logger.warning("PIPELINE | History tag product bulk lookup failed: %s", exc)
 
     # Then: name-match remaining products not already found via tag
     if not mentioned:
         try:
             products = get_all_products(site_id, limit=100)
-        except Exception as exc:
+        except PIPELINE_RECOVERABLE_ERRORS as exc:
             logger.error("PIPELINE | History product check failed to get all products: %s", exc)
             products = []
 
