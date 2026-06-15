@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import logging
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,6 +26,8 @@ from db.database import (
     tenant_catalog_preview,
     tenant_catalog_stats,
 )
+
+logger = logging.getLogger(__name__)
 
 CLIENT_STATUS_LIVE = "live"
 CLIENT_STATUS_DISABLED = "disabled"
@@ -601,7 +604,8 @@ def generate_analytics_summary(range_key: str = ANALYTICS_DEFAULT_RANGE, site_id
         )
         summary = completion.choices[0].message.content or snapshot["summary"]
         return {**snapshot, "summary": _clean_summary_bullets(summary), "summary_source": "openai"}
-    except Exception:
+    except Exception as exc:
+        logger.warning("OpenAI analytics summary failed; using heuristic summary: %s", exc)
         return {**snapshot, "summary_source": "heuristic"}
 
 

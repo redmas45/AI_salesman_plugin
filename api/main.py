@@ -1276,7 +1276,12 @@ def _render_embed_bootstrap(*, site: str, api_base_url: str) -> str:
 
 
 @app.get("/shopbot-frame", tags=["Plugin"])
-async def serve_plugin_frame(site: Optional[str] = None, site_id: Optional[str] = None, shop: Optional[str] = None, parent_origin: Optional[str] = None):
+async def serve_plugin_frame(
+    site: Optional[str] = None,
+    site_id: Optional[str] = None,
+    shop: Optional[str] = None,
+    parent_origin: Optional[str] = None,
+) -> Response:
     """Serve a standalone orb frame for external website modes."""
     from fastapi.responses import Response
 
@@ -1325,7 +1330,11 @@ async def serve_plugin_frame(site: Optional[str] = None, site_id: Optional[str] 
 
 
 @app.get("/shopbot-widget.js", tags=["Plugin"])
-async def serve_plugin_widget(site: Optional[str] = None, site_id: Optional[str] = None, shop: Optional[str] = None):
+async def serve_plugin_widget(
+    site: Optional[str] = None,
+    site_id: Optional[str] = None,
+    shop: Optional[str] = None,
+) -> Response:
     """Serve the full widget app for direct use or inside the external embed frame."""
     from fastapi.responses import Response
 
@@ -1345,7 +1354,11 @@ async def serve_plugin_widget(site: Optional[str] = None, site_id: Optional[str]
 
 
 @app.get("/shopbot.js", tags=["Plugin"])
-async def serve_plugin(site: Optional[str] = None, site_id: Optional[str] = None, shop: Optional[str] = None):
+async def serve_plugin(
+    site: Optional[str] = None,
+    site_id: Optional[str] = None,
+    shop: Optional[str] = None,
+) -> Response:
     """Serve the public widget loader — inlined directly (no iframe).
 
     The iframe-based bootstrap (_render_embed_bootstrap) fails with free-tier

@@ -109,47 +109,84 @@ class ShopbotWebSocketTransport {
   }
 
   async ensureConnected(conversationHistory = []) {
-    if (this.failed || !config.useWebSocket || !("WebSocket" in window)) {
+    if (!this.canUseWebSocket()) {
       return false;
     }
-    if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
+    if (this.isOpen()) {
       return true;
     }
     if (this.connecting) {
       return this.connecting;
     }
 
-    this.connecting = new Promise((resolve) => {
+    this.connecting = this.openConnection(conversationHistory);
+    return this.connecting;
+  }
+
+  canUseWebSocket() {
+    return !this.failed && config.useWebSocket && "WebSocket" in window;
+  }
+
+  isOpen() {
+    return this.connected && this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  openConnection(conversationHistory = []) {
+    return new Promise((resolve) => {
       const ws = new WebSocket(wsUrlFromApiBase(config.apiUrl, config.siteId));
+      let settled = false;
       this.ws = ws;
-
-      const fail = () => {
-        this.connected = false;
-        this.connecting = null;
-        this.retries += 1;
-        if (this.retries >= MAX_WS_RETRIES) this.failed = true;
-        resolve(false);
+      const settleFailure = (timer = null) => {
+        if (settled) return;
+        settled = true;
+        this.markConnectionFailed(resolve, timer, ws);
       };
-
-      const timer = window.setTimeout(fail, WS_CONNECT_TIMEOUT_MS);
-
+      const timer = window.setTimeout(() => {
+        settleFailure();
+      }, WS_CONNECT_TIMEOUT_MS);
       ws.onopen = () => {
-        window.clearTimeout(timer);
-        this.connected = true;
-        this.connecting = null;
-        this.retries = 0;
-        this.sendJson({ type: WS_MESSAGES.CONFIG, history: conversationHistory || [], session_id: config.sessionId });
-        resolve(true);
+        if (settled) return;
+        settled = true;
+        this.handleConnectionOpen(timer, conversationHistory, resolve);
       };
-
-      ws.onmessage = (event) => this.handleMessage(event);
-      ws.onerror = fail;
+      ws.onmessage = (event) => {
+        this.handleMessage(event).catch((err) => this.handleTransportError(err));
+      };
+      ws.onerror = () => settleFailure(timer);
       ws.onclose = () => {
         this.connected = false;
+        settleFailure(timer);
       };
     });
+  }
 
-    return this.connecting;
+  markConnectionOpen() {
+    this.connected = true;
+    this.connecting = null;
+    this.retries = 0;
+  }
+
+  handleConnectionOpen(timer, conversationHistory, resolve) {
+    window.clearTimeout(timer);
+    this.markConnectionOpen();
+    this.sendConfig(conversationHistory);
+    resolve(true);
+  }
+
+  markConnectionFailed(resolve, timer = null, ws = null) {
+    if (timer) window.clearTimeout(timer);
+    this.connected = false;
+    this.connecting = null;
+    this.retries += 1;
+    if (this.retries >= MAX_WS_RETRIES) this.failed = true;
+    if (ws && ws.readyState !== WebSocket.CLOSED) {
+      ws.close();
+    }
+    resolve(false);
+  }
+
+  sendConfig(conversationHistory = []) {
+    this.sendJson({ type: WS_MESSAGES.CONFIG, history: conversationHistory || [], session_id: config.sessionId });
   }
 
   sendJson(payload) {
@@ -164,7 +201,7 @@ class ShopbotWebSocketTransport {
 
     this.callbacks = callbacks;
     this.turnText = "";
-    this.sendJson({ type: WS_MESSAGES.CONFIG, history: conversationHistory || [], session_id: config.sessionId });
+    this.sendConfig(conversationHistory);
     const b64 = await blobToBase64(blob);
     this.sendJson({ type: WS_MESSAGES.AUDIO_CHUNK, data: b64 });
     this.sendJson({ type: WS_MESSAGES.AUDIO_END });
@@ -175,46 +212,79 @@ class ShopbotWebSocketTransport {
     const callbacks = this.callbacks;
     if (!callbacks) return;
 
-    let msg = {};
-    try {
-      msg = JSON.parse(event.data);
-    } catch (_err) {
-      callbacks.onComplete?.({ error: "Invalid WebSocket message" });
+    const msg = this.parseMessage(event.data);
+    if (!msg) {
+      this.completeWithError(callbacks, "Invalid WebSocket message");
       return;
     }
 
-    if (msg.type === WS_MESSAGES.TRANSCRIPT) {
-      callbacks.onUserMessage?.(msg.text || "");
-      return;
-    }
-
-    if (msg.type === WS_MESSAGES.TEXT_CHUNK) {
-      this.turnText += msg.text || "";
-      callbacks.onAssistantChunk?.(msg.text || "", this.turnText);
-      return;
-    }
-
-    if (msg.type === WS_MESSAGES.AUDIO_CHUNK) {
-      this.audioQueue.push(msg.audio_b64);
+    if (this.handleIncrementalMessage(msg, callbacks)) {
       return;
     }
 
     if (msg.type === WS_MESSAGES.DONE) {
-      const finalText = msg.response_text || this.turnText;
-      callbacks.onAssistantMessage?.(finalText, msg.ui_actions || [], { streamed: true });
-      callbacks.onStatusChange?.(STATUS.READY);
-      if (msg.ui_actions && msg.ui_actions.length > 0) {
-        await executeActions(msg.ui_actions);
-      }
-      callbacks.onComplete?.(msg);
-      this.callbacks = null;
+      await this.handleDoneMessage(msg, callbacks);
       return;
     }
 
     if (msg.type === WS_MESSAGES.ERROR) {
-      callbacks.onStatusChange?.(STATUS.ERROR);
-      callbacks.onComplete?.({ error: msg.message || "WebSocket error" });
+      this.completeWithError(callbacks, msg.message || "WebSocket error");
+    }
+  }
+
+  parseMessage(rawData) {
+    try {
+      const message = JSON.parse(rawData);
+      return message && typeof message === "object" ? message : null;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  handleIncrementalMessage(msg, callbacks) {
+    if (msg.type === WS_MESSAGES.TRANSCRIPT) {
+      callbacks.onUserMessage?.(msg.text || "");
+      return true;
+    }
+    if (msg.type === WS_MESSAGES.TEXT_CHUNK) {
+      this.turnText += msg.text || "";
+      callbacks.onAssistantChunk?.(msg.text || "", this.turnText);
+      return true;
+    }
+    if (msg.type === WS_MESSAGES.AUDIO_CHUNK) {
+      this.audioQueue.push(msg.audio_b64);
+      return true;
+    }
+    return false;
+  }
+
+  async handleDoneMessage(msg, callbacks) {
+    const finalText = msg.response_text || this.turnText;
+    callbacks.onAssistantMessage?.(finalText, msg.ui_actions || [], { streamed: true });
+    callbacks.onStatusChange?.(STATUS.READY);
+    try {
+      if (msg.ui_actions && msg.ui_actions.length > 0) {
+        await executeActions(msg.ui_actions);
+      }
+      callbacks.onComplete?.(msg);
+    } catch (err) {
+      this.handleTransportError(err);
+    } finally {
       this.callbacks = null;
+    }
+  }
+
+  completeWithError(callbacks, message) {
+    callbacks.onStatusChange?.(STATUS.ERROR);
+    callbacks.onComplete?.({ error: message });
+    this.callbacks = null;
+  }
+
+  handleTransportError(err) {
+    console.error("ShopBot WebSocket transport failed", err);
+    const callbacks = this.callbacks;
+    if (callbacks) {
+      this.completeWithError(callbacks, String(err));
     }
   }
 }
