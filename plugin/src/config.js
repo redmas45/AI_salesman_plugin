@@ -1,6 +1,7 @@
 const currentScript = document.currentScript;
 const embeddedApiUrl = "__AI_PUBLIC_API_URL__";
 const embeddedSiteId = "__AI_DEFAULT_SITE_ID__";
+const SESSION_STORAGE_PREFIX = "shopbot:session:";
 
 function clean(value) {
   return String(value || "").trim();
@@ -40,10 +41,30 @@ function resolveApiUrl(url) {
   return window.location.origin.replace(/\/+$/, "");
 }
 
+function resolveSessionId(siteId) {
+  const key = `${SESSION_STORAGE_PREFIX}${siteId}`;
+  try {
+    const currentValue = window.sessionStorage.getItem(key);
+    if (currentValue) return currentValue;
+    const nextValue = createSessionId(siteId);
+    window.sessionStorage.setItem(key, nextValue);
+    return nextValue;
+  } catch (_err) {
+    return createSessionId(siteId);
+  }
+}
+
+function createSessionId(siteId) {
+  const randomPart = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${siteId}-${randomPart}`.slice(0, 120);
+}
+
 const srcUrl = scriptUrl();
+const siteId = resolveSiteId(srcUrl);
 
 export const config = {
-  siteId: resolveSiteId(srcUrl),
+  siteId,
+  sessionId: resolveSessionId(siteId),
   apiUrl: resolveApiUrl(srcUrl),
   useWebSocket: clean(currentScript?.getAttribute("data-use-websocket")).toLowerCase() !== "false",
   autoGreet: clean(currentScript?.getAttribute("data-auto-greet")).toLowerCase() !== "false",

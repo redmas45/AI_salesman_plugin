@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from ipaddress import ip_address
@@ -268,6 +269,8 @@ def main() -> None:
     print("\nReady.")
     print(f"- Open storefront: {local_storefront_origin}")
     print(f"- Wi-Fi/LAN URL:   {public_origin}")
+    print(f"- CRM:             {public_origin}/crm")
+    open_crm_browser(public_origin)
     print("\nPress Ctrl+C to stop all services.")
 
     monitor_services()
@@ -290,6 +293,25 @@ def client_embed_snippet(site_id: str, api_url: str) -> str:
         f'<script defer src="{api_url_attr}/shopbot.js?site={site_id_attr}" '
         f'data-site-id="{site_id_attr}" data-brand="AI-KART"></script>'
     )
+
+
+def open_crm_browser(public_origin: str) -> None:
+    if not should_auto_open_crm():
+        return
+    crm_url = f"{public_origin}/crm"
+    try:
+        opened = webbrowser.open(crm_url, new=2)
+    except Exception as exc:
+        print(f"[warning] Could not open CRM browser automatically: {exc}")
+        return
+    if opened:
+        print(f"[ok] Opened CRM: {crm_url}")
+    else:
+        print(f"[warning] CRM is ready, but no browser could be opened automatically: {crm_url}")
+
+
+def should_auto_open_crm() -> bool:
+    return os.getenv("AUTO_OPEN_CRM", "true").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def detect_public_ip() -> str:
@@ -588,6 +610,9 @@ def backend_route_block(backend_port: int, storefront_port: int) -> list[str]:
         f"\t\treverse_proxy 127.0.0.1:{backend_port}",
         "\t}",
         f"\thandle /shopbot-frame {{",
+        f"\t\treverse_proxy 127.0.0.1:{backend_port}",
+        "\t}",
+        f"\thandle /crm* {{",
         f"\t\treverse_proxy 127.0.0.1:{backend_port}",
         "\t}",
         f"\thandle /v1/* {{",

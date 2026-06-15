@@ -26,7 +26,8 @@ from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import psycopg
 from reportlab.lib import colors
@@ -36,9 +37,11 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 import config
 from agent import orchestrator
+from api import crm as crm_api
 from api.middleware import RequestTracingMiddleware
 from api.turn_logging import print_turn_summary, turn_timer
 from api.ws_shop import ws_shop_handler
+from db import admin as admin_db
 
 
 class ClientLogRequest(BaseModel):
@@ -75,6 +78,12 @@ from db.database import (
 # uvicorn has called its own logging.config.dictConfig(), so we don't
 # conflict with its formatter configuration.
 logger = logging.getLogger(__name__)
+CLIENT_DISABLED_MESSAGE = "AI assistant is disabled for this client."
+TOKEN_QUOTA_EXCEEDED_MESSAGE = "AI assistant token quota is exhausted for this client or session."
+DISABLED_WIDGET_DOM_ID = "shopbot-widget"
+DISABLED_WIDGET_BOOT_FLAG = "__shopbotBooted"
+DISABLED_WIDGET_FRAME_FLAG = "__shopbotFrameLoaded"
+DISABLED_WIDGET_REGISTRY = "__shopbotDisabledSites"
 
 DEFAULT_AUDIO_FILENAME = "audio.wav"
 CRAWLER_SOURCE_NAME = "custom_url_crawler"
@@ -103,6 +112,7 @@ INVOICE_TITLE_FONT_SIZE = 36
 INVOICE_SUBTITLE_FONT_SIZE = 14
 INVOICE_TABLE_COL_WIDTHS = [240, 90, 50, 110]
 INVOICE_TOP_MARGIN = 150
+CRM_STATIC_DIR = Path(__file__).parent.parent / "crm"
 
 
 @dataclass(frozen=True)
@@ -140,6 +150,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Preload RAG embedder and index into memory
     from agent import rag
     rag.preload()
+    admin_db.ensure_default_client()
 
     from agent.ingestion import sync_web_crawl
     
@@ -176,12 +187,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if startup_target_url and config.CRAWL_ON_STARTUP:
         await run_crawl_once(startup_target_url, startup_site_id, initial=True)
 
-    crawler_task = asyncio.create_task(periodic_crawl())
+    crawler_task = None
+    if config.CRAWL_PERIODIC_ENABLED:
+        crawler_task = asyncio.create_task(periodic_crawl())
 
     logger.info("Startup complete. API ready.")
     yield
 
-    crawler_task.cancel()
+    if crawler_task:
+        crawler_task.cancel()
     logger.info("Shutting down Voice Shopping Agent API.")
 
 
@@ -205,6 +219,35 @@ app.add_middleware(
 )
 
 app.add_middleware(RequestTracingMiddleware)
+app.include_router(crm_api.router)
+
+
+@app.get("/crm", include_in_schema=False)
+async def redirect_crm_root() -> RedirectResponse:
+    """Redirect the bare CRM path to the static app root."""
+    return RedirectResponse(url="/crm/")
+
+
+if CRM_STATIC_DIR.exists():
+    app.mount(
+        "/crm",
+        StaticFiles(directory=CRM_STATIC_DIR, html=True),
+        name="crm",
+    )
+
+
+@app.get("/v1/widget/status", tags=["Plugin"])
+async def widget_status(
+    site_id: str = config.DEFAULT_SITE_ID,
+    site: Optional[str] = None,
+    shop: Optional[str] = None,
+) -> dict[str, Any]:
+    """Return the public widget availability state for one tenant."""
+    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
+    return {
+        "site_id": safe_site,
+        "enabled": admin_db.is_client_widget_enabled(safe_site),
+    }
 
 # Endpoints
 
@@ -331,6 +374,7 @@ def _update_turn_log_state(state: TurnLogState, event: dict[str, Any]) -> TurnLo
 def _stream_shop_events(
     *,
     site_id: str,
+    session_id: str,
     text: str | None,
     skip_tts: bool,
     payload: ShoppingTurnPayload,
@@ -352,6 +396,7 @@ def _stream_shop_events(
         _print_turn_state(
             transport="legacy-sse",
             site_id=site_id,
+            session_id=session_id,
             started_at=started_at,
             state=state,
         )
@@ -361,6 +406,7 @@ def _print_turn_state(
     *,
     transport: str,
     site_id: str,
+    session_id: str,
     started_at: float,
     state: TurnLogState,
 ) -> None:
@@ -374,6 +420,77 @@ def _print_turn_state(
         latency_ms=state.latency_ms,
         status=state.status,
     )
+    _record_usage_state(
+        site_id=site_id,
+        session_id=session_id,
+        transport=transport,
+        state=state,
+    )
+
+
+def _record_usage_state(*, site_id: str, session_id: str, transport: str, state: TurnLogState) -> None:
+    _record_usage_safely(
+        site_id=site_id,
+        session_id=session_id,
+        transport=transport,
+        status=state.status,
+        transcript=state.transcript,
+        response_text=state.response_text,
+        intent="",
+        action_count=len(state.ui_actions),
+        latency_ms=_total_latency_ms(state.latency_ms),
+    )
+
+
+def _record_usage_result(*, site_id: str, session_id: str, transport: str, result: dict[str, Any]) -> None:
+    status_text = "error" if result.get("intent") == "error" else "ok"
+    _record_usage_safely(
+        site_id=site_id,
+        session_id=session_id,
+        transport=transport,
+        status=status_text,
+        transcript=str(result.get("transcript") or ""),
+        response_text=str(result.get("response_text") or ""),
+        intent=str(result.get("intent") or ""),
+        action_count=len(result.get("ui_actions") or []),
+        latency_ms=_total_latency_ms(result.get("latency_ms") or {}),
+    )
+
+
+def _record_usage_safely(
+    *,
+    site_id: str,
+    session_id: str,
+    transport: str,
+    status: str,
+    transcript: str,
+    response_text: str,
+    intent: str,
+    action_count: int,
+    latency_ms: float,
+) -> None:
+    try:
+        admin_db.record_usage_event(
+            site_id=site_id,
+            session_id=session_id,
+            transport=transport,
+            status=status,
+            transcript=transcript,
+            response_text=response_text,
+            intent=intent,
+            action_count=action_count,
+            latency_ms=latency_ms,
+        )
+    except psycopg.Error as exc:
+        logger.warning("CRM usage logging failed: %s", exc)
+
+
+def _total_latency_ms(latency_ms: dict[str, Any]) -> float:
+    raw_value = latency_ms.get("total_ms") if isinstance(latency_ms, dict) else 0
+    try:
+        return float(raw_value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _decode_audio_b64(audio_b64: Any) -> bytes | None:
@@ -393,6 +510,23 @@ def _coerce_websocket_payload(raw_data: str) -> dict[str, Any]:
         raise ValueError("WebSocket payload must be a JSON object.")
     return payload
 
+
+def _raise_if_client_disabled(site_id: str) -> None:
+    if admin_db.is_client_widget_enabled(site_id):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CLIENT_DISABLED_MESSAGE)
+
+
+def _raise_if_quota_exceeded(site_id: str, session_id: str) -> None:
+    try:
+        admin_db.assert_usage_allowed(site_id, session_id)
+    except admin_db.TokenQuotaExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc) or TOKEN_QUOTA_EXCEEDED_MESSAGE,
+        ) from exc
+
+
 @app.post("/v1/shop", response_model=ShopResponse, tags=["Shopping Agent"])
 async def shop(
     site_id: str = Form(config.DEFAULT_SITE_ID, description="Site ID for multi-tenancy"),
@@ -406,6 +540,7 @@ async def shop(
     conversation_history: Optional[str] = Form(
         None, description="JSON array of prior conversation turns"
     ),
+    session_id: str = Form("", description="Browser conversation session ID"),
 ) -> ShopResponse:
     """
     **Main endpoint.** Send customer audio or text → receive UI actions + voice response.
@@ -420,6 +555,8 @@ async def shop(
     - `ui_actions` — list of website control commands for the frontend
     - `audio_b64` — base64-encoded WAV of the spoken response
     """
+    _raise_if_client_disabled(site_id)
+    _raise_if_quota_exceeded(site_id, session_id)
     payload = await _build_shopping_turn_payload(
         audio=audio,
         text=text,
@@ -444,6 +581,7 @@ async def shop(
         ui_actions=result.get("ui_actions", []),
         latency_ms=result.get("latency_ms", {}),
     )
+    _record_usage_result(site_id=site_id, session_id=session_id, transport="legacy-http", result=result)
 
     return ShopResponse(**result)
 
@@ -461,10 +599,13 @@ async def shop_stream(
     conversation_history: Optional[str] = Form(
         None, description="JSON array of prior conversation turns"
     ),
+    session_id: str = Form("", description="Browser conversation session ID"),
 ) -> StreamingResponse:
     """
     **Streaming endpoint.** Send customer audio or text → receive SSE events for transcript, ui_actions, and audio.
     """
+    _raise_if_client_disabled(site_id)
+    _raise_if_quota_exceeded(site_id, session_id)
     payload = await _build_shopping_turn_payload(
         audio=audio,
         text=text,
@@ -474,6 +615,7 @@ async def shop_stream(
     return StreamingResponse(
         _stream_shop_events(
             site_id=site_id,
+            session_id=session_id,
             text=text,
             skip_tts=skip_tts,
             payload=payload,
@@ -483,9 +625,18 @@ async def shop_stream(
 
 
 @app.websocket("/v1/ws/shop")
-async def websocket_shop(websocket: WebSocket, site_id: str = config.DEFAULT_SITE_ID) -> None:
+async def websocket_shop(
+    websocket: WebSocket,
+    site_id: str = config.DEFAULT_SITE_ID,
+    session_id: str = "",
+) -> None:
     """Persistent one-script voice transport for spoke websites."""
-    await ws_shop_handler(websocket, site_id)
+    if not admin_db.is_client_widget_enabled(site_id):
+        await websocket.accept()
+        await websocket.send_json({"type": "error", "message": CLIENT_DISABLED_MESSAGE})
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    await ws_shop_handler(websocket, site_id, session_id)
 
 
 @app.websocket("/ws/chat")
@@ -510,6 +661,15 @@ async def websocket_chat(websocket: WebSocket) -> None:
             raw_history = payload.get("conversation_history", [])
             parsed_history = _parse_conversation_history(json.dumps(raw_history))
             site_id = payload.get("site_id", config.DEFAULT_SITE_ID)
+            session_id = str(payload.get("session_id") or "")
+            if not admin_db.is_client_widget_enabled(site_id):
+                await websocket.send_json({"event": "error", "data": {"error": CLIENT_DISABLED_MESSAGE}})
+                continue
+            try:
+                admin_db.assert_usage_allowed(site_id, session_id)
+            except admin_db.TokenQuotaExceededError as exc:
+                await websocket.send_json({"event": "error", "data": {"error": str(exc)}})
+                continue
 
             started_at = turn_timer()
             state = TurnLogState(transcript=text_input or "")
@@ -526,6 +686,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
             _print_turn_state(
                 transport="legacy-ws",
                 site_id=site_id,
+                session_id=session_id,
                 started_at=started_at,
                 state=state,
             )
@@ -1020,6 +1181,21 @@ def _load_widget_script(*, site: str, api_base_url: str) -> str:
     return js_code
 
 
+def _disabled_widget_script(*, site: str) -> str:
+    return f"""
+(function () {{
+  var siteId = {json.dumps(site)};
+  var widget = document.getElementById({json.dumps(DISABLED_WIDGET_DOM_ID)});
+  if (widget) widget.remove();
+  window[{json.dumps(DISABLED_WIDGET_BOOT_FLAG)}] = false;
+  window[{json.dumps(DISABLED_WIDGET_FRAME_FLAG)}] = false;
+  window[{json.dumps(DISABLED_WIDGET_REGISTRY)}] = window[{json.dumps(DISABLED_WIDGET_REGISTRY)}] || {{}};
+  window[{json.dumps(DISABLED_WIDGET_REGISTRY)}][siteId] = true;
+  console.info("[ShopBot] " + {json.dumps(CLIENT_DISABLED_MESSAGE)} + " Site: " + siteId);
+}})();
+"""
+
+
 def _render_embed_bootstrap(*, site: str, api_base_url: str) -> str:
     return f"""
 (function () {{
@@ -1109,6 +1285,13 @@ async def serve_plugin_frame(site: Optional[str] = None, site_id: Optional[str] 
     if parent_origin:
         script_path += f"&parent_origin={parent_origin}"
 
+    if not admin_db.is_client_widget_enabled(safe_site):
+        return Response(
+            content="<!doctype html><html><body></body></html>",
+            media_type="text/html",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+
     html_doc = f"""<!doctype html>
 <html lang="en">
   <head>
@@ -1148,7 +1331,11 @@ async def serve_plugin_widget(site: Optional[str] = None, site_id: Optional[str]
 
     safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
     safe_api = _public_widget_base_url()
-    js_code = _load_widget_script(site=safe_site, api_base_url=safe_api)
+    js_code = (
+        _load_widget_script(site=safe_site, api_base_url=safe_api)
+        if admin_db.is_client_widget_enabled(safe_site)
+        else _disabled_widget_script(site=safe_site)
+    )
 
     return Response(
         content=js_code,
@@ -1169,7 +1356,11 @@ async def serve_plugin(site: Optional[str] = None, site_id: Optional[str] = None
 
     safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
     safe_api = _public_widget_base_url()
-    js_code = _load_widget_script(site=safe_site, api_base_url=safe_api)
+    js_code = (
+        _load_widget_script(site=safe_site, api_base_url=safe_api)
+        if admin_db.is_client_widget_enabled(safe_site)
+        else _disabled_widget_script(site=safe_site)
+    )
 
     return Response(
         content=js_code,

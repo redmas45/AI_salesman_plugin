@@ -26,6 +26,7 @@ export const API_PATHS = Object.freeze({
   PRODUCTS_BY_IDS: "/v1/products/by-ids",
   SHOP: "/v1/shop",
   SHOP_WS: "/v1/ws/shop",
+  WIDGET_STATUS: "/v1/widget/status",
 });
 
 export const AUDIO = Object.freeze({
@@ -51,6 +52,7 @@ export const AUTO_GREETING_DELAY_MS = 900;
 export const AUTO_GREETING_VISIBLE_MS = 4200;
 export const DEFAULT_CART_QUANTITY = 1;
 export const OVERLAY_COLLAPSE_DELAY_MS = 180;
+export const WIDGET_STATUS_POLL_INTERVAL_MS = 3000;
 
 export const EVENTS = Object.freeze({
   SHOPBOT_ACTION: "shopbot:action",

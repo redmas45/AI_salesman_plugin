@@ -2,7 +2,7 @@
 
 Date: 2026-06-15
 
-Current fallback milestone: **L4.0** (`L 4.0` GitHub sync comment).
+Current fallback milestone: **L5** (`L 5` GitHub sync comment).
 
 ## About the Project
 An AI-powered voice shopping assistant ("Voice Orb") injected into the storefront (`AI-KART`). It uses natural language processing (LLM), Text-To-Speech (TTS), Speech-To-Text (STT), and Retrieval-Augmented Generation (RAG) to recommend products, answer customer queries, and execute storefront actions (e.g., adding to cart, navigating, checkout).
@@ -37,7 +37,7 @@ An AI-powered voice shopping assistant ("Voice Orb") injected into the storefron
 - **Side-by-Side Product Comparison ("Stat Card")**: Added a premium comparative layout for `SHOW_COMPARISON` intent, displaying compared items side-by-side with matched attributes (Price, Brand, Category, Description) and direct "Add to Cart" actions.
 - **Detail-Page Product Auto-Inclusion**: Automatically detects if the customer is on a product details view and prepends the currently viewed product to the comparison grid.
 - **Comparison UI Squeezing Fix**: Refactored the results overlay element to use a direct flex-row flow during comparisons to prevent nested containers from adding horizontal or vertical scrollbars to compared product cards.
-- **Single-Command Startup**: `python run.py` launches Caddy, the storefront, and backend in a unified supervisor loop.
+- **Legacy Local Supervisor**: `python run.py` can still launch Caddy, the storefront, and backend for local fallback testing, but Docker is now the preferred HUB startup path.
 - **Modular Deployment Modes**: Persistence and setup scripts for `intranet` (LAN Wi-Fi testing) and `public-ip` modes.
 - **Voice-Cart Integrations**:
   - Storefront resolves both catalog handles and numeric backend IDs.
@@ -55,6 +55,11 @@ An AI-powered voice shopping assistant ("Voice Orb") injected into the storefron
 - **Customer-Site Standalone Mode**: `Vercel_website/run.py` runs the storefront/admin without the AI widget by default. Its search bar uses `out/api/products.json` directly and does not depend on the Voice Orb.
 - **One-Line Hosted Adapter Contract**: Client websites still paste exactly one script tag. Adapter behavior lives inside HUB-hosted `shopbot.js`; client website source code should not be edited for AI action fixes.
 - **HUB-Side Product Detail Routing**: `plugin/src/productResolver.js` resolves backend numeric product IDs to real same-origin product pages by checking HUB products and host catalog endpoints before falling back to client hooks. This prevents bad routes like `/product/<numeric_backend_id>/`.
+- **AI Hub CRM**: `/crm` manages clients, enables/disables the widget, triggers crawls, shows tenant catalog status, usage, conversations, settings, adapters, and health.
+- **CRM Conversation Storage**: Voice turns are saved with session ID, transcript, AI reply, intent, estimated tokens, and latency so sessions can be reviewed date-wise.
+- **CRM Analytics Cleanup**: Analytics now uses catalog-backed product mention detection. `Most mentioned products` contains product names only, not filler words like `yaar`, verbs, pronouns, or generic conversation terms.
+- **Store-Manager Summary**: CRM summaries are readable bullet points focused on demand, stock decisions, and operations. OpenAI can generate the summary when configured; otherwise the HUB returns a deterministic heuristic summary.
+- **Docker Hub Startup**: `docker compose up -d --build` runs the HUB app, CRM, widget host, Nginx, PostgreSQL, and pgvector. The client website remains external and is started by the client or by the separate `Vercel_website` simulator for local testing.
 
 
 ---
@@ -68,7 +73,8 @@ Controlled via `DEPLOYMENT_MODE` in `.env`:
 - `domain`: Maps standard domain name (e.g., `example.com`) to public IP.
 
 ### Port Mappings (Intranet Mode)
-- **Caddy HTTPS Entry**: `8484` (Proxies all traffic to storefront)
+- **Docker Nginx HTTPS Entry**: `8484` (HUB CRM, widget, and `/v1/*` APIs)
+- **Legacy `run.py` HTTPS Entry**: Caddy can still be used for local full-stack simulation.
 - **Local Spoke Storefront Private**: `8584`
 - **FastAPI Backend Private**: `8585`
 - **Postgres Database**: `5434`
@@ -76,12 +82,16 @@ Controlled via `DEPLOYMENT_MODE` in `.env`:
 ---
 
 ### Manual Smoke Test Checklist
-1. Start stack: `python run.py`
-2. Open storefront: `https://192.168.68.56:8484` (verify widget renders).
-3. Test greetings: Say "hello" or "hi" (verify conversational greeting response).
-4. Search products: Say "show me mugs" (verify recommendation panel filters grid).
-5. Cart: Say "add bomber jacket to cart" (verify item added and drawer opens).
-6. Confirm terminal turn summary prints after a voice turn, including `AI_CONVO | user`, `AI_CONVO | ai_reply`, `method_used: ...`, `time_taken: ...ms`, and `[SHOPBOT TURN] transport=...`.
+1. Start HUB Docker stack: `docker compose up -d --build`.
+2. Start the client simulator separately from `C:/Users/admin/Desktop/Vercel_website` when testing AI-KART locally.
+3. Open CRM: `https://192.168.68.56:8484/crm`.
+4. Open storefront: `https://192.168.68.56:8484` or the separately hosted client site URL (verify widget renders).
+5. In CRM Analytics, confirm `Most mentioned products` contains catalog product names only.
+6. Confirm CRM summary is bullet-style store-manager guidance.
+7. Test greetings: Say "hello" or "hi" (verify conversational greeting response).
+8. Search products: Say "show me mugs" (verify recommendation panel filters grid).
+9. Cart: Say "add bomber jacket to cart" (verify item added and drawer opens).
+10. Confirm terminal turn summary prints after a voice turn, including `AI_CONVO | user`, `AI_CONVO | ai_reply`, `method_used: ...`, `time_taken: ...ms`, and `[SHOPBOT TURN] transport=...`.
 
 ---
 
@@ -144,6 +154,25 @@ AI_CONVO | method_used: websocket | status: ok | time_taken: 1842ms | pipeline: 
 
 ---
 
+## L5 - Fallback Point (Milestone)
+**Date:** 2026-06-15
+**Status:** Stable Fallback
+**GitHub Sync Comment:** `L 5`
+
+This is the current rollback point after L4.0. If future changes break the Docker-first HUB, CRM, analytics, or one-script client setup, revert to the GitHub state synced with comment `L 5`.
+
+**What L5 locks in:**
+- **Docker-First HUB Startup:** `docker compose up -d --build` runs the HUB app, CRM, widget host, crawler/RAG APIs, Nginx, PostgreSQL, and pgvector.
+- **External Client Website Boundary:** The client website is not part of the HUB Docker stack. For AI-KART testing, `Vercel_website` is started separately; in production, the client runs their own site.
+- **One-Line Client Contract Preserved:** Real client websites paste one script tag only. Client source code should not be edited for HUB adapter or CRM fixes.
+- **CRM Admin Surface:** `/crm` manages clients, widget enable/disable, crawler triggers, tenant catalog visibility, usage, date-wise conversations, analytics, settings, adapters, and health.
+- **Session And Usage Tracking:** Conversation turns are stored with session ID, transcript, AI reply, intent, estimated tokens, latency, and quota context.
+- **Product-Only Analytics:** `Most mentioned products` is catalog-backed and contains product names only, not filler words, pronouns, verbs, greetings, or casual phrases.
+- **Store-Manager Summaries:** CRM summaries are bullet points focused on customer demand, stock decisions, and operations. OpenAI generation is optional; deterministic summaries remain available without `OPENAI_API_KEY`.
+- **Nginx Docker Proxy:** Docker uses Nginx for the HUB HTTPS/LAN proxy path. The older `run.py`/Caddy route remains a legacy local fallback.
+
+---
+
 ## L4.0 - Fallback Point (Milestone)
 **Date:** 2026-06-15
 **Status:** Stable Fallback
@@ -168,11 +197,19 @@ Current AI-KART intranet one-line script:
 
 ---
 
-## Post-L4 Hub-Spoke Direction
+## Post-L5 Hub-Spoke Direction
 
 **HUB:** `AI_salesman_plugin` owns the AI pipeline, RAG, STT, LLM, TTS, widget script, adapters, and optional WebSocket transport.
 
 **SPOKE:** Client websites only paste one script tag. They should not paste a second hook/config block. Any site-specific cart/search/checkout behavior belongs in our hosted widget adapter layer.
+
+**CRM:** The HUB now includes an admin CRM at `/crm` for client management, tenant catalog visibility, crawler triggers, usage tracking, date-wise conversations, analytics, settings, adapters, and health. This is a HUB admin surface; it is not client website code.
+
+CRM analytics rules:
+- `Most mentioned products` must contain product names from the tenant catalog only.
+- Non-product transcript words such as filler words, pronouns, verbs, greetings, and casual phrases must not appear as demand signals.
+- Summaries should read like store-manager notes: what customers are looking for, what to stock, and what operations need attention.
+- OpenAI summary generation is optional; deterministic heuristic summaries remain available when `OPENAI_API_KEY` is not configured.
 
 Current one-script spoke contract:
 
@@ -206,7 +243,17 @@ This injects one client-style script at request time:
 <script defer src="http://127.0.0.1:8585/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main" data-brand="AI-KART"></script>
 ```
 
-The AI HUB `run.py` can still run the full intranet stack behind Caddy: `/shopbot.js`, `/shopbot-widget.js`, `/shopbot-frame`, `/v1/*`, and `/health` route to the HUB backend; normal website pages route to the SPOKE storefront.
+The legacy AI HUB `run.py` path can still run the full intranet stack behind Caddy: `/crm`, `/shopbot.js`, `/shopbot-widget.js`, `/shopbot-frame`, `/v1/*`, and `/health` route to the HUB backend; normal website pages route to the SPOKE storefront. `run.py` prints and auto-opens the CRM URL unless `AUTO_OPEN_CRM=false`.
+
+Docker/EC2 direction:
+- `docker compose up -d --build` runs the HUB app, CRM, widget host, crawler/RAG APIs, Nginx, PostgreSQL, and pgvector.
+- The client website is external to this Docker stack. For local AI-KART testing, start `Vercel_website` manually; in production, the client runs their own website.
+- `scripts/start_crm.ps1` is the local Windows launcher that starts Docker and opens `https://localhost:8484/crm`.
+- On EC2, Docker exposes the CRM and widget origin; a remote admin opens `https://your-hub-domain.com/crm` from their own browser.
+- Use `HUB_PUBLIC_URL` for the HUB domain and `CLIENT_STORE_URL` for the client website being crawled.
+- Docker defaults `CRAWL_ON_STARTUP=false` and `CRAWL_PERIODIC_ENABLED=false`, so a missing/offline client website does not spam crawler errors. Trigger crawls from CRM when the target client site is online.
+- The CRM `Add client` flow creates the client record, tenant schema, script tag, and crawler entrypoint without editing client website source.
+- CRM analytics can be checked through the Docker-served API at `/v1/admin/analytics?range=7d`; it should return `summary`, `top_products`, `top_intents`, and trend `series`.
 
 Transport status:
 - `POST /v1/shop` remains the stable fallback and must not be broken.
@@ -244,7 +291,7 @@ These do not require editing the client's website code beyond adding our script 
 - **Product Recommendations in Speech/Text:** AI can recommend products from the client's catalog and speak the answer.
 - **Simple Page Navigation:** AI can navigate by setting `window.location.href` for known pages like home, support, FAQ, shipping, returns, category pages, or product pages if we know the URLs.
 - **Lead Capture / Assisted Support:** We can collect name, phone/email, preferences, address, or intent in conversation and store it in our backend, if legally/contractually allowed.
-- **Analytics on AI Usage:** We can log transcripts, intents, products discussed, failed searches, and conversion intent on our backend.
+- **Analytics on AI Usage:** We can log transcripts, intents, product-only demand signals, failed searches, estimated tokens, latency, and conversion intent on our backend.
 - **No Native Cart Dependency Mode:** AI can still act as a product advisor even if the site gives us no cart access.
 
 ### Works If The Client Already Has Usable Browser APIs

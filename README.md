@@ -4,17 +4,21 @@ AI Salesman Hub is the backend, RAG pipeline, voice pipeline, and hosted one-lin
 
 ## Current Milestone
 
-**L4.0** is the current fallback point.
+**L5** is the current fallback point.
 
-- GitHub sync comment: `L 4.0`
+- GitHub sync comment: `L 5`
 - Date: 2026-06-15
-- Meaning: if later work breaks the hub/spoke setup, roll back to the GitHub state synced with `L 4.0` before debugging forward.
+- Meaning: if later work breaks the hub/spoke setup, roll back to the GitHub state synced with `L 5` before debugging forward.
 
-Key L4.0 behavior:
+Key L5 behavior:
 - One-line client embed remains the contract.
 - Product-detail routing is handled in the HUB-hosted adapter before falling back to client website hooks.
 - Numeric backend product IDs are not treated as client product route handles.
 - Client/spoke website code is not modified for adapter fixes.
+- Docker is the preferred HUB startup path: app, CRM, widget host, Nginx, PostgreSQL, and pgvector.
+- The client website remains external to the HUB Docker stack.
+- CRM analytics shows catalog-backed product names only in `Most mentioned products`.
+- CRM summaries are store-manager bullet points for demand, stock, and operations decisions.
 
 ## Architecture
 
@@ -27,6 +31,7 @@ Client website
 
 AI Salesman Hub
   -> FastAPI backend
+  -> CRM admin panel at /crm
   -> STT, LLM, TTS orchestration
   -> crawler/RAG ingestion
   -> PostgreSQL + pgvector tenant catalog
@@ -53,6 +58,37 @@ Generic client script:
 
 The adapter is bundled inside `shopbot.js`. A real client should not need a second hook block. If a client needs Shopify, WooCommerce, custom cart, checkout, or variant behavior, we add that adapter logic to the HUB-hosted script for that site.
 
+## AI Hub CRM
+
+The HUB now includes a local admin CRM at:
+
+```text
+/crm
+```
+
+Current CRM scope:
+
+- Dashboard metrics: active clients, voice turns, indexed products, latency, health.
+- Client management: add, remove, enable/disable, copy one-line script.
+- Crawler control: trigger a crawl for a client site.
+- Catalog visibility: tenant product counts, categories, vectorization status, previews.
+- Usage tracking: turn counts, estimated tokens, latency, session quotas, recent events.
+- Conversation review: date-wise sessions with user transcript, AI reply, intent, tokens, and latency.
+- Analytics: range filters, turn trends, intent mix, product-only demand signals, and CRM summaries.
+- Settings: whitelisted `.env` keys for providers, models, deployment, and crawler settings.
+
+Set `CRM_ADMIN_TOKEN` in `.env` to protect `/v1/admin/*`. If it is empty, the CRM is open for local development.
+
+### CRM Analytics Behavior
+
+Analytics is designed for store-manager decisions, not raw word counting.
+
+- `Most mentioned products` shows catalog product names only.
+- Filler words, verbs, pronouns, and casual words such as `yaar`, `great`, `choice`, and `interested` are filtered out.
+- Product mentions are matched against each tenant's catalog, so analytics stays separated per client.
+- The CRM summary is shown as readable bullet points, for example what customers are looking for, what to stock, and what operations should improve.
+- If `OPENAI_API_KEY` is configured, the `Generate AI summary` button asks OpenAI for a concise store-manager summary. Without OpenAI, the HUB still returns a deterministic heuristic summary.
+
 ## Prerequisites
 
 Install these before running the project:
@@ -61,22 +97,16 @@ Install these before running the project:
 - Python 3.11 or 3.12. Python 3.13 is not the primary target because some audio and ML dependencies may lag.
 - Docker Desktop, for PostgreSQL with pgvector.
 - Node.js 18+ and npm, for rebuilding `plugin/shopbot.js`.
-- Caddy, for local HTTPS/LAN proxy mode.
+- Docker-managed Nginx, for HTTPS/LAN proxy mode.
 - Chrome or Chromium, used by Crawl4AI / browser-based crawling.
 - Git.
-
-Windows Caddy install:
-
-```powershell
-winget install --id CaddyServer.Caddy --accept-source-agreements --accept-package-agreements
-```
 
 ## Full Dependency List
 
 ### System Services
 
 - PostgreSQL 16 with pgvector, provided by Docker image `pgvector/pgvector:pg16`.
-- Caddy HTTPS proxy.
+- Nginx HTTPS proxy, provided by Docker image `nginx:1.27-alpine`.
 - Chrome/Chromium browser runtime.
 
 ### Python Packages
@@ -127,7 +157,7 @@ python -m venv .venv
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 
-docker-compose up -d
+docker compose up -d db
 
 cd plugin
 npm install
@@ -138,7 +168,7 @@ cd ..
 If Crawl4AI needs browser setup on a fresh machine, run:
 
 ```powershell
-python -m crawl4ai.setup
+crawl4ai-setup
 ```
 
 ## Environment Setup
@@ -174,19 +204,25 @@ HTTP_REDIRECT_PORT=0
 CRAWL_MAX_PAGES=1024
 CRAWL_MAX_DEPTH=100
 CRAWL_ON_STARTUP=true
+CRAWL_PERIODIC_ENABLED=true
 
 PUBLIC_API_URL=
 PUBLIC_WIDGET_SCRIPT_URL=
 MANUAL_WIDGET_SCRIPT=
 PUBLIC_STOREFRONT_ORIGIN=
 PUBLIC_HTTPS_ORIGIN=
+
+HUB_PUBLIC_URL=https://localhost:8484
+CLIENT_STORE_URL=http://host.docker.internal:8584
+CRM_ADMIN_TOKEN=
+AUTO_OPEN_CRM=true
 ```
 
 Keep `CURRENT_SITE_ID`, `AI_DEFAULT_SITE_ID`, `DEFAULT_SITE_ID`, and the `site=` query parameter aligned. The value is a tenant/catalog namespace, not a URL.
 
-## Running The Full Stack
+## Legacy Local Supervisor
 
-Start the HUB, local spoke storefront, and HTTPS proxy:
+Docker is the preferred path for the HUB. The older local supervisor is kept for development fallback when you explicitly want one process to start the HUB, local spoke storefront, and legacy HTTPS proxy:
 
 ```powershell
 python run.py
@@ -203,10 +239,117 @@ Postgres:          localhost:5434
 
 Open the printed Wi-Fi/LAN URL. In intranet mode, the browser may warn about the local certificate. Accept it for internal testing.
 
+`python run.py` also exposes and auto-opens the CRM when that legacy path is used:
+
+```text
+https://<this-pc-lan-ip>:8484/crm
+```
+
 Stop:
 
 ```powershell
 Ctrl+C
+```
+
+## Running The AI Hub Docker Stack
+
+This is the preferred production-shaped startup path. Docker runs only our AI Hub services:
+
+```text
+CRM
+FastAPI backend
+shopbot.js widget host
+crawler/RAG APIs
+PostgreSQL + pgvector
+Nginx proxy
+```
+
+The client website is not part of this Docker stack. For local AI-KART testing, start `Vercel_website` separately. In production, the real client runs their own website.
+
+Single command from this repo, with startup logs visible:
+
+```powershell
+docker compose up --build
+```
+
+The app container prints:
+
+```text
+AI Hub Docker is booting
+CRM:    https://localhost:8484/crm
+Widget: https://localhost:8484/shopbot.js?site=ai_kart_main
+API:    http://localhost:8585
+```
+
+Then open:
+
+```text
+https://localhost:8484/crm
+```
+
+If you want detached/background mode:
+
+```powershell
+docker compose up -d --build
+docker compose logs -f app
+```
+
+Optional local helper, if you want PowerShell to start Docker and open the CRM browser tab:
+
+```powershell
+.\scripts\start_crm.ps1
+```
+
+On EC2, use the same Docker command and open the CRM from your own browser:
+
+```text
+https://your-hub-domain.com/crm
+```
+
+Important Docker variables:
+
+```env
+HUB_PUBLIC_URL=https://your-hub-domain.com
+CLIENT_STORE_URL=https://client-store.com
+HUB_TLS_CERT_FILE=/certs/ip-192_168_68_56.crt
+HUB_TLS_KEY_FILE=/certs/ip-192_168_68_56.key
+CRM_ADMIN_TOKEN=choose-a-strong-admin-token
+CRAWL_ON_STARTUP=false
+CRAWL_PERIODIC_ENABLED=false
+```
+
+For a new client, use the CRM `Add client` flow. The CRM creates the tenant, gives the script tag, and can trigger the crawler. The client website still only receives one pasted script line.
+
+In intranet mode, `HUB_PUBLIC_URL` must be the AI Hub machine's LAN URL, for example:
+
+```env
+HUB_PUBLIC_URL=https://192.168.68.56:8484
+```
+
+Then a client website on another same-Wi-Fi machine can paste a script like:
+
+```html
+<script defer src="https://192.168.68.56:8484/shopbot.js?site=client_site_id" data-site-id="client_site_id"></script>
+```
+
+The client website can run on a different LAN IP. Add that website URL in the CRM and trigger its crawler from there. Docker does not auto-crawl on startup because the client website may be offline.
+
+The bundled Docker Nginx HTTPS config uses files from `deploy/certs`. For this machine it is currently:
+
+```env
+HUB_TLS_CERT_FILE=/certs/ip-192_168_68_56.crt
+HUB_TLS_KEY_FILE=/certs/ip-192_168_68_56.key
+```
+
+If the HUB machine gets a different LAN IP, generate/use the matching cert pair and update those two variables.
+
+For local AI-KART testing, start the client site manually from the separate project:
+
+```powershell
+cd C:\Users\admin\Desktop\Vercel_website
+$env:ENABLE_AI_WIDGET="true"
+$env:SHOPBOT_HUB_ORIGIN="https://localhost:8484"
+python run.py
 ```
 
 ## Deployment Modes
@@ -306,15 +449,30 @@ cd ..
 
 Manual smoke test:
 
-1. Start stack: `python run.py`
-2. Open the printed HTTPS storefront URL.
-3. Confirm the Voice Orb appears.
-4. Say `hello`.
-5. Say `show me NOVA t-shirt`.
-6. Say `show me its page`.
-7. Confirm navigation uses the real product page, not `/product/<numeric_backend_id>/`.
-8. Say `add it to cart`.
-9. Confirm terminal turn logs print `AI_CONVO` and `[SHOPBOT TURN]`.
+1. Start HUB stack: `docker compose up -d --build`.
+2. Start the client website separately. For AI-KART local testing, run `Vercel_website` manually with AI injection enabled.
+3. Open CRM: `https://127.0.0.1:8484/crm` or the LAN HUB URL printed by Docker.
+4. Open the client storefront and confirm the Voice Orb appears.
+5. Say `hello`.
+6. Say `show me NOVA t-shirt`.
+7. Say `show me its page`.
+8. Confirm navigation uses the real product page, not `/product/<numeric_backend_id>/`.
+9. Say `add it to cart`.
+10. Confirm terminal turn logs print `AI_CONVO` and `[SHOPBOT TURN]`.
+
+CRM analytics smoke test after Docker boot:
+
+```powershell
+docker compose up -d --build
+curl.exe -k -s "https://127.0.0.1:8484/v1/admin/analytics?range=7d"
+```
+
+Expected analytics contract:
+
+- `summary` is newline-separated bullet guidance for a store manager.
+- `top_products` contains product names from the tenant catalog only.
+- `top_terms` is kept for backward compatibility and mirrors product-only entries.
+- Non-product words from conversations must not appear in the product ranking.
 
 ## Terminal Turn Logs
 
@@ -363,9 +521,11 @@ If no catalog API is available, it falls back to sitemap, robots, common collect
 
 This repo is the AI HUB. It does not own the client website admin.
 
-For AI-KART testing, admin/product editing belongs to `C:\Users\admin\Desktop\Vercel_website`. The HUB only exposes neutral APIs such as:
+For AI-KART testing, storefront admin/product editing belongs to `C:\Users\admin\Desktop\Vercel_website`. The HUB owns AI/admin operations through the CRM and APIs such as:
 
 ```text
+/crm
+/v1/admin/*
 /v1/catalog/status
 /v1/catalog/crawler/run
 /v1/products
@@ -381,7 +541,7 @@ docker-compose up -d
 docker ps
 ```
 
-Caddy not found:
+Legacy `run.py` Caddy proxy not found:
 
 ```powershell
 winget install --id CaddyServer.Caddy --accept-source-agreements --accept-package-agreements

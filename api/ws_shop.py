@@ -15,9 +15,11 @@ import logging
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
+import psycopg
 
 from agent import orchestrator
 from api.turn_logging import print_turn_summary, turn_timer
+from db import admin as admin_db
 import config
 
 logger = logging.getLogger(__name__)
@@ -50,9 +52,10 @@ RECOVERABLE_WS_ERRORS = (RuntimeError, ValueError, TypeError, OSError)
 class WebSocketShopSession:
     """One persistent WebSocket conversation for one tenant site."""
 
-    def __init__(self, websocket: WebSocket, site_id: str):
+    def __init__(self, websocket: WebSocket, site_id: str, session_id: str = ""):
         self.websocket = websocket
         self.site_id = _safe_site_id(site_id)
+        self.session_id = _safe_session_id(session_id, self.site_id)
         self.history: list[dict[str, str]] = []
         self.audio_chunks: list[bytes] = []
 
@@ -71,6 +74,8 @@ class WebSocketShopSession:
 
                 if message_type == WS_TYPE_CONFIG:
                     self.history = _sanitize_history(payload.get("history", []))
+                    if payload.get("session_id"):
+                        self.session_id = _safe_session_id(str(payload.get("session_id")), self.site_id)
                     await self.send({"type": WS_TYPE_CONFIGURED, "history_size": len(self.history)})
                     continue
 
@@ -117,6 +122,11 @@ class WebSocketShopSession:
     ) -> None:
         if not audio_bytes and not (text_input or "").strip():
             await self.send({"type": WS_TYPE_ERROR, "message": ERROR_NO_AUDIO_OR_TEXT})
+            return
+        try:
+            admin_db.assert_usage_allowed(self.site_id, self.session_id)
+        except admin_db.TokenQuotaExceededError as exc:
+            await self.send({"type": WS_TYPE_ERROR, "message": str(exc)})
             return
 
         started_at = turn_timer()
@@ -215,6 +225,7 @@ class WebSocketShopSession:
             latency_ms=latency_ms,
             status=status,
         )
+        self.record_usage(transcript, response_text or error_message, ui_actions, latency_ms, status)
 
     def update_history(self, transcript: str, response_text: str) -> None:
         if transcript:
@@ -226,11 +237,34 @@ class WebSocketShopSession:
     async def send(self, payload: dict[str, Any]) -> None:
         await self.websocket.send_json(payload)
 
+    def record_usage(
+        self,
+        transcript: str,
+        response_text: str,
+        ui_actions: list[dict[str, Any]],
+        latency_ms: dict[str, Any],
+        status: str,
+    ) -> None:
+        try:
+            admin_db.record_usage_event(
+                site_id=self.site_id,
+                session_id=self.session_id,
+                transport="websocket",
+                status=status,
+                transcript=transcript,
+                response_text=response_text,
+                intent="",
+                action_count=len(ui_actions),
+                latency_ms=_total_latency_ms(latency_ms),
+            )
+        except psycopg.Error as exc:
+            logger.warning("CRM usage logging failed: %s", exc)
 
-async def ws_shop_handler(websocket: WebSocket, site_id: str) -> None:
+
+async def ws_shop_handler(websocket: WebSocket, site_id: str, session_id: str = "") -> None:
     """Handle one hub-spoke voice shopping WebSocket session."""
 
-    await WebSocketShopSession(websocket, site_id).run()
+    await WebSocketShopSession(websocket, site_id, session_id).run()
 
 
 def _decode_audio_chunk(payload: dict[str, Any]) -> bytes:
@@ -263,3 +297,17 @@ def _sanitize_history(raw_history: Any) -> list[dict[str, str]]:
 
 def _safe_site_id(raw: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in (raw or "").strip().lower())[:80] or config.DEFAULT_SITE_ID
+
+
+def _safe_session_id(raw: str, site_id: str) -> str:
+    text = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in (raw or "").strip())
+    text = text.strip("_")
+    return text[:120] or f"{site_id}_server"
+
+
+def _total_latency_ms(latency_ms: dict[str, Any]) -> float:
+    raw_value = latency_ms.get("total_ms") if isinstance(latency_ms, dict) else 0
+    try:
+        return float(raw_value or 0)
+    except (TypeError, ValueError):
+        return 0.0

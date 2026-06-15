@@ -15,6 +15,7 @@ function wsUrlFromApiBase(apiUrl, siteId) {
   const url = new URL(API_PATHS.SHOP_WS, apiUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set("site_id", siteId);
+  url.searchParams.set("session_id", config.sessionId);
   return url.toString();
 }
 
@@ -67,6 +68,7 @@ class HttpTransport {
     const formData = new FormData();
     formData.append("audio", blob, AUDIO.WEBM_FILENAME);
     formData.append("site_id", config.siteId);
+    formData.append("session_id", config.sessionId);
     if (conversationHistory && conversationHistory.length > 0) {
       formData.append("conversation_history", JSON.stringify(conversationHistory));
     }
@@ -136,7 +138,7 @@ class ShopbotWebSocketTransport {
         this.connected = true;
         this.connecting = null;
         this.retries = 0;
-        this.sendJson({ type: WS_MESSAGES.CONFIG, history: conversationHistory || [] });
+        this.sendJson({ type: WS_MESSAGES.CONFIG, history: conversationHistory || [], session_id: config.sessionId });
         resolve(true);
       };
 
@@ -162,7 +164,7 @@ class ShopbotWebSocketTransport {
 
     this.callbacks = callbacks;
     this.turnText = "";
-    this.sendJson({ type: WS_MESSAGES.CONFIG, history: conversationHistory || [] });
+    this.sendJson({ type: WS_MESSAGES.CONFIG, history: conversationHistory || [], session_id: config.sessionId });
     const b64 = await blobToBase64(blob);
     this.sendJson({ type: WS_MESSAGES.AUDIO_CHUNK, data: b64 });
     this.sendJson({ type: WS_MESSAGES.AUDIO_END });

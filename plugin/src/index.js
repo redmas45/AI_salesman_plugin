@@ -7,12 +7,18 @@ import {
   AUTO_GREETING_DELAY_MS,
   AUTO_GREETING_VISIBLE_MS,
   ACTION_PARAMS,
+  API_PATHS,
   CONVERSATION_HISTORY_LIMIT,
   DEFAULT_VISIBLE_RESET_DELAY_MS,
   STATUS,
+  WIDGET_STATUS_POLL_INTERVAL_MS,
 } from "./constants";
 
 window.__shopbot_identifier = "voice-orb";
+let activeRecorder = null;
+let statusPollTimer = null;
+let pendingSpeechText = "";
+
 function boot() {
   if (window.__shopbotBooted || document.getElementById("shopbot-widget")) {
     return;
@@ -124,6 +130,7 @@ function boot() {
   }
 
   const recorder = setupRecorder(handleStop, handleStatusChange);
+  activeRecorder = recorder;
 
   elements.btn.addEventListener("click", () => {
     recorder.toggle();
@@ -137,18 +144,90 @@ function boot() {
       addMessage(elements, greeting, "ai");
       handleStatusChange(STATUS.READY);
       scheduleVisibleReset(AUTO_GREETING_VISIBLE_MS);
-      try {
-        if ("speechSynthesis" in window) {
-          const utterance = new SpeechSynthesisUtterance(greeting);
-          utterance.rate = 1;
-          utterance.pitch = 1;
-          window.speechSynthesis.speak(utterance);
-        }
-      } catch (_err) {
-        // Browser speech synthesis is best-effort only.
-      }
+      speakText(greeting);
     }, AUTO_GREETING_DELAY_MS);
   }
+}
+
+function speakText(text) {
+  if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) return;
+  pendingSpeechText = text;
+  const speak = () => {
+    try {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1;
+      utterance.pitch = 1;
+      utterance.onstart = () => {
+        pendingSpeechText = "";
+      };
+      utterance.onend = () => {
+        pendingSpeechText = "";
+      };
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.resume();
+      window.speechSynthesis.speak(utterance);
+    } catch (_err) {
+      // Browser speech synthesis is best-effort only.
+    }
+  };
+
+  if (window.speechSynthesis.getVoices().length > 0) {
+    speak();
+    return;
+  }
+
+  window.speechSynthesis.onvoiceschanged = speak;
+  window.setTimeout(speak, 300);
+}
+
+function replayPendingSpeech() {
+  if (!pendingSpeechText) return;
+  speakText(pendingSpeechText);
+}
+
+function shutdownWidget() {
+  activeRecorder?.cancel();
+  activeRecorder = null;
+  window.__shopbotBooted = false;
+  document.getElementById("shopbot-widget")?.remove();
+  document.getElementById("shopbot-product-panel")?.remove();
+  try {
+    window.speechSynthesis?.cancel();
+  } catch (_err) {
+    // Browser speech synthesis cancellation is best-effort only.
+  }
+}
+
+async function fetchWidgetEnabled() {
+  const url = new URL(API_PATHS.WIDGET_STATUS, config.apiUrl);
+  url.searchParams.set("site_id", config.siteId);
+  const response = await fetch(url.toString(), {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) return true;
+  const data = await response.json();
+  return data.enabled !== false;
+}
+
+async function syncWidgetAvailability() {
+  try {
+    const enabled = await fetchWidgetEnabled();
+    if (enabled) {
+      boot();
+      return;
+    }
+    shutdownWidget();
+  } catch (_err) {
+    boot();
+  }
+}
+
+function startWidgetAvailabilityLoop() {
+  if (statusPollTimer) return;
+  boot();
+  syncWidgetAvailability();
+  statusPollTimer = window.setInterval(syncWidgetAvailability, WIDGET_STATUS_POLL_INTERVAL_MS);
 }
 
 function shouldAutoGreet() {
@@ -179,7 +258,9 @@ function isHomePage() {
 }
 
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", boot);
+  document.addEventListener("DOMContentLoaded", startWidgetAvailabilityLoop);
 } else {
-  boot();
+  startWidgetAvailabilityLoop();
 }
+
+document.addEventListener("pointerdown", replayPendingSpeech, { capture: true });

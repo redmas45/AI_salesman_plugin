@@ -74,6 +74,7 @@ CRAWL_ON_STARTUP: bool = os.getenv("CRAWL_ON_STARTUP", "true").strip().lower() n
     "no",
     "off",
 }
+CRAWL_PERIODIC_ENABLED: bool = _env_bool("CRAWL_PERIODIC_ENABLED", True)
 
 MAX_TRANSCRIPT_CHARS: int = 2000
 MAX_RESPONSE_CHARS: int = 3000
