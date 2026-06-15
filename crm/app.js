@@ -7,6 +7,19 @@ const TOAST_TIMEOUT_MS = 2600;
 const THEME_DARK = "dark";
 const THEME_LIGHT = "light";
 const DEFAULT_RANGE = "7d";
+const ACTION_KEYS = new Set(["Enter", " "]);
+const INTERACTIVE_TAGS = new Set(["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA"]);
+const SPARKLINE_WIDTH = 132;
+const SPARKLINE_HEIGHT = 38;
+const SPARKLINE_PADDING = 4;
+const DONUT_EMPTY_GRADIENT = "conic-gradient(#e6eaf1 0deg 360deg)";
+const DONUT_COLORS = ["#6f49d8", "#19b8a5", "#f5a623", "#3f8cff", "#ef7a53", "#8a5cf6"];
+const SPARKLINE_COLORS = {
+  green: "#2fa866",
+  purple: "#7a4be8",
+  blue: "#377dff",
+  amber: "#d99423",
+};
 
 const RANGE_OPTIONS = [
   ["1d", "Last 1 day"],
@@ -52,7 +65,7 @@ const state = {
   conversations: null,
   analytics: null,
   range: DEFAULT_RANGE,
-  theme: THEME_DARK,
+  theme: THEME_LIGHT,
 };
 
 const elements = {
@@ -60,6 +73,7 @@ const elements = {
   title: document.querySelector("#page-title"),
   breadcrumb: document.querySelector("#breadcrumb"),
   hubStatus: document.querySelector("#hub-status"),
+  brandHomeButton: document.querySelector("#brand-home-button"),
   addClientButton: document.querySelector("#add-client-button"),
   refreshButton: document.querySelector("#refresh-button"),
   themeToggleButton: document.querySelector("#theme-toggle-button"),
@@ -75,6 +89,7 @@ function init() {
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.view));
   });
+  elements.brandHomeButton.addEventListener("click", () => setView(DEFAULT_VIEW));
   elements.addClientButton.addEventListener("click", openClientDialog);
   elements.refreshButton.addEventListener("click", refreshCurrentView);
   elements.themeToggleButton.addEventListener("click", toggleTheme);
@@ -87,7 +102,7 @@ function init() {
 
 function storedTheme() {
   const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
-  return savedTheme === THEME_LIGHT ? THEME_LIGHT : THEME_DARK;
+  return savedTheme === THEME_DARK ? THEME_DARK : THEME_LIGHT;
 }
 
 function applyTheme(theme) {
@@ -123,10 +138,10 @@ async function refreshCurrentView() {
     if (state.view === "settings") {
       await loadSettings();
     }
-    if (state.view === "conversations") {
+    if (state.view === DEFAULT_VIEW || state.view === "conversations") {
       await loadConversations();
     }
-    if (state.view === "analytics") {
+    if (state.view === DEFAULT_VIEW || state.view === "analytics") {
       await loadAnalytics();
     }
     render();
@@ -253,30 +268,254 @@ function titleForView(view) {
 
 function renderDashboard() {
   const metrics = state.overview.metrics || {};
+  const analytics = state.analytics || {};
+  const productMentions = analytics.top_products || analytics.top_terms || [];
   return `
-    <div class="metric-grid">
-      ${metricCard("Active clients", metrics.active_clients, "+ live tenants")}
-      ${metricCard("Voice turns today", metrics.voice_turns_today, `${formatNumber(metrics.total_voice_turns)} total`)}
-      ${metricCard("Products indexed", metrics.products_indexed, "tenant catalogs")}
-      ${metricCard("Avg pipeline", `${formatNumber(metrics.avg_latency_ms)} ms`, `${formatNumber(metrics.tokens_estimated)} est tokens`)}
+    ${analyticsHeader()}
+    ${analyticsMetricGrid(metrics, analytics)}
+    <div class="analytics-main-grid">
+      ${intentDonutPanel(analytics.top_intents || [])}
+      ${productDemandPanel(productMentions)}
     </div>
-    <div class="dashboard-grid">
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Clients</h2>
-          <button class="button small ghost" data-action="add-client" type="button">Add client</button>
+    <div class="analytics-bottom-grid">
+      ${activeClientsPanel(state.clients)}
+      ${recentActivityPanel(state.overview.recent_activity || [])}
+    </div>
+  `;
+}
+
+function analyticsHeader() {
+  return `
+    <section class="analytics-title-card">
+      <div class="analytics-title-lockup">
+        <h2>Store Manager Analytics</h2>
+      </div>
+      <div class="analytics-title-actions">
+        ${rangeControl()}
+      </div>
+    </section>
+  `;
+}
+
+function analyticsMetricGrid(metrics, analytics) {
+  const series = analytics.series || [];
+  const rangeMetrics = analytics.metrics || {};
+  const rangeLabel = selectedRangeLabel();
+  return `
+    <div class="analytics-metric-grid">
+      ${analyticsMetricCard("Total voice turns", rangeMetrics.turns || 0, rangeLabel, sparklineValues(series, "turns", rangeMetrics.turns), "green", "open-conversations")}
+      ${analyticsMetricCard("Products indexed", metrics.products_indexed || 0, "Catalog coverage", sparklineValues(series, "tokens", metrics.products_indexed), "green", "open-catalogs")}
+      ${analyticsMetricCard("Avg pipeline latency", `${formatNumber(rangeMetrics.avg_latency_ms || 0)} ms`, rangeLabel, sparklineValues(series, "turns", rangeMetrics.avg_latency_ms), "purple", "open-usage")}
+      ${analyticsMetricCard("Est. tokens used", rangeMetrics.tokens || 0, rangeLabel, sparklineValues(series, "tokens", rangeMetrics.tokens), "purple", "open-usage")}
+    </div>
+  `;
+}
+
+function analyticsMetricCard(label, value, detail, values, tone, action) {
+  return `
+    <section class="analytics-metric-card clickable-dashboard-card" data-action="${escapeAttr(action)}" role="button" tabindex="0">
+      <div>
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(formatValue(value))}</strong>
+        <small>${escapeHtml(detail)}</small>
+      </div>
+      ${sparklineSvg(values, tone)}
+    </section>
+  `;
+}
+
+function intentDonutPanel(rows) {
+  const total = rows.reduce((sum, row) => sum + Number(row.count || 0), 0);
+  return `
+    <section class="analytics-panel intent-mix-panel clickable-dashboard-card" data-action="open-analytics" role="button" tabindex="0">
+      <div class="analytics-panel-header">
+        <h2>Intent Mix</h2>
+        <span>${escapeHtml(selectedRangeLabel())}</span>
+      </div>
+      <div class="intent-mix-body">
+        <div class="intent-donut" style="background:${escapeAttr(donutGradient(rows))}">
+          <div>
+            <strong>${formatNumber(total)}</strong>
+            <span>turns</span>
+          </div>
         </div>
-        <div class="table-wrap">${clientsTable(state.clients)}</div>
-      </section>
-      <section class="panel">
-        <div class="panel-header"><h2>Recent activity</h2></div>
-        <div class="panel-body">${activityList(state.overview.recent_activity || [])}</div>
-      </section>
+        <div class="intent-legend">${intentLegendRows(rows)}</div>
+      </div>
+    </section>
+  `;
+}
+
+function productDemandPanel(rows) {
+  return `
+    <section class="analytics-panel product-demand-panel clickable-dashboard-card" data-action="open-analytics" role="button" tabindex="0">
+      <div class="analytics-panel-header">
+        <h2>Top products by mentions</h2>
+        <span>${escapeHtml(selectedRangeLabel())}</span>
+      </div>
+      <div class="product-demand-list">${productDemandRows(rows)}</div>
+    </section>
+  `;
+}
+
+function productDemandRows(rows) {
+  if (!rows.length) {
+    return `<div class="empty">No rows yet.</div>`;
+  }
+  const maxCount = Math.max(...rows.map((row) => Number(row.count || 0)), 1);
+  return rows.slice(0, 6).map((row) => productDemandRow(row, maxCount)).join("");
+}
+
+function productDemandRow(row, maxCount) {
+  const count = Number(row.count || 0);
+  const width = Math.max(8, Math.round((count / maxCount) * 100));
+  return `
+    <div class="product-demand-row">
+      <div class="product-demand-label">
+        <span>${escapeHtml(row.label || EMPTY_TEXT)}</span>
+        <strong>${formatNumber(count)}</strong>
+      </div>
+      <div class="product-demand-track"><span style="width:${width}%"></span></div>
     </div>
-    <div class="three-column">
-      ${healthPanel()}
-      ${summaryPanel("Crawler", crawlerSummary())}
-      ${summaryPanel("One-line script", scriptSummary())}
+  `;
+}
+
+function activeClientsPanel(clients) {
+  return `
+    <section class="analytics-panel clickable-dashboard-card" data-action="open-clients" role="button" tabindex="0">
+      <div class="analytics-panel-header">
+        <h2>Active clients</h2>
+        <button class="button small ghost" data-action="add-client" type="button">Add client</button>
+      </div>
+      <div class="analytics-client-table">${activeClientRows(clients)}</div>
+    </section>
+  `;
+}
+
+function activeClientRows(clients) {
+  if (!clients.length) {
+    return `<div class="empty">No clients registered.</div>`;
+  }
+  return `
+    <table>
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Client</th>
+          <th>Products</th>
+          <th>Turns</th>
+          <th>Tokens</th>
+          <th>AI widget</th>
+        </tr>
+      </thead>
+      <tbody>${clients.slice(0, 5).map(activeClientRow).join("")}</tbody>
+    </table>
+  `;
+}
+
+function activeClientRow(client) {
+  return `
+    <tr class="clickable" data-action="open-client" data-site-id="${escapeAttr(client.site_id)}">
+      <td>${pill(client.status)}</td>
+      <td>${escapeHtml(client.name)}</td>
+      <td>${formatNumber(client.catalog?.active_products || 0)}</td>
+      <td>${formatNumber(client.usage?.total_turns || 0)}</td>
+      <td>${formatNumber(client.usage?.tokens_estimated || 0)}</td>
+      <td>${clientToggleButton(client)}</td>
+    </tr>
+  `;
+}
+
+function recentActivityPanel(items) {
+  return `
+    <section class="analytics-panel recent-activity-panel clickable-dashboard-card" data-action="open-conversations" role="button" tabindex="0">
+      <div class="analytics-panel-header">
+        <h2>Recent activity</h2>
+        <span>${escapeHtml(selectedRangeLabel())}</span>
+      </div>
+      <div class="analytics-activity-list">${recentActivityRows(items)}</div>
+    </section>
+  `;
+}
+
+function recentActivityRows(items) {
+  if (!items.length) {
+    return `<div class="empty">No activity yet.</div>`;
+  }
+  return items.slice(0, 6).map(recentActivityRow).join("");
+}
+
+function recentActivityRow(item) {
+  return `
+    <div class="analytics-activity-row">
+      <span>${escapeHtml(shortTime(item.created_at))}</span>
+      <strong>${escapeHtml(item.site_id)} ${escapeHtml(item.intent || "turn")}</strong>
+      <small>${formatNumber(item.latency_ms || 0)} ms ${pill(item.status || "ok")}</small>
+    </div>
+  `;
+}
+
+function sparklineValues(series, key, fallbackValue) {
+  const values = series.map((row) => Number(row[key] || 0)).filter((value) => value > 0);
+  if (values.length >= 2) {
+    return values.slice(-8);
+  }
+  const baseValue = Math.max(Number(fallbackValue || 1), 1);
+  return [0.42, 0.58, 0.51, 0.74, 0.63, 0.88, 0.79, 1].map((factor) => Math.round(baseValue * factor));
+}
+
+function sparklineSvg(values, tone) {
+  const color = SPARKLINE_COLORS[tone] || SPARKLINE_COLORS.green;
+  const points = sparklinePoints(values);
+  return `
+    <svg class="analytics-sparkline" viewBox="0 0 ${SPARKLINE_WIDTH} ${SPARKLINE_HEIGHT}" aria-hidden="true">
+      <polyline points="${points}" fill="none" stroke="${color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+    </svg>
+  `;
+}
+
+function sparklinePoints(values) {
+  const maxValue = Math.max(...values, 1);
+  const minValue = Math.min(...values, 0);
+  const range = Math.max(maxValue - minValue, 1);
+  return values.map((value, index) => sparklinePoint(value, index, values.length, minValue, range)).join(" ");
+}
+
+function sparklinePoint(value, index, count, minValue, range) {
+  const x = SPARKLINE_PADDING + (index * (SPARKLINE_WIDTH - SPARKLINE_PADDING * 2)) / Math.max(count - 1, 1);
+  const y = SPARKLINE_HEIGHT - SPARKLINE_PADDING - ((value - minValue) / range) * (SPARKLINE_HEIGHT - SPARKLINE_PADDING * 2);
+  return `${x.toFixed(1)},${y.toFixed(1)}`;
+}
+
+function donutGradient(rows) {
+  const total = rows.reduce((sum, row) => sum + Number(row.count || 0), 0);
+  if (total <= 0) {
+    return DONUT_EMPTY_GRADIENT;
+  }
+  let start = 0;
+  const slices = rows.slice(0, DONUT_COLORS.length).map((row, index) => {
+    const end = start + (Number(row.count || 0) / total) * 360;
+    const slice = `${DONUT_COLORS[index]} ${start.toFixed(1)}deg ${end.toFixed(1)}deg`;
+    start = end;
+    return slice;
+  });
+  return `conic-gradient(${slices.join(", ")})`;
+}
+
+function intentLegendRows(rows) {
+  if (!rows.length) {
+    return `<div class="empty">No intent data yet.</div>`;
+  }
+  const total = rows.reduce((sum, row) => sum + Number(row.count || 0), 0) || 1;
+  return rows.slice(0, DONUT_COLORS.length).map((row, index) => intentLegendRow(row, index, total)).join("");
+}
+
+function intentLegendRow(row, index, total) {
+  const percent = Math.round((Number(row.count || 0) / total) * 100);
+  return `
+    <div class="intent-legend-row">
+      <span style="background:${DONUT_COLORS[index]}"></span>
+      <strong>${escapeHtml(row.label || EMPTY_TEXT)}</strong>
+      <small>${formatNumber(percent)}%</small>
     </div>
   `;
 }
@@ -816,6 +1055,9 @@ function rankList(title, rows) {
 function bindViewActions() {
   elements.root.querySelectorAll("[data-action]").forEach((element) => {
     element.addEventListener("click", handleAction);
+    if (!isInteractiveElement(element)) {
+      element.addEventListener("keydown", handleActionKeydown);
+    }
   });
   elements.root.querySelectorAll("[data-range-select]").forEach((select) => {
     select.addEventListener("change", handleRangeChange);
@@ -824,6 +1066,18 @@ function bindViewActions() {
   if (settingsForm) {
     settingsForm.addEventListener("submit", saveSettings);
   }
+}
+
+function handleActionKeydown(event) {
+  if (!ACTION_KEYS.has(event.key) || isInteractiveElement(event.target)) {
+    return;
+  }
+  event.preventDefault();
+  handleAction(event);
+}
+
+function isInteractiveElement(element) {
+  return INTERACTIVE_TAGS.has(element.tagName);
 }
 
 async function handleAction(event) {
@@ -846,6 +1100,11 @@ async function handleAction(event) {
     "remove-client": () => removeClient(siteId),
     "toggle-client": () => toggleClient(siteId, actionElement.dataset.enabled === "true"),
     "generate-summary": () => generateAnalyticsSummary(),
+    "open-analytics": () => setView("analytics"),
+    "open-catalogs": () => setView("catalogs"),
+    "open-clients": () => setView("clients"),
+    "open-conversations": () => setView("conversations"),
+    "open-usage": () => setView("usage"),
   };
   if (actions[action]) {
     await actions[action]();
