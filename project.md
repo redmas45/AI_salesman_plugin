@@ -1,8 +1,8 @@
 # AI Salesman Plugin - Project Overview & Status
 
-Date: 2026-06-12
+Date: 2026-06-15
 
-Current fallback milestone: **L3.5** (`L 3.5` GitHub sync comment).
+Current fallback milestone: **L4.0** (`L 4.0` GitHub sync comment).
 
 ## About the Project
 An AI-powered voice shopping assistant ("Voice Orb") injected into the storefront (`AI-KART`). It uses natural language processing (LLM), Text-To-Speech (TTS), Speech-To-Text (STT), and Retrieval-Augmented Generation (RAG) to recommend products, answer customer queries, and execute storefront actions (e.g., adding to cart, navigating, checkout).
@@ -53,6 +53,8 @@ An AI-powered voice shopping assistant ("Voice Orb") injected into the storefron
 - **Turn Transport Logging**: Completed turns print readable `AI_CONVO | user`, `AI_CONVO | ai_reply`, `AI_CONVO | method_used`, and compact `[SHOPBOT TURN]` lines with transport, elapsed time, action count, transcript, and response.
 - **Admin Boundary Cleanup**: AI HUB no longer injects or prints client admin UI; demo admin/product editing belongs to `Vercel_website`.
 - **Customer-Site Standalone Mode**: `Vercel_website/run.py` runs the storefront/admin without the AI widget by default. Its search bar uses `out/api/products.json` directly and does not depend on the Voice Orb.
+- **One-Line Hosted Adapter Contract**: Client websites still paste exactly one script tag. Adapter behavior lives inside HUB-hosted `shopbot.js`; client website source code should not be edited for AI action fixes.
+- **HUB-Side Product Detail Routing**: `plugin/src/productResolver.js` resolves backend numeric product IDs to real same-origin product pages by checking HUB products and host catalog endpoints before falling back to client hooks. This prevents bad routes like `/product/<numeric_backend_id>/`.
 
 
 ---
@@ -61,7 +63,7 @@ An AI-powered voice shopping assistant ("Voice Orb") injected into the storefron
 
 ### Mode Configuration
 Controlled via `DEPLOYMENT_MODE` in `.env`:
-- `intranet` (Current): LAN testing at `https://192.168.68.71:8484`.
+- `intranet` (Current): LAN testing at `https://192.168.68.56:8484`.
 - `public-ip`: Binds storefront and API endpoints directly to a global static IP.
 - `domain`: Maps standard domain name (e.g., `example.com`) to public IP.
 
@@ -75,7 +77,7 @@ Controlled via `DEPLOYMENT_MODE` in `.env`:
 
 ### Manual Smoke Test Checklist
 1. Start stack: `python run.py`
-2. Open storefront: `https://192.168.68.71:8484` (verify widget renders).
+2. Open storefront: `https://192.168.68.56:8484` (verify widget renders).
 3. Test greetings: Say "hello" or "hi" (verify conversational greeting response).
 4. Search products: Say "show me mugs" (verify recommendation panel filters grid).
 5. Cart: Say "add bomber jacket to cart" (verify item added and drawer opens).
@@ -142,7 +144,31 @@ AI_CONVO | method_used: websocket | status: ok | time_taken: 1842ms | pipeline: 
 
 ---
 
-## Post-L3 Hub-Spoke Direction
+## L4.0 - Fallback Point (Milestone)
+**Date:** 2026-06-15
+**Status:** Stable Fallback
+**GitHub Sync Comment:** `L 4.0`
+
+This is the new rollback point after L3.5. If future changes break the one-script HUB/spoke setup, revert to the GitHub state synced with comment `L 4.0`.
+
+**What L4.0 locks in:**
+- **One-Line Client Contract Preserved:** Real client websites paste one script tag only. They should not paste a second adapter/hook block for normal operation.
+- **Hosted Adapter Ownership:** Product routing, product overlay behavior, browser navigation, cart hook delegation, and event fallback are owned by HUB-hosted `shopbot.js`.
+- **No Client Website Source Edits For Adapter Fixes:** The AI-KART spoke simulator can be used for testing, but adapter fixes belong in `AI_salesman_plugin/plugin/src/*` and the rebuilt `plugin/shopbot.js`.
+- **Product Detail Resolver:** Added `plugin/src/productResolver.js`, which resolves `SHOW_PRODUCT_DETAIL` actions from backend numeric IDs to real same-origin product URLs by checking HUB product data and common host catalog endpoints such as `/api/products.json`, `/products.json`, and `/collections/all/products.json`.
+- **Numeric Route Guard:** The hosted adapter does not fabricate product URLs from numeric backend IDs, preventing routes such as `/product/4483885457220840101/`.
+- **Bundle Rebuild Requirement:** Changes under `plugin/src` must be rebuilt with `cd plugin && npm run build` so `/shopbot.js` serves the current adapter.
+- **README Refactor:** README now documents installation, full dependency list, environment setup, run modes, one-line script contract, tests, and troubleshooting.
+
+Current AI-KART intranet one-line script:
+
+```html
+<script defer src="https://192.168.68.56:8484/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main"></script>
+```
+
+---
+
+## Post-L4 Hub-Spoke Direction
 
 **HUB:** `AI_salesman_plugin` owns the AI pipeline, RAG, STT, LLM, TTS, widget script, adapters, and optional WebSocket transport.
 
