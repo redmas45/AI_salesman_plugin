@@ -60,6 +60,8 @@ An AI-powered voice shopping assistant ("Voice Orb") injected into the storefron
 - **CRM Analytics Cleanup**: Analytics now uses catalog-backed product mention detection. `Most mentioned products` contains product names only, not filler words like `yaar`, verbs, pronouns, or generic conversation terms.
 - **Store-Manager Summary**: CRM summaries are readable bullet points focused on demand, stock decisions, and operations. OpenAI can generate the summary when configured; otherwise the HUB returns a deterministic heuristic summary.
 - **Docker Hub Startup**: `docker compose up -d --build` runs the HUB app, CRM, widget host, Nginx, PostgreSQL, and pgvector. The client website remains external and is started by the client or by the separate `Vercel_website` simulator for local testing.
+- **CRM Option-3 Dashboard Refresh**: Dashboard now uses the store-manager analytics layout with a purple sidebar, compact KPI cards, sparklines, intent donut, product-demand bars, active clients, recent activity, light/dark mode, and a simplified header that keeps only the range selector.
+- **Clickable Dashboard Routing**: Dashboard KPI cards and panels route to their detailed tabs: Conversations, Catalogs, Usage, Analytics, Clients, and Client detail. The brand block routes back to Dashboard.
 
 
 ---
@@ -88,10 +90,13 @@ Controlled via `DEPLOYMENT_MODE` in `.env`:
 4. Open storefront: `https://192.168.68.56:8484` or the separately hosted client site URL (verify widget renders).
 5. In CRM Analytics, confirm `Most mentioned products` contains catalog product names only.
 6. Confirm CRM summary is bullet-style store-manager guidance.
-7. Test greetings: Say "hello" or "hi" (verify conversational greeting response).
-8. Search products: Say "show me mugs" (verify recommendation panel filters grid).
-9. Cart: Say "add bomber jacket to cart" (verify item added and drawer opens).
-10. Confirm terminal turn summary prints after a voice turn, including `AI_CONVO | user`, `AI_CONVO | ai_reply`, `method_used: ...`, `time_taken: ...ms`, and `[SHOPBOT TURN] transport=...`.
+7. In CRM Dashboard, confirm the header shows `Store Manager Analytics` with only the range selector; changing the range updates the range-backed cards and panels.
+8. Click CRM Dashboard cards/panels and confirm they route to Conversations, Catalogs, Usage, Analytics, Clients, and Client detail.
+9. Toggle CRM dark mode and confirm the option-3 dashboard remains readable.
+10. Test greetings: Say "hello" or "hi" (verify conversational greeting response).
+11. Search products: Say "show me mugs" (verify recommendation panel filters grid).
+12. Cart: Say "add bomber jacket to cart" (verify item added and drawer opens).
+13. Confirm terminal turn summary prints after a voice turn, including `AI_CONVO | user`, `AI_CONVO | ai_reply`, `method_used: ...`, `time_taken: ...ms`, and `[SHOPBOT TURN] transport=...`.
 
 ---
 
@@ -206,6 +211,9 @@ Current AI-KART intranet one-line script:
 **CRM:** The HUB now includes an admin CRM at `/crm` for client management, tenant catalog visibility, crawler triggers, usage tracking, date-wise conversations, analytics, settings, adapters, and health. This is a HUB admin surface; it is not client website code.
 
 CRM analytics rules:
+- Dashboard should stay navigation-first: the header keeps the range selector, and summary generation stays in the Analytics tab.
+- Dashboard metrics and panels should respect the selected analytics range where range-scoped data exists.
+- Dashboard cards and panels should be clickable entry points into the detailed CRM tabs.
 - `Most mentioned products` must contain product names from the tenant catalog only.
 - Non-product transcript words such as filler words, pronouns, verbs, greetings, and casual phrases must not appear as demand signals.
 - Summaries should read like store-manager notes: what customers are looking for, what to stock, and what operations need attention.

@@ -68,7 +68,9 @@ The HUB now includes a local admin CRM at:
 
 Current CRM scope:
 
-- Dashboard metrics: active clients, voice turns, indexed products, latency, health.
+- Dashboard: store-manager analytics layout with range-driven KPIs, sparklines, intent donut, product-demand bars, recent activity, and active clients.
+- Dashboard navigation: KPI cards and panels are clickable and route to Conversations, Catalogs, Usage, Analytics, Clients, or Client detail for deeper work.
+- Theme support: CRM supports both light and dark mode; the default local dashboard opens in the light option-3 style.
 - Client management: add, remove, enable/disable, copy one-line script.
 - Crawler control: trigger a crawl for a client site.
 - Catalog visibility: tenant product counts, categories, vectorization status, previews.
@@ -83,6 +85,9 @@ Set `CRM_ADMIN_TOKEN` in `.env` to protect `/v1/admin/*`. If it is empty, the CR
 
 Analytics is designed for store-manager decisions, not raw word counting.
 
+- The Dashboard is a navigation-first summary surface; it keeps the range selector and removes non-essential actions from the header.
+- Changing the Dashboard range reloads analytics/conversation data and updates the range-backed cards and panels.
+- AI summary generation belongs in the Analytics tab, not the Dashboard header.
 - `Most mentioned products` shows catalog product names only.
 - Filler words, verbs, pronouns, and casual words such as `yaar`, `great`, `choice`, and `interested` are filtered out.
 - Product mentions are matched against each tenant's catalog, so analytics stays separated per client.
@@ -473,6 +478,20 @@ Expected analytics contract:
 - `top_products` contains product names from the tenant catalog only.
 - `top_terms` is kept for backward compatibility and mirrors product-only entries.
 - Non-product words from conversations must not appear in the product ranking.
+
+CRM dashboard smoke test:
+
+1. Open `https://localhost:8484/crm`.
+2. Confirm the Dashboard header shows `Store Manager Analytics` and only the range selector.
+3. Change the range and confirm KPI labels/panels update to that selected range.
+4. Click dashboard cards and panels:
+   - Voice turns or Recent activity opens Conversations.
+   - Products indexed opens Catalogs.
+   - Latency or tokens opens Usage.
+   - Intent mix or product-demand bars opens Analytics.
+   - Active clients opens Clients.
+   - A client row opens Client detail.
+5. Toggle Dark mode and confirm the dashboard remains readable.
 
 ## Terminal Turn Logs
 
