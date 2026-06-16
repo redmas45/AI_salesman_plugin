@@ -1,4 +1,9 @@
-const API_BASE = "/v1/admin";
+const APP_PREFIX = (() => {
+  const marker = "/crm";
+  const index = window.location.pathname.indexOf(marker);
+  return index > 0 ? window.location.pathname.slice(0, index) : "";
+})();
+const API_BASE = `${APP_PREFIX}/v1/admin`;
 const TOKEN_STORAGE_KEY = "aiHubCrmAdminToken";
 const THEME_STORAGE_KEY = "aiHubCrmTheme";
 const DEFAULT_VIEW = "dashboard";

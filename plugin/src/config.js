@@ -32,10 +32,13 @@ function resolveApiUrl(url) {
   const fromAttribute = clean(currentScript?.getAttribute("data-api-url"));
   if (fromAttribute) return fromAttribute.replace(/\/+$/, "");
 
-  if (url?.origin) return url.origin.replace(/\/+$/, "");
-
   if (!embeddedApiUrl.startsWith("__AI_")) {
     return embeddedApiUrl.replace(/\/+$/, "");
+  }
+
+  if (url?.origin) {
+    const pathname = url.pathname.replace(/\/shopbot(?:-widget)?\.js$/, "");
+    return `${url.origin}${pathname}`.replace(/\/+$/, "");
   }
 
   return window.location.origin.replace(/\/+$/, "");

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Optional
 from xml.sax.saxutils import escape
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile, status, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -223,9 +223,10 @@ app.include_router(crm_api.router)
 
 
 @app.get("/crm", include_in_schema=False)
-async def redirect_crm_root() -> RedirectResponse:
+async def redirect_crm_root(request: Request) -> RedirectResponse:
     """Redirect the bare CRM path to the static app root."""
-    return RedirectResponse(url="/crm/")
+    prefix = request.headers.get("x-forwarded-prefix", "").rstrip("/")
+    return RedirectResponse(url=f"{prefix}/crm/")
 
 
 if CRM_STATIC_DIR.exists():
@@ -1237,7 +1238,7 @@ def _render_embed_bootstrap(*, site: str, api_base_url: str) -> str:
   }}
 
   window.addEventListener("message", function (event) {{
-    if (event.origin !== apiBaseUrl) return;
+    if (event.origin !== new URL(apiBaseUrl).origin) return;
     var data = event.data || {{}};
     if (data.source !== "shopbot-frame") return;
 
@@ -1286,7 +1287,7 @@ async def serve_plugin_frame(
     from fastapi.responses import Response
 
     safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    script_path = f"/shopbot-widget.js?site={safe_site}"
+    script_path = f"{_public_widget_base_url()}/shopbot-widget.js?site={safe_site}"
     if parent_origin:
         script_path += f"&parent_origin={parent_origin}"
 
