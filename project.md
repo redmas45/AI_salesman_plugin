@@ -70,7 +70,7 @@ An AI-powered voice shopping assistant ("Voice Orb") injected into the storefron
 
 ### Mode Configuration
 Controlled via `DEPLOYMENT_MODE` in `.env`:
-- `intranet` (Current): LAN testing at `https://192.168.68.56:8484`.
+- `intranet` (Current): LAN testing at `https://192.168.68.51:8484`.
 - `public-ip`: Binds storefront and API endpoints directly to a global static IP.
 - `domain`: Maps standard domain name (e.g., `example.com`) to public IP.
 
@@ -86,8 +86,8 @@ Controlled via `DEPLOYMENT_MODE` in `.env`:
 ### Manual Smoke Test Checklist
 1. Start HUB Docker stack: `docker compose up -d --build`.
 2. Start the client simulator separately from `C:/Users/admin/Desktop/Vercel_website` when testing AI-KART locally.
-3. Open CRM: `https://192.168.68.56:8484/crm`.
-4. Open storefront: `https://192.168.68.56:8484` or the separately hosted client site URL (verify widget renders).
+3. Open CRM: `https://192.168.68.51:8484/crm`.
+4. Open the separately hosted client site URL, such as `http://127.0.0.1:8584` for the local AI-KART simulator, and verify the widget renders from the pasted HUB script.
 5. In CRM Analytics, confirm `Most mentioned products` contains catalog product names only.
 6. Confirm CRM summary is bullet-style store-manager guidance.
 7. In CRM Dashboard, confirm the header shows `Store Manager Analytics` with only the range selector; changing the range updates the range-backed cards and panels.
@@ -141,8 +141,8 @@ This is the new rollback point after L3. If future changes break the hub/spoke s
 **What L3.5 locks in:**
 - **Clean HUB/SPOKE Split:** `AI_salesman_plugin` is the AI HUB. `Vercel_website` is a customer/spoke simulator with its own admin and standalone search.
 - **Customer Website Standalone Mode:** Running `python run.py` inside `Vercel_website` starts the website/admin without AI injection. The normal search bar uses `out/api/products.json`.
-- **AI-Enabled Spoke Simulation:** `Vercel_website/run.py` injects exactly one hosted `shopbot.js` script only when `ENABLE_AI_WIDGET=true` and `SHOPBOT_HUB_ORIGIN` is set.
-- **Static HTML Scrubbing:** `Vercel_website/out/*.html` is clean by default; stale `shopbot.js` and disabled-widget stubs are removed during build and stripped at request time when injection is off.
+- **AI-Enabled Spoke Simulation:** `Vercel_website` is treated like a customer site. In manual-paste mode, `out/index.html` keeps the absolute HUB `shopbot.js` script and the server preserves that pasted tag when serving HTML.
+- **Static HTML Script Handling:** Build/request-time helpers remove generated inline/stub widget scripts, but they must preserve a manually pasted external `shopbot.js` script. Manual embed is the expected AI-KART local simulator mode.
 - **One-Script Client Contract:** Real client websites still only need one script tag; site-specific cart/search/checkout behavior belongs in HUB-hosted adapters.
 - **Reliable Terminal Turn Logs:** Each completed turn prints the user text, AI reply, method used (`websocket`, `legacy-http`, `legacy-sse`, or `legacy-ws`), status, time taken, pipeline time when available, action count, and compact `[SHOPBOT TURN]` summary.
 - **L3.5 Browser Smoke:** Standalone Vercel smoke verified no AI script/orb, admin link present, `/admin` responds, and search for `sticker` renders `NOVA Rainbow Sticker` and `NOVA Sticker` from `products.json`.
@@ -197,7 +197,7 @@ This is the new rollback point after L3.5. If future changes break the one-scrip
 Current AI-KART intranet one-line script:
 
 ```html
-<script defer src="https://192.168.68.56:8484/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main"></script>
+<script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main"></script>
 ```
 
 ---
@@ -225,7 +225,7 @@ Current one-script spoke contract:
 <script defer src="https://hub.example.com/shopbot.js?site=client_site_id" data-site-id="client_site_id"></script>
 ```
 
-For intranet AI-KART testing, static `Vercel_website/out/*.html` no longer contains a baked-in AI embed. The local customer-site simulator can run in two modes:
+For intranet AI-KART testing, the local customer-site simulator can run in two modes:
 
 Standalone customer site:
 
@@ -236,20 +236,23 @@ python run.py
 
 This serves the storefront/admin and normal `products.json` search with no Voice Orb script.
 
-AI-enabled customer simulation:
+Manual-paste AI-enabled customer simulation:
 
 ```powershell
 cd C:\Users\admin\Desktop\Vercel_website
 $env:ENABLE_AI_WIDGET="true"
-$env:SHOPBOT_HUB_ORIGIN="http://127.0.0.1:8585"
+$env:SHOPBOT_HUB_ORIGIN="https://192.168.68.51:8484"
+$env:SHOPBOT_BACKEND_ORIGIN="http://127.0.0.1:8080"
 python run.py
 ```
 
-This injects one client-style script at request time:
+The client page keeps one pasted client-style script:
 
 ```html
-<script defer src="http://127.0.0.1:8585/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main" data-brand="AI-KART"></script>
+<script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main"></script>
 ```
+
+`SHOPBOT_HUB_ORIGIN` is the browser-visible HUB origin used for the script and CSP. `SHOPBOT_BACKEND_ORIGIN=http://127.0.0.1:8080` is the simulator's server-side proxy target for `/v1/*`, `/health`, and checkout PDF requests. Do not use `127.0.0.1:8584` as the Docker crawler URL; Docker must crawl the local simulator through `http://host.docker.internal:8584`.
 
 The legacy AI HUB `run.py` path can still run the full intranet stack behind Caddy: `/crm`, `/shopbot.js`, `/shopbot-widget.js`, `/shopbot-frame`, `/v1/*`, and `/health` route to the HUB backend; normal website pages route to the SPOKE storefront. `run.py` prints and auto-opens the CRM URL unless `AUTO_OPEN_CRM=false`.
 
@@ -258,7 +261,7 @@ Docker/EC2 direction:
 - The client website is external to this Docker stack. For local AI-KART testing, start `Vercel_website` manually; in production, the client runs their own website.
 - `scripts/start_crm.ps1` is the local Windows launcher that starts Docker and opens `https://localhost:8484/crm`.
 - On EC2, Docker exposes the CRM and widget origin; a remote admin opens `https://your-hub-domain.com/crm` from their own browser.
-- Use `HUB_PUBLIC_URL` for the HUB domain and `CLIENT_STORE_URL` for the client website being crawled.
+- Use `HUB_PUBLIC_URL` for the browser-visible HUB domain and `CLIENT_STORE_URL` for the client website being crawled. In local Docker AI-KART testing, keep `CLIENT_STORE_URL=http://host.docker.internal:8584`.
 - Docker defaults `CRAWL_ON_STARTUP=false` and `CRAWL_PERIODIC_ENABLED=false`, so a missing/offline client website does not spam crawler errors. Trigger crawls from CRM when the target client site is online.
 - The CRM `Add client` flow creates the client record, tenant schema, script tag, and crawler entrypoint without editing client website source.
 - CRM analytics can be checked through the Docker-served API at `/v1/admin/analytics?range=7d`; it should return `summary`, `top_products`, `top_intents`, and trend `series`.
@@ -288,7 +291,7 @@ For a client website, the cleanest sales pitch is exactly one pasted script tag:
 
 With that one script, the Voice Orb appears on the client's page and talks to our HUB backend. Client-specific behavior must be handled inside our hosted widget/adapters or by APIs already present on the client site. We should not ask the client to paste a second hook block.
 
-The reusable client-facing template now lives at `docs/client-embed-snippet.html`. For the customer-style simulation, `Vercel_website` is treated like a client's site: static `out/*.html` stays free of AI scripts in standalone mode, and AI mode injects exactly one hosted `shopbot.js` script at request time.
+The reusable client-facing template now lives at `docs/client-embed-snippet.html`. For the customer-style simulation, `Vercel_website` is treated like a client's site: standalone mode can run without the widget, while manual-paste AI mode keeps exactly one external hosted `shopbot.js` script in the client HTML.
 
 ### Works With Script-Only Setup
 These do not require editing the client's website code beyond adding our script tag:

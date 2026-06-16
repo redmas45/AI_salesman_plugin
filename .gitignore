@@ -22,6 +22,7 @@ db/products.index
 db/product_ids.json
 
 # Caches
+node_modules/
 .pytest_cache/
 .coverage
 htmlcov/
@@ -35,6 +36,8 @@ coverage.xml
 *.log
 *.pid
 logs/
+tmp/
+crawl.json
 data/*/crawl.json
 .local/
 deploy/certs/

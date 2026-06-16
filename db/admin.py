@@ -262,7 +262,11 @@ def ensure_default_client() -> None:
             INSERT INTO hub_clients
                 (site_id, name, store_url, allowed_origin, deploy_mode, plan, adapter_name, status)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (site_id) DO NOTHING
+            ON CONFLICT (site_id) DO UPDATE SET
+                store_url = EXCLUDED.store_url,
+                allowed_origin = EXCLUDED.allowed_origin,
+                deploy_mode = EXCLUDED.deploy_mode,
+                updated_at = now()
             """,
             (
                 site_id,

@@ -44,10 +44,10 @@ Flow diagram:
 
 ## One-Line Client Script
 
-Current intranet AI-KART script:
+Current intranet AI-KART manual-paste script:
 
 ```html
-<script defer src="https://192.168.68.56:8484/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main"></script>
+<script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main"></script>
 ```
 
 Generic client script:
@@ -57,6 +57,23 @@ Generic client script:
 ```
 
 The adapter is bundled inside `shopbot.js`. A real client should not need a second hook block. If a client needs Shopify, WooCommerce, custom cart, checkout, or variant behavior, we add that adapter logic to the HUB-hosted script for that site.
+
+For local AI-KART testing, this script is intentionally pasted into the client simulator HTML just like a real client would paste it. Keep the pasted script absolute and HUB-facing. The simulator server should preserve the pasted script instead of replacing it with a same-origin `/shopbot.js` script.
+
+### Local Hub Address Model
+
+The AI Hub is locally hosted on this PC in Docker, but it is exposed to browsers through the PC's Wi-Fi/LAN address:
+
+```text
+Browser/CRM/widget public origin: https://<this-pc-lan-ip>:8484
+Docker app private origin:        http://app:8585
+Docker database origin:           db:5432
+Local client simulator:           http://127.0.0.1:8584
+Docker crawler target:            http://host.docker.internal:8584
+Website proxy to HUB:             http://127.0.0.1:8080
+```
+
+If the Wi-Fi/LAN IP changes, update the public HUB URL and pasted script/certificate values. Do not change the Docker database host, the crawler target, or the website proxy target for local simulator testing.
 
 ## AI Hub CRM
 
@@ -147,7 +164,7 @@ pyngrok>=7.0.0
 Installed from `plugin/package.json`:
 
 ```text
-esbuild ^0.20.1
+esbuild ^0.28.1
 ```
 
 ## Installation
@@ -217,13 +234,15 @@ MANUAL_WIDGET_SCRIPT=
 PUBLIC_STOREFRONT_ORIGIN=
 PUBLIC_HTTPS_ORIGIN=
 
-HUB_PUBLIC_URL=https://localhost:8484
+HUB_PUBLIC_URL=https://192.168.68.51:8484
 CLIENT_STORE_URL=http://host.docker.internal:8584
 CRM_ADMIN_TOKEN=
 AUTO_OPEN_CRM=true
 ```
 
 Keep `CURRENT_SITE_ID`, `AI_DEFAULT_SITE_ID`, `DEFAULT_SITE_ID`, and the `site=` query parameter aligned. The value is a tenant/catalog namespace, not a URL.
+
+For Docker runs, `CLIENT_STORE_URL` is the crawler URL for the client site. Keep the local simulator value as `http://host.docker.internal:8584`; using `http://127.0.0.1:8584` inside Docker points at the wrong container/network namespace. `CURRENT_URL` is mainly for the legacy local supervisor path.
 
 ## Legacy Local Supervisor
 
@@ -316,8 +335,8 @@ Important Docker variables:
 ```env
 HUB_PUBLIC_URL=https://your-hub-domain.com
 CLIENT_STORE_URL=https://client-store.com
-HUB_TLS_CERT_FILE=/certs/ip-192_168_68_56.crt
-HUB_TLS_KEY_FILE=/certs/ip-192_168_68_56.key
+HUB_TLS_CERT_FILE=/certs/ip-192_168_68_51.crt
+HUB_TLS_KEY_FILE=/certs/ip-192_168_68_51.key
 CRM_ADMIN_TOKEN=choose-a-strong-admin-token
 CRAWL_ON_STARTUP=false
 CRAWL_PERIODIC_ENABLED=false
@@ -325,16 +344,16 @@ CRAWL_PERIODIC_ENABLED=false
 
 For a new client, use the CRM `Add client` flow. The CRM creates the tenant, gives the script tag, and can trigger the crawler. The client website still only receives one pasted script line.
 
-In intranet mode, `HUB_PUBLIC_URL` must be the AI Hub machine's LAN URL, for example:
+In intranet mode, `HUB_PUBLIC_URL` must be the AI Hub machine's current LAN URL, for example:
 
 ```env
-HUB_PUBLIC_URL=https://192.168.68.56:8484
+HUB_PUBLIC_URL=https://192.168.68.51:8484
 ```
 
 Then a client website on another same-Wi-Fi machine can paste a script like:
 
 ```html
-<script defer src="https://192.168.68.56:8484/shopbot.js?site=client_site_id" data-site-id="client_site_id"></script>
+<script defer src="https://192.168.68.51:8484/shopbot.js?site=client_site_id" data-site-id="client_site_id"></script>
 ```
 
 The client website can run on a different LAN IP. Add that website URL in the CRM and trigger its crawler from there. Docker does not auto-crawl on startup because the client website may be offline.
@@ -342,8 +361,8 @@ The client website can run on a different LAN IP. Add that website URL in the CR
 The bundled Docker Nginx HTTPS config uses files from `deploy/certs`. For this machine it is currently:
 
 ```env
-HUB_TLS_CERT_FILE=/certs/ip-192_168_68_56.crt
-HUB_TLS_KEY_FILE=/certs/ip-192_168_68_56.key
+HUB_TLS_CERT_FILE=/certs/ip-192_168_68_51.crt
+HUB_TLS_KEY_FILE=/certs/ip-192_168_68_51.key
 ```
 
 If the HUB machine gets a different LAN IP, generate/use the matching cert pair and update those two variables.
@@ -353,7 +372,8 @@ For local AI-KART testing, start the client site manually from the separate proj
 ```powershell
 cd C:\Users\admin\Desktop\Vercel_website
 $env:ENABLE_AI_WIDGET="true"
-$env:SHOPBOT_HUB_ORIGIN="https://localhost:8484"
+$env:SHOPBOT_HUB_ORIGIN="https://192.168.68.51:8484"
+$env:SHOPBOT_BACKEND_ORIGIN="http://127.0.0.1:8080"
 python run.py
 ```
 
@@ -397,11 +417,12 @@ AI-enabled customer simulation:
 ```powershell
 cd C:\Users\admin\Desktop\Vercel_website
 $env:ENABLE_AI_WIDGET="true"
-$env:SHOPBOT_HUB_ORIGIN="http://127.0.0.1:8585"
+$env:SHOPBOT_HUB_ORIGIN="https://192.168.68.51:8484"
+$env:SHOPBOT_BACKEND_ORIGIN="http://127.0.0.1:8080"
 python run.py
 ```
 
-In AI-enabled mode, the spoke injects exactly one hosted script at request time. Static `out/*.html` stays clean.
+In manual-paste mode, the client simulator keeps the pasted absolute HUB script in `out/index.html` and the server preserves it when serving HTML. `SHOPBOT_HUB_ORIGIN` is the browser-visible HUB origin used for script/CSP, while `SHOPBOT_BACKEND_ORIGIN` is the local server-side proxy target used by the simulator for `/v1/*`, `/health`, and `/shopbot.js`.
 
 ## Build The Widget
 
@@ -455,14 +476,14 @@ cd ..
 Manual smoke test:
 
 1. Start HUB stack: `docker compose up -d --build`.
-2. Start the client website separately. For AI-KART local testing, run `Vercel_website` manually with AI injection enabled.
-3. Open CRM: `https://127.0.0.1:8484/crm` or the LAN HUB URL printed by Docker.
-4. Open the client storefront and confirm the Voice Orb appears.
+2. Start the client website separately. For AI-KART local testing, run `Vercel_website` with the manual HUB script pasted in `out/index.html`.
+3. Open CRM: `https://127.0.0.1:8484/crm` or the current LAN HUB URL.
+4. Open the client storefront at `http://127.0.0.1:8584` and confirm the Voice Orb appears.
 5. Say `hello`.
-6. Say `show me NOVA t-shirt`.
-7. Say `show me its page`.
+6. Say `show me NOVA dog sweater`.
+7. Say `add it to cart`.
 8. Confirm navigation uses the real product page, not `/product/<numeric_backend_id>/`.
-9. Say `add it to cart`.
+9. Say `checkout`, provide address and payment method, and confirm `bill.pdf` downloads or the modal shows `Download bill`.
 10. Confirm terminal turn logs print `AI_CONVO` and `[SHOPBOT TURN]`.
 
 CRM analytics smoke test after Docker boot:
@@ -581,5 +602,6 @@ Voice recording blocked:
 - Check browser microphone permission for the site.
 
 Catalog stale:
-- Confirm `CURRENT_URL` points to the correct storefront.
+- For Docker runs, confirm `CLIENT_STORE_URL=http://host.docker.internal:8584`.
+- Confirm the CRM client row for `ai_kart_main` uses `http://host.docker.internal:8584`, not `http://127.0.0.1:8584`.
 - Restart with `CRAWL_ON_STARTUP=true`, or call `/v1/catalog/crawler/run`.
