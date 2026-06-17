@@ -19,7 +19,7 @@ import {
   Trash2,
   Users,
 } from 'lucide-react';
-import { UnauthorizedError, clearStoredAdminToken, crmApi, setStoredAdminToken } from './api';
+import { UnauthorizedError, clearStoredAdminToken, crmApi, getStoredAdminToken, setStoredAdminToken } from './api';
 import type {
   AnalyticsResponse,
   Client,
@@ -133,6 +133,13 @@ export function App() {
   }, [toast]);
 
   async function loadInitial() {
+    if (!getStoredAdminToken()) {
+      setLoading(false);
+      setAuthRequired(true);
+      setLoadError('');
+      return;
+    }
+
     setLoading(true);
     setLoadError('');
     try {

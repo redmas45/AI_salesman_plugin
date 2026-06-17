@@ -28,9 +28,9 @@ services:
       DATABASE_URL: postgresql://shopbot:shopbot_password@db:5432/shopping_db
       PUBLIC_API_URL: ${HUB_PUBLIC_URL:-${PUBLIC_API_URL:-https://localhost:8484}}
       PUBLIC_STOREFRONT_ORIGIN: ${HUB_PUBLIC_URL:-${PUBLIC_STOREFRONT_ORIGIN:-${PUBLIC_API_URL:-https://localhost:8484}}}
-      CURRENT_SITE_ID: ${CURRENT_SITE_ID:-ai_kart_main}
-      DEFAULT_SITE_ID: ${DEFAULT_SITE_ID:-ai_kart_main}
-      AI_DEFAULT_SITE_ID: ${AI_DEFAULT_SITE_ID:-ai_kart_main}
+      CURRENT_SITE_ID: ${CURRENT_SITE_ID:-ai_kart}
+      DEFAULT_SITE_ID: ${DEFAULT_SITE_ID:-ai_kart}
+      AI_DEFAULT_SITE_ID: ${AI_DEFAULT_SITE_ID:-ai_kart}
       CURRENT_URL: ${CLIENT_STORE_URL:-http://host.docker.internal:8584}
       CRAWL_ON_STARTUP: ${CRAWL_ON_STARTUP:-true}
       CRAWL_PERIODIC_ENABLED: ${CRAWL_PERIODIC_ENABLED:-true}

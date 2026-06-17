@@ -117,6 +117,15 @@ CRM_SOURCE_DIR = Path(__file__).parent.parent / "crm"
 CRM_STATIC_DIR = CRM_SOURCE_DIR / "dist"
 
 
+class NoCacheStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: Any) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store, max-age=0, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+
 @dataclass(frozen=True)
 class ShoppingTurnPayload:
     audio_bytes: bytes | None
@@ -235,7 +244,7 @@ async def redirect_crm_root(request: Request) -> RedirectResponse:
 if CRM_STATIC_DIR.exists():
     app.mount(
         "/crm",
-        StaticFiles(directory=CRM_STATIC_DIR, html=True),
+        NoCacheStaticFiles(directory=CRM_STATIC_DIR, html=True),
         name="crm",
     )
 
