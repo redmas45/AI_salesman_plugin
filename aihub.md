@@ -12,6 +12,8 @@ AI Hub CRM:      http://143.198.5.97/aihub/crm/
 Both public apps share port `80` and are separated by URL path.
 DNS is optional for this setup because both apps are accessed by `IP/path`.
 
+If you are starting from an empty server, deploy AI Hub first through step 8. Then deploy AI-KART from `aikart.md`. After AI-KART works, come back here and run steps 9 through 11.
+
 ## 1. Fix Permissions
 
 Copy this:
@@ -253,33 +255,18 @@ curl -s -X POST http://127.0.0.1:5176/v1/shop \
   -d '{"message":"Do you have dog sweater?","site_id":"ai_kart_main"}'
 ```
 
-## 11. Put Script In AI-KART
+## 11. Verify Script In AI-KART
 
 Only do this after AI Hub works at `http://143.198.5.97/aihub/health`.
+AI-KART should inject this during its build from `.env`; this step only verifies it.
 
 Copy this:
 
 ```bash
 cd /var/www/Vercel_website
 
-python - <<'PY'
-from pathlib import Path
-import re
-
-path = Path("out/index.html")
-html = path.read_text(encoding="utf-8")
-html = re.sub(
-    r'<script\b[^>]*\bsrc=(["\'])[^"\']*/shopbot\.js(?:\?[^"\']*)?\1[^>]*>\s*</script>\s*',
-    "",
-    html,
-    flags=re.IGNORECASE,
-)
-script = '<script defer src="http://143.198.5.97/aihub/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main" data-api-url="http://143.198.5.97/aihub"></script>'
-html = html.replace("</body>", script + "\n</body>", 1)
-path.write_text(html, encoding="utf-8")
-PY
-
 pm2 restart ai-kart --update-env
+curl -s http://143.198.5.97/aikart/ | grep '143.198.5.97/aihub/shopbot.js'
 ```
 
 ## 12. Later

@@ -70,6 +70,14 @@ PUBLIC_BASE_URL=http://143.198.5.97/aikart
 CATALOG_BASE_URL=http://143.198.5.97/aikart
 CATALOG_API_URL=http://143.198.5.97/aikart/api/products
 API_CORS_ORIGIN=*
+
+ENABLE_AI_WIDGET=true
+SHOPBOT_SITE_ID=ai_kart_main
+SHOPBOT_BRAND=AI-KART
+SHOPBOT_HUB_ORIGIN=http://143.198.5.97/aihub
+SHOPBOT_API_URL=http://143.198.5.97/aihub
+SHOPBOT_BACKEND_ORIGIN=http://127.0.0.1:5176
+SHOPBOT_SCRIPT_SRC=http://143.198.5.97/aihub/shopbot.js?site=ai_kart_main
 EOF
 ```
 
@@ -205,34 +213,18 @@ Expected:
 200
 ```
 
-## 8. Add AI Hub Script
+## 8. Verify AI Hub Script
 
 Only do this after AI Hub works at `http://143.198.5.97/aihub/health`.
+The build should already inject the AI Hub script into every generated page from `.env`.
 
 Copy this:
 
 ```bash
 cd /var/www/Vercel_website
 
-python - <<'PY'
-from pathlib import Path
-import re
-
-path = Path("out/index.html")
-html = path.read_text(encoding="utf-8")
-html = re.sub(
-    r'<script\b[^>]*\bsrc=(["\'])[^"\']*/shopbot\.js(?:\?[^"\']*)?\1[^>]*>\s*</script>\s*',
-    "",
-    html,
-    flags=re.IGNORECASE,
-)
-script = '<script defer src="http://143.198.5.97/aihub/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main" data-api-url="http://143.198.5.97/aihub"></script>'
-html = html.replace("</body>", script + "\n</body>", 1)
-path.write_text(html, encoding="utf-8")
-PY
-
 pm2 restart ai-kart --update-env
-curl -s http://143.198.5.97/aikart/ | grep shopbot
+curl -s http://143.198.5.97/aikart/ | grep '143.198.5.97/aihub/shopbot.js'
 ```
 
 ## 9. Later
