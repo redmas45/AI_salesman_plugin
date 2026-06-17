@@ -3,14 +3,14 @@
 Use this for the current setup:
 
 ```text
-AI-KART website: http://143.198.5.97/aikart/
+AI-KART website: http://143.198.5.97/
 AI Hub local:    http://127.0.0.1:5176
 AI Hub public:   http://143.198.5.97/aihub/
 AI Hub CRM:      http://143.198.5.97/aihub/crm/
 ```
 
-Both public apps share port `80` and are separated by URL path.
-DNS is optional for this setup because both apps are accessed by `IP/path`.
+Both public apps share port `80`. AI-KART is on the root `/`, and AI Hub is separated by the `/aihub/` URL path.
+DNS is optional for this setup because both apps are accessed by `IP`.
 
 If you are starting from an empty server, deploy AI Hub first through step 8. Then deploy AI-KART from `aikart.md`. After AI-KART works, come back here and run steps 9 through 11.
 
@@ -41,10 +41,10 @@ CURRENT_SITE_ID=ai_kart_main
 DEFAULT_SITE_ID=ai_kart_main
 AI_DEFAULT_SITE_ID=ai_kart_main
 
-CLIENT_STORE_URL=http://143.198.5.97/aikart/
+CLIENT_STORE_URL=http://143.198.5.97/
 
-CRAWL_ON_STARTUP=false
-CRAWL_PERIODIC_ENABLED=false
+CRAWL_ON_STARTUP=true
+CRAWL_PERIODIC_ENABLED=true
 
 OPENAI_API_KEY=your_openai_key
 GROQ_API_KEY=your_groq_key
@@ -69,7 +69,7 @@ choose_strong_token
 Do not change `CLIENT_STORE_URL` right now. It should stay:
 
 ```text
-CLIENT_STORE_URL=http://143.198.5.97/aikart/
+CLIENT_STORE_URL=http://143.198.5.97/
 ```
 
 ## 3. Set Docker To Local Port `5176`
@@ -120,48 +120,27 @@ Expected:
 
 ## 6. Create Shared Nginx Path Config
 
-This exposes both apps on port `80`:
-
-```text
-http://143.198.5.97/aikart/
-http://143.198.5.97/aihub/
-```
+This configuration serves the standalone AI-KART on the root path `/` and AI Hub on `/aihub/`. 
+*(Note: If you already ran this from the `aikart.md` guide, you do not need to run it again.)*
 
 Copy this:
 
 ```bash
-sudo tee /etc/nginx/sites-available/aikart-aihub-paths >/dev/null <<'EOF'
+sudo tee /etc/nginx/sites-available/aikart-standalone >/dev/null <<'EOF'
 map $http_upgrade $connection_upgrade_aihub {
     default upgrade;
     "" close;
 }
 
 server {
-    listen 80 default_server;
-    server_name 143.198.5.97 _;
+    listen 80;
+    server_name aikart.ergobite.com 143.198.5.97 _;
 
     client_max_body_size 25m;
 
-    location = / {
-        return 302 /aikart/;
-    }
-
-    location = /aikart {
-        return 301 /aikart/;
-    }
-
-    location /aikart/ {
-        proxy_pass http://127.0.0.1:5175/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto http;
-        proxy_set_header X-Forwarded-Prefix /aikart;
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:5175;
+    # Route API calls to the AI-KART backend
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000/api/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -169,6 +148,7 @@ server {
         proxy_set_header X-Forwarded-Proto http;
     }
 
+    # Proxy AI-Hub
     location = /aihub {
         return 301 /aihub/;
     }
@@ -186,9 +166,19 @@ server {
         proxy_set_header X-Forwarded-Proto http;
         proxy_set_header X-Forwarded-Prefix /aihub;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade_aihub;
+        proxy_set_header Connection $connection_upgrade_aihub; 
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
+    }
+
+    # Route all other traffic to the React frontend (root)
+    location / {
+        proxy_pass http://127.0.0.1:5175/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto http;
     }
 }
 EOF
@@ -196,7 +186,8 @@ EOF
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo rm -f /etc/nginx/sites-enabled/aikart
 sudo rm -f /etc/nginx/sites-enabled/aihub
-sudo ln -sfn /etc/nginx/sites-available/aikart-aihub-paths /etc/nginx/sites-enabled/aikart-aihub-paths
+sudo rm -f /etc/nginx/sites-enabled/aikart-aihub-paths
+sudo ln -sfn /etc/nginx/sites-available/aikart-standalone /etc/nginx/sites-enabled/aikart-standalone
 sudo nginx -t
 sudo systemctl reload nginx
 ```
@@ -206,18 +197,7 @@ sudo systemctl reload nginx
 Copy this:
 
 ```bash
-sudo grep -nE 'listen|server_name|location|proxy_pass' /etc/nginx/sites-available/aikart-aihub-paths
-```
-
-You should see:
-
-```text
-listen 80
-server_name 143.198.5.97 _
-location /aikart/
-proxy_pass http://127.0.0.1:5175/
-location /aihub/
-proxy_pass http://127.0.0.1:5176/
+sudo grep -nE 'listen|server_name|location|proxy_pass' /etc/nginx/sites-available/aikart-standalone
 ```
 
 ## 8. Test AI Hub Through Nginx
@@ -238,11 +218,13 @@ Expected:
 
 ## 9. Crawl AI-KART
 
+Because AI-KART is now served on the root path `/` instead of `/aikart/`, use the root URL.
+
 Copy this:
 
 ```bash
 cd /var/www/AI_salesman_plugin
-sudo docker compose exec app python -c "from agent.ingestion import sync_web_crawl; sync_web_crawl('http://143.198.5.97/aikart/', max_pages=1024, max_depth=100, site_id='ai_kart_main', reconcile_missing=True, source_name='crm_crawler')"
+sudo docker compose exec app python -c "from agent.ingestion import sync_web_crawl; sync_web_crawl('http://143.198.5.97/', max_pages=1024, max_depth=100, site_id='ai_kart_main', reconcile_missing=True, source_name='crm_crawler')"
 ```
 
 ## 10. Test AI Answer
@@ -257,16 +239,10 @@ curl -s -X POST http://127.0.0.1:5176/v1/shop \
 
 ## 11. Verify Script In AI-KART
 
-Only do this after AI Hub works at `http://143.198.5.97/aihub/health`.
-AI-KART should inject this during its build from `.env`; this step only verifies it.
-
 Copy this:
 
 ```bash
-cd /var/www/Vercel_website
-
-pm2 restart ai-kart --update-env
-curl -s http://143.198.5.97/aikart/ | grep '143.198.5.97/aihub/shopbot.js'
+curl -s http://143.198.5.97/ | grep '143.198.5.97/aihub/shopbot.js'
 ```
 
 ## 12. Later

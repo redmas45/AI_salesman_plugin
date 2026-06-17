@@ -4,19 +4,23 @@ AI Salesman Hub is the backend, RAG pipeline, voice pipeline, and hosted one-lin
 
 ## Current Milestone
 
-**L5** is the current fallback point.
+**L7** is the current fallback point.
 
-- GitHub sync comment: `L 5`
-- Date: 2026-06-15
-- Meaning: if later work breaks the hub/spoke setup, roll back to the GitHub state synced with `L 5` before debugging forward.
+- GitHub sync comment: `L 7`
+- Date: 2026-06-17
+- Meaning: if later work breaks the React CRM, Docker Hub build, crawler sync, or hub/spoke setup, roll back to the GitHub state synced with `L 7` before debugging forward.
 
-Key L5 behavior:
+Key L7 behavior:
 - One-line client embed remains the contract.
+- Docker is the preferred HUB startup path: app, CRM, widget host, Nginx, PostgreSQL, and pgvector.
+- CRM frontend is now React/Vite/TypeScript/Tailwind under `crm/`; Docker builds `crm/dist` automatically and FastAPI serves it at `/crm`.
+- The client website remains external to the HUB Docker stack.
+- Client website admin/product management belongs to the client site, not AI Hub CRM.
+- The crawler supports the new AI-KART FastAPI catalog endpoint at `/api/products`.
+- Docker defaults run a startup crawl and then a periodic crawl every 120 seconds; CRM still has a manual `Crawl now` button.
 - Product-detail routing is handled in the HUB-hosted adapter before falling back to client website hooks.
 - Numeric backend product IDs are not treated as client product route handles.
 - Client/spoke website code is not modified for adapter fixes.
-- Docker is the preferred HUB startup path: app, CRM, widget host, Nginx, PostgreSQL, and pgvector.
-- The client website remains external to the HUB Docker stack.
 - CRM analytics shows catalog-backed product names only in `Most mentioned products`.
 - CRM summaries are store-manager bullet points for demand, stock, and operations decisions.
 
@@ -338,8 +342,8 @@ CLIENT_STORE_URL=https://client-store.com
 HUB_TLS_CERT_FILE=/certs/ip-192_168_68_51.crt
 HUB_TLS_KEY_FILE=/certs/ip-192_168_68_51.key
 CRM_ADMIN_TOKEN=choose-a-strong-admin-token
-CRAWL_ON_STARTUP=false
-CRAWL_PERIODIC_ENABLED=false
+CRAWL_ON_STARTUP=true
+CRAWL_PERIODIC_ENABLED=true
 ```
 
 For a new client, use the CRM `Add client` flow. The CRM creates the tenant, gives the script tag, and can trigger the crawler. The client website still only receives one pasted script line.
@@ -356,7 +360,7 @@ Then a client website on another same-Wi-Fi machine can paste a script like:
 <script defer src="https://192.168.68.51:8484/shopbot.js?site=client_site_id" data-site-id="client_site_id"></script>
 ```
 
-The client website can run on a different LAN IP. Add that website URL in the CRM and trigger its crawler from there. Docker does not auto-crawl on startup because the client website may be offline.
+The client website can run on a different LAN IP. Add that website URL in the CRM and trigger its crawler from there. Docker crawls once during startup when `CRAWL_ON_STARTUP=true`, then crawls every 120 seconds when `CRAWL_PERIODIC_ENABLED=true`. The CRM also keeps the per-client `Crawl now` button for manual refreshes.
 
 The bundled Docker Nginx HTTPS config uses files from `deploy/certs`. For this machine it is currently:
 
@@ -367,14 +371,17 @@ HUB_TLS_KEY_FILE=/certs/ip-192_168_68_51.key
 
 If the HUB machine gets a different LAN IP, generate/use the matching cert pair and update those two variables.
 
-For local AI-KART testing, start the client site manually from the separate project:
+For local AI-KART testing with the rebuilt React/Vite AI-KART site, start the client backend and frontend manually from the separate project:
 
 ```powershell
 cd C:\Users\admin\Desktop\Vercel_website
-$env:ENABLE_AI_WIDGET="true"
-$env:SHOPBOT_HUB_ORIGIN="https://192.168.68.51:8484"
-$env:SHOPBOT_BACKEND_ORIGIN="http://127.0.0.1:8080"
-python run.py
+cd backend
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+cd ..\frontend
+$env:VITE_SHOPBOT_HUB_ORIGIN="https://192.168.68.51:8484"
+$env:VITE_SHOPBOT_SITE_ID="ai_kart_main"
+npm run dev
 ```
 
 ## Deployment Modes
@@ -409,20 +416,24 @@ Standalone customer-site mode:
 
 ```powershell
 cd C:\Users\admin\Desktop\Vercel_website
-python run.py
+cd backend
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+cd ..\frontend
+npm run dev
 ```
 
 AI-enabled customer simulation:
 
 ```powershell
 cd C:\Users\admin\Desktop\Vercel_website
-$env:ENABLE_AI_WIDGET="true"
-$env:SHOPBOT_HUB_ORIGIN="https://192.168.68.51:8484"
-$env:SHOPBOT_BACKEND_ORIGIN="http://127.0.0.1:8080"
-python run.py
+cd frontend
+$env:VITE_SHOPBOT_HUB_ORIGIN="https://192.168.68.51:8484"
+$env:VITE_SHOPBOT_SITE_ID="ai_kart_main"
+npm run dev
 ```
 
-In manual-paste mode, the client simulator keeps the pasted absolute HUB script in `out/index.html` and the server preserves it when serving HTML. `SHOPBOT_HUB_ORIGIN` is the browser-visible HUB origin used for script/CSP, while `SHOPBOT_BACKEND_ORIGIN` is the local server-side proxy target used by the simulator for `/v1/*`, `/health`, and `/shopbot.js`.
+The React frontend dynamically loads the Hub script from `VITE_SHOPBOT_HUB_ORIGIN`. The client website remains external to the Hub; its own admin/product management is not part of AI Hub CRM.
 
 ## Build The Widget
 
@@ -443,6 +454,19 @@ plugin/src/productOverlay.js
 plugin/src/productResolver.js
 plugin/src/constants.js
 plugin/shopbot.js
+```
+
+## Build The CRM
+
+The CRM frontend is a React/Vite app in `crm/`. Docker builds it automatically and FastAPI serves the compiled `crm/dist` bundle at `/crm`.
+
+For local non-Docker FastAPI runs, build it first:
+
+```powershell
+cd crm
+npm install
+npm run build
+cd ..
 ```
 
 ## Tests And Verification
@@ -550,6 +574,7 @@ The crawler prefers public catalog APIs when available:
 
 ```text
 /api/products.json
+/api/products
 /products.json
 /collections/all/products.json
 /wp-json/wc/store/products?per_page=100

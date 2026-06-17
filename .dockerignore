@@ -15,4 +15,6 @@ tmp
 .local
 deploy/certs
 plugin/node_modules
+crm/node_modules
+crm/dist
 data/*/crawl.json

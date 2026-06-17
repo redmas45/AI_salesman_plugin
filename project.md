@@ -1,8 +1,8 @@
 # AI Salesman Plugin - Project Overview & Status
 
-Date: 2026-06-15
+Date: 2026-06-17
 
-Current fallback milestone: **L5** (`L 5` GitHub sync comment).
+Current fallback milestone: **L7** (`L 7` GitHub sync comment).
 
 ## About the Project
 An AI-powered voice shopping assistant ("Voice Orb") injected into the storefront (`AI-KART`). It uses natural language processing (LLM), Text-To-Speech (TTS), Speech-To-Text (STT), and Retrieval-Augmented Generation (RAG) to recommend products, answer customer queries, and execute storefront actions (e.g., adding to cart, navigating, checkout).
@@ -52,7 +52,7 @@ An AI-powered voice shopping assistant ("Voice Orb") injected into the storefron
 - **Exact Named Product Retrieval**: Product names mentioned by the customer are matched directly against the catalog and merged into RAG context, preventing misses on short names like `NOVA Sticker`.
 - **Turn Transport Logging**: Completed turns print readable `AI_CONVO | user`, `AI_CONVO | ai_reply`, `AI_CONVO | method_used`, and compact `[SHOPBOT TURN]` lines with transport, elapsed time, action count, transcript, and response.
 - **Admin Boundary Cleanup**: AI HUB no longer injects or prints client admin UI; demo admin/product editing belongs to `Vercel_website`.
-- **Customer-Site Standalone Mode**: `Vercel_website/run.py` runs the storefront/admin without the AI widget by default. Its search bar uses `out/api/products.json` directly and does not depend on the Voice Orb.
+- **Customer-Site Standalone Mode**: `Vercel_website` is now a React/Vite storefront plus FastAPI/SQLite backend. The customer website remains external to the Hub and its own admin/product management is not part of AI Hub CRM.
 - **One-Line Hosted Adapter Contract**: Client websites still paste exactly one script tag. Adapter behavior lives inside HUB-hosted `shopbot.js`; client website source code should not be edited for AI action fixes.
 - **HUB-Side Product Detail Routing**: `plugin/src/productResolver.js` resolves backend numeric product IDs to real same-origin product pages by checking HUB products and host catalog endpoints before falling back to client hooks. This prevents bad routes like `/product/<numeric_backend_id>/`.
 - **AI Hub CRM**: `/crm` manages clients, enables/disables the widget, triggers crawls, shows tenant catalog status, usage, conversations, settings, adapters, and health.
@@ -62,11 +62,68 @@ An AI-powered voice shopping assistant ("Voice Orb") injected into the storefron
 - **Docker Hub Startup**: `docker compose up -d --build` runs the HUB app, CRM, widget host, Nginx, PostgreSQL, and pgvector. The client website remains external and is started by the client or by the separate `Vercel_website` simulator for local testing.
 - **CRM Option-3 Dashboard Refresh**: Dashboard now uses the store-manager analytics layout with a purple sidebar, compact KPI cards, sparklines, intent donut, product-demand bars, active clients, recent activity, light/dark mode, and a simplified header that keeps only the range selector.
 - **Clickable Dashboard Routing**: Dashboard KPI cards and panels route to their detailed tabs: Conversations, Catalogs, Usage, Analytics, Clients, and Client detail. The brand block routes back to Dashboard.
+- **React CRM Build**: The Hub CRM frontend is now a React/Vite/TypeScript/Tailwind app under `crm/`. Docker builds `crm/dist` automatically, and FastAPI serves the compiled bundle at `/crm`.
+- **AI-KART API Catalog Crawl**: The crawler now tries `/api/products` before legacy JSON and platform catalog endpoints, matching the rebuilt React/FastAPI AI-KART storefront.
+- **Crawler Schedule Defaults**: Docker defaults run a startup crawl and then a periodic crawl every 120 seconds, while CRM still provides a manual per-client `Crawl now` action.
 
 
 ---
 
 ## Deployment Architecture
+
+### Public Deployment Reference: One DigitalOcean IP
+
+Current target server:
+- Public IP: `143.198.5.97`
+- AI-KART storefront: PM2 app, expected local upstream `http://127.0.0.1:5175`
+- AI Hub: Docker Compose app, expected local upstream `http://127.0.0.1:5176`
+- Nginx is the public entrypoint on `80` and, when enabled, `443`.
+
+Important rule: one public IP plus one public port can only receive one default `/` request. Browser requests to `http://143.198.5.97/` do not include the internal upstream port, so Nginx cannot know whether to send that request to `5175` or `5176` unless the request differs by hostname, path, or public port.
+
+#### Option 1: DNS + Hostname Routing (Best)
+
+Use when DNS is available:
+- `aikart.ergobite.com -> 143.198.5.97`
+- `aihub.ergobite.com -> 143.198.5.97`
+
+Both records can point to the same IP. Nginx separates traffic by the `Host` header:
+- `https://aikart.ergobite.com/` proxies to `127.0.0.1:5175`
+- `https://aihub.ergobite.com/` proxies to `127.0.0.1:5176`
+
+This is the cleanest production setup because Let's Encrypt certificates are normal, auto-renewal is reliable, URLs are clean, and browser microphone access works over HTTPS.
+
+#### Option 2: Same IP + Path Routing (Current No-DNS Setup)
+
+Use when there is no DNS yet and AI-KART owns the root storefront path:
+- `http://143.198.5.97/` proxies to `127.0.0.1:5175`
+- `http://143.198.5.97/api/` proxies to the AI-KART backend at `127.0.0.1:8000`
+- `http://143.198.5.97/aihub/` proxies to `127.0.0.1:5176`
+- `http://143.198.5.97/aihub/crm/` opens the AI Hub CRM
+
+This works on one IP and the standard web port because AI-KART uses `/` and `/api/`, while AI Hub is separated by the `/aihub/` path prefix.
+
+For microphone support, this same setup must be moved to HTTPS:
+- `https://143.198.5.97/`
+- `https://143.198.5.97/aihub/`
+
+Chrome allows microphone access only on secure contexts such as HTTPS or localhost. Public plain HTTP will load the pages, but the mic button will not work correctly.
+
+#### Option 3: Same IP + Different Public Ports
+
+Use only for quick testing:
+- `http://143.198.5.97:7001/` proxies to `127.0.0.1:5175`
+- `http://143.198.5.97:7002/` proxies to `127.0.0.1:5176`
+
+This can work if Nginx listens on `7001` and `7002` and the DigitalOcean cloud firewall allows those inbound TCP ports. If the browser times out while local server checks return `200`, the cloud firewall or provider networking is blocking the public port. This option is less user-friendly, often blocked on networks, and still needs HTTPS for microphone access.
+
+#### Current Recommended Path
+
+For this project, use Option 2 until DNS is ready:
+1. Deploy AI Hub first and confirm `http://127.0.0.1:5176/health` returns `200` on the server.
+2. Deploy AI-KART second and confirm its local upstream responds on `127.0.0.1:5175`.
+3. Configure Nginx root routing for AI-KART plus `/aihub/` routing for AI Hub.
+4. Add HTTPS for the IP address or switch to Option 1 with DNS and normal Let's Encrypt certificates.
 
 ### Mode Configuration
 Controlled via `DEPLOYMENT_MODE` in `.env`:
@@ -109,6 +166,22 @@ The active widget voice path is the legacy turn-based HTTP flow:
 4. Widget plays the returned audio and executes storefront actions.
 
 ---
+
+## L7 - Fallback Point (Milestone)
+**Date:** 2026-06-17
+**Status:** Stable Fallback
+**GitHub Sync Comment:** `L 7`
+
+This is the current rollback point after L5. If future changes break the React CRM, Docker Hub build, crawler sync, analytics, or one-script client setup, revert to the GitHub state synced with comment `L 7`.
+
+**What L7 locks in:**
+- **React CRM:** The old monolithic `crm/app.js` and `crm/styles.css` frontend is replaced by a React/Vite/TypeScript/Tailwind CRM app under `crm/src`.
+- **Docker-Built CRM:** The Hub Docker image builds `crm/dist` in a Node build stage and FastAPI serves the compiled CRM at `/crm`.
+- **Admin Boundary Preserved:** AI Hub CRM manages clients, crawling, catalog visibility, usage, analytics, settings, adapters, health, and widget enablement. Client storefront/product admin remains on the client website.
+- **Crawler API Compatibility:** The Hub crawler supports the rebuilt AI-KART catalog endpoint `GET /api/products`, plus legacy `/api/products.json`, `/products.json`, Shopify, and WooCommerce endpoints.
+- **Crawler Schedule:** Docker defaults to `CRAWL_ON_STARTUP=true` and `CRAWL_PERIODIC_ENABLED=true`, so the Hub crawls once before startup completes and then refreshes every 120 seconds. Manual CRM crawl remains available.
+- **Root AI-KART Deployment:** Current public no-DNS deployment serves AI-KART at `http://143.198.5.97/` and AI Hub at `http://143.198.5.97/aihub/`.
+- **Verification:** Backend tests pass, the CRM builds/lints, the AI-KART frontend builds/lints, Docker image build passes, and a local crawl against `http://143.198.5.97/` imports `NOVA Dog Sweater` successfully.
 
 ## L3 - Fallback Point (Milestone)
 **Date:** 2026-06-12
@@ -164,7 +237,7 @@ AI_CONVO | method_used: websocket | status: ok | time_taken: 1842ms | pipeline: 
 **Status:** Stable Fallback
 **GitHub Sync Comment:** `L 5`
 
-This is the current rollback point after L4.0. If future changes break the Docker-first HUB, CRM, analytics, or one-script client setup, revert to the GitHub state synced with comment `L 5`.
+This was the rollback point after L4.0. If future changes break the Docker-first HUB, CRM, analytics, or one-script client setup, revert to the GitHub state synced with comment `L 5`.
 
 **What L5 locks in:**
 - **Docker-First HUB Startup:** `docker compose up -d --build` runs the HUB app, CRM, widget host, crawler/RAG APIs, Nginx, PostgreSQL, and pgvector.
@@ -189,7 +262,7 @@ This is the new rollback point after L3.5. If future changes break the one-scrip
 - **One-Line Client Contract Preserved:** Real client websites paste one script tag only. They should not paste a second adapter/hook block for normal operation.
 - **Hosted Adapter Ownership:** Product routing, product overlay behavior, browser navigation, cart hook delegation, and event fallback are owned by HUB-hosted `shopbot.js`.
 - **No Client Website Source Edits For Adapter Fixes:** The AI-KART spoke simulator can be used for testing, but adapter fixes belong in `AI_salesman_plugin/plugin/src/*` and the rebuilt `plugin/shopbot.js`.
-- **Product Detail Resolver:** Added `plugin/src/productResolver.js`, which resolves `SHOW_PRODUCT_DETAIL` actions from backend numeric IDs to real same-origin product URLs by checking HUB product data and common host catalog endpoints such as `/api/products.json`, `/products.json`, and `/collections/all/products.json`.
+- **Product Detail Resolver:** Added `plugin/src/productResolver.js`, which resolves `SHOW_PRODUCT_DETAIL` actions from backend numeric IDs to real same-origin product URLs by checking HUB product data and common host catalog endpoints such as `/api/products`, `/api/products.json`, `/products.json`, and `/collections/all/products.json`.
 - **Numeric Route Guard:** The hosted adapter does not fabricate product URLs from numeric backend IDs, preventing routes such as `/product/4483885457220840101/`.
 - **Bundle Rebuild Requirement:** Changes under `plugin/src` must be rebuilt with `cd plugin && npm run build` so `/shopbot.js` serves the current adapter.
 - **README Refactor:** README now documents installation, full dependency list, environment setup, run modes, one-line script contract, tests, and troubleshooting.
@@ -202,7 +275,7 @@ Current AI-KART intranet one-line script:
 
 ---
 
-## Post-L5 Hub-Spoke Direction
+## Post-L7 Hub-Spoke Direction
 
 **HUB:** `AI_salesman_plugin` owns the AI pipeline, RAG, STT, LLM, TTS, widget script, adapters, and optional WebSocket transport.
 
@@ -262,7 +335,7 @@ Docker/EC2 direction:
 - `scripts/start_crm.ps1` is the local Windows launcher that starts Docker and opens `https://localhost:8484/crm`.
 - On EC2, Docker exposes the CRM and widget origin; a remote admin opens `https://your-hub-domain.com/crm` from their own browser.
 - Use `HUB_PUBLIC_URL` for the browser-visible HUB domain and `CLIENT_STORE_URL` for the client website being crawled. In local Docker AI-KART testing, keep `CLIENT_STORE_URL=http://host.docker.internal:8584`.
-- Docker defaults `CRAWL_ON_STARTUP=false` and `CRAWL_PERIODIC_ENABLED=false`, so a missing/offline client website does not spam crawler errors. Trigger crawls from CRM when the target client site is online.
+- Docker defaults `CRAWL_ON_STARTUP=true` and `CRAWL_PERIODIC_ENABLED=true`, so the Hub crawls once before startup completes and then refreshes every 120 seconds. The CRM also keeps a manual per-client crawl button.
 - The CRM `Add client` flow creates the client record, tenant schema, script tag, and crawler entrypoint without editing client website source.
 - CRM analytics can be checked through the Docker-served API at `/v1/admin/analytics?range=7d`; it should return `summary`, `top_products`, `top_intents`, and trend `series`.
 
@@ -274,7 +347,7 @@ Transport status:
 
 Crawler/RAG ingestion status:
 - Crawl4AI remains the HTML renderer for public pages.
-- Before rendering pages, the HUB now tries common catalog APIs: `/api/products.json`, `/products.json`, Shopify collection product JSON, and WooCommerce Store API product endpoints.
+- Before rendering pages, the HUB now tries common catalog APIs: `/api/products`, `/api/products.json`, `/products.json`, Shopify collection product JSON, and WooCommerce Store API product endpoints.
 - If no catalog API is available, the HUB discovers product URLs from `robots.txt`, sitemap indexes, product sitemaps, and common storefront routes such as `/shop`, `/store`, `/products`, `/catalog`, `/collections`, `/category`, and `/inventory`.
 - The crawl queue prioritizes product, shop, catalog, category, collection, store, and inventory URLs while avoiding admin, login, cart, checkout, account, and static asset URLs.
 - Product extraction supports JSON-LD, Next.js data, React/Next flight payloads, embedded app-state JSON, Shopify product shapes, WooCommerce product shapes, and fallback visible-text heuristics.

@@ -57,6 +57,7 @@ COMMON_DISCOVERY_PATHS = (
     "/search",
 )
 CATALOG_ENDPOINT_PATHS = (
+    "/api/products",
     "/api/products.json",
     "/products.json",
     "/collections/all/products.json",
@@ -830,7 +831,7 @@ def _site_base_url(seed_url: str) -> str:
 
 
 def _catalog_endpoint_for(seed_url: str) -> str:
-    return urljoin(_site_base_url(seed_url), "/api/products.json")
+    return urljoin(_site_base_url(seed_url), "/api/products")
 
 
 def _catalog_endpoints_for(seed_url: str) -> list[str]:

@@ -112,7 +112,8 @@ INVOICE_TITLE_FONT_SIZE = 36
 INVOICE_SUBTITLE_FONT_SIZE = 14
 INVOICE_TABLE_COL_WIDTHS = [240, 90, 50, 110]
 INVOICE_TOP_MARGIN = 150
-CRM_STATIC_DIR = Path(__file__).parent.parent / "crm"
+CRM_SOURCE_DIR = Path(__file__).parent.parent / "crm"
+CRM_STATIC_DIR = CRM_SOURCE_DIR / "dist"
 
 
 @dataclass(frozen=True)

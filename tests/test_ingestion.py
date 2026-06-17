@@ -52,6 +52,7 @@ def test_api_catalog_product_id_stays_stable_when_name_changes():
 def test_catalog_endpoints_include_common_platform_routes():
     endpoints = ingestion._catalog_endpoints_for("https://shop.example.test/start")
 
+    assert "https://shop.example.test/api/products" in endpoints
     assert "https://shop.example.test/api/products.json" in endpoints
     assert "https://shop.example.test/products.json" in endpoints
     assert "https://shop.example.test/collections/all/products.json" in endpoints
@@ -190,6 +191,40 @@ def test_nested_catalog_payload_falls_back_to_json_tree_extraction():
     assert len(products) == 1
     assert products[0]["name"] == "NOVA Wallet"
     assert products[0]["category"] == "Accessories"
+
+
+def test_aikart_fastapi_products_payload_normalization():
+    products = ingestion._normalize_catalog_payload(
+        {
+            "data": [
+                {
+                    "id": "acme-dog-sweater",
+                    "handle": "acme-dog-sweater",
+                    "title": "NOVA Dog Sweater",
+                    "name": "NOVA Dog Sweater",
+                    "description": "Warm fleece dog sweater",
+                    "category": "pets",
+                    "categories": ["pets"],
+                    "brand": "NOVA",
+                    "vendor": "NOVA",
+                    "price": 20.0,
+                    "currency": "USD",
+                    "stock": None,
+                    "in_stock": True,
+                    "image_url": "https://cdn.example.test/dog-sweater.png",
+                    "url": "/product/acme-dog-sweater/",
+                }
+            ]
+        },
+        "https://shop.example.test/api/products",
+    )
+
+    assert len(products) == 1
+    product = products[0]
+    assert product["name"] == "NOVA Dog Sweater"
+    assert product["category"] == "pets"
+    assert product["price"] == 20.0
+    assert product["stock"] == 100
 
 
 def test_sitemap_locations_are_ranked_toward_product_pages():

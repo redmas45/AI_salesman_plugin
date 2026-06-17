@@ -23,6 +23,7 @@ db/product_ids.json
 
 # Caches
 node_modules/
+crm/dist/
 .pytest_cache/
 .coverage
 htmlcov/
