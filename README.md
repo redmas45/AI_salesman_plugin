@@ -51,7 +51,7 @@ Flow diagram:
 Current intranet AI-KART manual-paste script:
 
 ```html
-<script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main"></script>
+<script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart" data-site-id="ai_kart"></script>
 ```
 
 Generic client script:
@@ -235,9 +235,9 @@ GROQ_FALLBACK_TO_OPENAI=true
 DATABASE_URL=postgresql://shopbot:shopbot_password@localhost:5434/shopping_db
 
 CURRENT_URL=http://127.0.0.1:8584/
-CURRENT_SITE_ID=ai_kart_main
-AI_DEFAULT_SITE_ID=ai_kart_main
-DEFAULT_SITE_ID=ai_kart_main
+CURRENT_SITE_ID=ai_kart
+AI_DEFAULT_SITE_ID=ai_kart
+DEFAULT_SITE_ID=ai_kart
 
 DEPLOYMENT_MODE=intranet
 STOREFRONT_PORT=8584
@@ -325,7 +325,7 @@ The app container prints:
 ```text
 AI Hub Docker is booting
 CRM:    https://localhost:8484/crm
-Widget: https://localhost:8484/shopbot.js?site=ai_kart_main
+Widget: https://localhost:8484/shopbot.js?site=ai_kart
 API:    http://localhost:8585
 ```
 
@@ -446,7 +446,7 @@ npm run dev
 AI-enabled customer simulation uses the same one-line script a real client would paste:
 
 ```html
-<script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main"></script>
+<script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart" data-site-id="ai_kart"></script>
 ```
 
 The client website does not dynamically load Hub code from frontend environment variables. No pasted script means no mic. A disabled client in AI Hub CRM also means no mic.
@@ -562,7 +562,7 @@ Expected shape:
 AI_CONVO | user: show me caps
 AI_CONVO | ai_reply: Here are two cap options.
 AI_CONVO | method_used: websocket | status: ok | time_taken: 1842ms | pipeline: 1750ms | actions: 1
-[SHOPBOT TURN] transport=websocket status=ok site=ai_kart_main elapsed=1842ms pipeline=1750ms actions=1 transcript="show me caps" response="Here are two cap options."
+[SHOPBOT TURN] transport=websocket status=ok site=ai_kart elapsed=1842ms pipeline=1750ms actions=1 transcript="show me caps" response="Here are two cap options."
 ```
 
 `method_used` / `transport` may be `websocket`, `legacy-http`, `legacy-sse`, or `legacy-ws`.
@@ -644,5 +644,5 @@ Voice recording blocked:
 
 Catalog stale:
 - For Docker runs, confirm `CLIENT_STORE_URL=http://host.docker.internal:8584`.
-- Confirm the CRM client row for `ai_kart_main` uses `http://host.docker.internal:8584`, not `http://127.0.0.1:8584`.
+- Confirm the CRM client row for `ai_kart` uses `http://host.docker.internal:8584`, not `http://127.0.0.1:8584`.
 - Restart with `CRAWL_ON_STARTUP=true`, or call `/v1/catalog/crawler/run`.

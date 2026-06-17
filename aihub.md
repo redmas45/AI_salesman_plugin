@@ -7,12 +7,21 @@ AI-KART website: http://143.198.5.97/
 AI Hub local:    http://127.0.0.1:5176
 AI Hub public:   http://143.198.5.97/aihub/
 AI Hub CRM:      http://143.198.5.97/aihub/crm/
+Client Panel:    http://143.198.5.97/client-panel/ai_kart
 ```
 
-Both public apps share port `80`. AI-KART is on the root `/`, and AI Hub is separated by the `/aihub/` URL path.
-DNS is optional for this setup because both apps are accessed by `IP`.
+All public apps share port `80` and are separated by URL paths:
 
-If you are starting from an empty server, deploy AI Hub first through step 8. Then deploy AI-KART from `/var/www/Vercel_website/aikart.md`. After AI-KART works, come back here and run steps 9 through 11.
+```text
+/                  -> AI-KART website
+/api/              -> AI-KART backend
+/aihub/            -> AI Hub
+/client-panel/<client_id> -> Client Panel
+```
+
+DNS is optional for this setup because all apps are accessed by `IP`.
+
+If you are starting from an empty server, deploy AI Hub first through step 5. Then deploy AI-KART from `/var/www/Vercel_website/aikart.md` and Client Panel from `/var/www/client_panel/clientpanel.md`; the AI-KART guide owns the shared public Nginx routing for `/`, `/api/`, `/aihub/`, and `/client-panel/`. After AI-KART works and `/aihub/` is routed, come back here and run steps 8 through 10.
 
 If you are updating an existing server to L7, still run step 4. L7 builds the React CRM inside the Hub Docker image, so a plain container restart can leave the old CRM frontend running.
 
@@ -39,9 +48,9 @@ HUB_PUBLIC_URL=http://143.198.5.97/aihub
 PUBLIC_API_URL=http://143.198.5.97/aihub
 VOICE_ORB_API_URL=http://143.198.5.97/aihub
 
-CURRENT_SITE_ID=ai_kart_main
-DEFAULT_SITE_ID=ai_kart_main
-AI_DEFAULT_SITE_ID=ai_kart_main
+CURRENT_SITE_ID=ai_kart
+DEFAULT_SITE_ID=ai_kart
+AI_DEFAULT_SITE_ID=ai_kart
 
 CLIENT_STORE_URL=http://143.198.5.97/
 CURRENT_URL=http://143.198.5.97/
@@ -135,89 +144,19 @@ Expected:
 200
 ```
 
-## 6. Create Shared Nginx Path Config
+## 6. Public Routing Requirement
 
-This configuration serves the standalone AI-KART on the root path `/` and AI Hub on `/aihub/`. 
-*(Note: If you already ran this from the AI-KART website deployment guide, you do not need to run it again.)*
+AI Hub should only expose this local upstream from its own deployment:
 
-Copy this:
-
-```bash
-sudo tee /etc/nginx/sites-available/aikart-standalone >/dev/null <<'EOF'
-map $http_upgrade $connection_upgrade_aihub {
-    default upgrade;
-    "" close;
-}
-
-server {
-    listen 80;
-    server_name aikart.ergobite.com 143.198.5.97 _;
-
-    client_max_body_size 25m;
-
-    # Route API calls to the AI-KART backend
-    location /api/ {
-        proxy_pass http://127.0.0.1:8000/api/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto http;
-    }
-
-    # Proxy AI-Hub
-    location = /aihub {
-        return 301 /aihub/;
-    }
-
-    location = /aihub/ {
-        return 302 /aihub/crm/;
-    }
-
-    location /aihub/ {
-        proxy_pass http://127.0.0.1:5176/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto http;
-        proxy_set_header X-Forwarded-Prefix /aihub;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade_aihub; 
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-    }
-
-    # Route all other traffic to the React frontend (root)
-    location / {
-        proxy_pass http://127.0.0.1:5175/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto http;
-    }
-}
-EOF
-
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo rm -f /etc/nginx/sites-enabled/aikart
-sudo rm -f /etc/nginx/sites-enabled/aihub
-sudo rm -f /etc/nginx/sites-enabled/aikart-aihub-paths
-sudo ln -sfn /etc/nginx/sites-available/aikart-standalone /etc/nginx/sites-enabled/aikart-standalone
-sudo nginx -t
-sudo systemctl reload nginx
+```text
+http://127.0.0.1:5176
 ```
 
-## 7. Check Nginx File
+The public `/aihub/` route is edge/shared Nginx config. In the current same-IP setup, AI-KART owns `/` and `/api/`, so the shared Nginx block belongs in `/var/www/Vercel_website/aikart.md`.
 
-Copy this:
+Do not add AI-KART `/`, `/api/`, Client Panel `/client-panel/`, or frontend proxy rules in this Hub guide. If you later use a dedicated hostname such as `aihub.ergobite.com`, configure that hostname in Nginx to proxy directly to `http://127.0.0.1:5176`.
 
-```bash
-sudo grep -nE 'listen|server_name|location|proxy_pass' /etc/nginx/sites-available/aikart-standalone
-```
-
-## 8. Test AI Hub Through Nginx
+After AI-KART/shared Nginx is deployed, test the public Hub routes:
 
 Copy this:
 
@@ -235,7 +174,25 @@ Expected:
 200
 ```
 
-## 9. Crawl AI-KART
+## 7. Create/Update AI-KART Client In CRM
+
+Open:
+
+```text
+http://143.198.5.97/aihub/crm/
+```
+
+Use the CRM admin token from `CRM_ADMIN_TOKEN`.
+
+Create or update the AI-KART client with:
+
+```text
+Site ID: ai_kart
+Website URL: http://143.198.5.97/
+Enabled: yes
+```
+
+## 8. Crawl AI-KART
 
 Because AI-KART is now served on the root path `/` instead of `/aikart/`, use the root URL.
 
@@ -245,20 +202,20 @@ Copy this:
 
 ```bash
 cd /var/www/AI_salesman_plugin
-sudo docker compose exec app python -c "from agent.ingestion import sync_web_crawl; sync_web_crawl('http://143.198.5.97/', max_pages=1024, max_depth=100, site_id='ai_kart_main', reconcile_missing=True, source_name='crm_crawler')"
+sudo docker compose exec app python -c "from agent.ingestion import sync_web_crawl; sync_web_crawl('http://143.198.5.97/', max_pages=1024, max_depth=100, site_id='ai_kart', reconcile_missing=True, source_name='crm_crawler')"
 ```
 
-## 10. Test AI Answer
+## 9. Test AI Answer
 
 Copy this:
 
 ```bash
 curl -s -X POST http://127.0.0.1:5176/v1/shop \
   -H "Content-Type: application/json" \
-  -d '{"message":"Do you have dog sweater?","site_id":"ai_kart_main"}'
+  -d '{"message":"Do you have dog sweater?","site_id":"ai_kart"}'
 ```
 
-## 11. Verify Script In AI-KART
+## 10. Verify Script In AI-KART
 
 Copy this:
 
@@ -266,7 +223,7 @@ Copy this:
 curl -s http://143.198.5.97/ | grep '143.198.5.97/aihub/shopbot.js'
 ```
 
-## 12. Later
+## 11. Later
 
 Optional DNS records:
 

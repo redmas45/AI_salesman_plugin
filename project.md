@@ -46,7 +46,7 @@ An AI-powered voice shopping assistant ("Voice Orb") injected into the storefron
 - **Voice Widget UI**: Clear/reset of conversation history, displaying `Listening...` and `Analyzing...` state indicators.
 - **Checkout Process**: Invoice PDF generation verified using `reportlab`.
 - **Security Hardening**: Same-origin restrictions and security headers (CSP, HSTS, Frame Options).
-- **Multi-tenant isolation**: Sites schema separation backed by `tenant_ai_kart_main`.
+- **Multi-tenant isolation**: Sites schema separation backed by `tenant_ai_kart`.
 - **Crawler Stabilization**: Incremental vectorization of new catalog items only, with startup crawler sync.
 - **One-Time Homepage Greeting**: The injected widget auto-greets only once per browser tab/session and only on the homepage.
 - **Exact Named Product Retrieval**: Product names mentioned by the customer are matched directly against the catalog and merged into RAG context, preventing misses on short names like `NOVA Sticker`.
@@ -90,10 +90,12 @@ Important rule: one public IP plus one public port can only receive one default 
 Use when DNS is available:
 - `aikart.ergobite.com -> 143.198.5.97`
 - `aihub.ergobite.com -> 143.198.5.97`
+- `panel.ergobite.com -> 143.198.5.97`
 
-Both records can point to the same IP. Nginx separates traffic by the `Host` header:
+All records can point to the same IP. Nginx separates traffic by the `Host` header:
 - `https://aikart.ergobite.com/` proxies to `127.0.0.1:5175`
 - `https://aihub.ergobite.com/` proxies to `127.0.0.1:5176`
+- `https://panel.ergobite.com/` proxies to `127.0.0.1:5177`
 
 This is the cleanest production setup because Let's Encrypt certificates are normal, auto-renewal is reliable, URLs are clean, and browser microphone access works over HTTPS.
 
@@ -104,12 +106,14 @@ Use when there is no DNS yet and AI-KART owns the root storefront path:
 - `http://143.198.5.97/api/` proxies to the AI-KART backend at `127.0.0.1:8000`
 - `http://143.198.5.97/aihub/` proxies to `127.0.0.1:5176`
 - `http://143.198.5.97/aihub/crm/` opens the AI Hub CRM
+- `http://143.198.5.97/client-panel/<client_id>` proxies to `127.0.0.1:5177`
 
-This works on one IP and the standard web port because AI-KART uses `/` and `/api/`, while AI Hub is separated by the `/aihub/` path prefix.
+This works on one IP and the standard web port because AI-KART uses `/` and `/api/`, AI Hub uses `/aihub/`, and Client Panel uses `/client-panel/<client_id>`. Current client URL is `/client-panel/ai_kart`.
 
 For microphone support, this same setup must be moved to HTTPS:
 - `https://143.198.5.97/`
 - `https://143.198.5.97/aihub/`
+- `https://143.198.5.97/client-panel/ai_kart`
 
 Chrome allows microphone access only on secure contexts such as HTTPS or localhost. Public plain HTTP will load the pages, but the mic button will not work correctly.
 
@@ -126,8 +130,9 @@ This can work if Nginx listens on `7001` and `7002` and the DigitalOcean cloud f
 For this project, use Option 2 until DNS is ready:
 1. Deploy AI Hub first and confirm `http://127.0.0.1:5176/health` returns `200` on the server.
 2. Deploy AI-KART second and confirm its local upstream responds on `127.0.0.1:5175`.
-3. Configure Nginx root routing for AI-KART plus `/aihub/` routing for AI Hub.
-4. Add HTTPS for the IP address or switch to Option 1 with DNS and normal Let's Encrypt certificates.
+3. Deploy Client Panel third and confirm its local upstream responds on `127.0.0.1:5177`.
+4. Configure the shared Nginx edge routing from `Vercel_website/aikart.md` for `/`, `/api/`, `/aihub/`, and `/client-panel/`.
+5. Add HTTPS for the IP address or switch to Option 1 with DNS and normal Let's Encrypt certificates.
 
 ### Mode Configuration
 Controlled via `DEPLOYMENT_MODE` in `.env`:
@@ -223,7 +228,7 @@ This is the new rollback point after L3. If future changes break the hub/spoke s
 - **One-Script Client Contract:** Real client websites still only need one script tag; site-specific cart/search/checkout behavior belongs in HUB-hosted adapters.
 - **Reliable Terminal Turn Logs:** Each completed turn prints the user text, AI reply, method used (`websocket`, `legacy-http`, `legacy-sse`, or `legacy-ws`), status, time taken, pipeline time when available, action count, and compact `[SHOPBOT TURN]` summary.
 - **L3.5 Browser Smoke:** Standalone Vercel smoke verified no AI script/orb, admin link present, `/admin` responds, and search for `sticker` renders `NOVA Rainbow Sticker` and `NOVA Sticker` from `products.json`.
-- **L3.5 Injection Smoke:** AI-enabled Vercel mode verified exactly one `shopbot.js?site=ai_kart_main` script in the HTML response.
+- **L3.5 Injection Smoke:** AI-enabled Vercel mode verified exactly one `shopbot.js?site=ai_kart` script in the HTML response.
 
 Expected terminal log shape:
 
@@ -231,7 +236,7 @@ Expected terminal log shape:
 AI_CONVO | user: show me caps
 AI_CONVO | ai_reply: Here are two cap options.
 AI_CONVO | method_used: websocket | status: ok | time_taken: 1842ms | pipeline: 1750ms | actions: 1
-[SHOPBOT TURN] transport=websocket status=ok site=ai_kart_main elapsed=1842ms pipeline=1750ms actions=1 transcript="show me caps" response="Here are two cap options."
+[SHOPBOT TURN] transport=websocket status=ok site=ai_kart elapsed=1842ms pipeline=1750ms actions=1 transcript="show me caps" response="Here are two cap options."
 ```
 
 ---
@@ -274,7 +279,7 @@ This is the new rollback point after L3.5. If future changes break the one-scrip
 Current AI-KART intranet one-line script:
 
 ```html
-<script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main"></script>
+<script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart" data-site-id="ai_kart"></script>
 ```
 
 ---
@@ -323,7 +328,7 @@ npm run dev
 The client website has no built-in Hub URL and renders no local mic. To connect it, paste one client-style script into `frontend/index.html`:
 
 ```html
-<script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main"></script>
+<script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart" data-site-id="ai_kart"></script>
 ```
 
 No pasted script means no mic. If AI Hub CRM disables the client, the served script is disabled and the mic is removed. Do not use `127.0.0.1:8584` as the Docker crawler URL; Docker must crawl the local simulator through `http://host.docker.internal:8584`.
