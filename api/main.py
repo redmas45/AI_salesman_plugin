@@ -37,6 +37,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 
 import config
 from agent import orchestrator
+from api import client_panel as client_panel_api
 from api import crm as crm_api
 from api.middleware import RequestTracingMiddleware
 from api.turn_logging import print_turn_summary, turn_timer
@@ -221,6 +222,7 @@ app.add_middleware(
 
 app.add_middleware(RequestTracingMiddleware)
 app.include_router(crm_api.router)
+app.include_router(client_panel_api.router)
 
 
 @app.get("/crm", include_in_schema=False)

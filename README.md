@@ -93,6 +93,7 @@ Current CRM scope:
 - Dashboard navigation: KPI cards and panels are clickable and route to Conversations, Catalogs, Usage, Analytics, Clients, or Client detail for deeper work.
 - Theme support: CRM supports both light and dark mode; the default local dashboard opens in the light option-3 style.
 - Client management: add, remove, enable/disable, copy one-line script.
+- CRM auth: when `CRM_ADMIN_TOKEN` is configured, the React CRM shows a token screen instead of browser prompt loops.
 - Crawler control: trigger a crawl for a client site.
 - Catalog visibility: tenant product counts, categories, vectorization status, previews.
 - Usage tracking: turn counts, estimated tokens, latency, session quotas, recent events.
@@ -101,6 +102,23 @@ Current CRM scope:
 - Settings: whitelisted `.env` keys for providers, models, deployment, and crawler settings.
 
 Set `CRM_ADMIN_TOKEN` in `.env` to protect `/v1/admin/*`. If it is empty, the CRM is open for local development.
+
+## Client Panel
+
+The separate `client_panel` repo is the client-facing portal. It consumes scoped Hub APIs under `/v1/client-panel/*` and only returns data for the logged-in client site.
+
+Current scope:
+
+- Client login by `site_id` and client-panel password.
+- Client-only graphs, summaries, token usage, catalog counts, and conversation review.
+- Per-shopper/session token limit updates. Logged-in spoke users can provide stable session IDs; anonymous visitors remain browser-session based. The purchased client token limit remains Hub-owned.
+
+Hub `.env` keys:
+
+```text
+CLIENT_PANEL_DEFAULT_PASSWORD=change-this-client-password
+CLIENT_PANEL_TOKEN_SECRET=change-this-signing-secret
+```
 
 ### CRM Analytics Behavior
 
@@ -241,6 +259,8 @@ PUBLIC_HTTPS_ORIGIN=
 HUB_PUBLIC_URL=https://192.168.68.51:8484
 CLIENT_STORE_URL=http://host.docker.internal:8584
 CRM_ADMIN_TOKEN=
+CLIENT_PANEL_DEFAULT_PASSWORD=client123
+CLIENT_PANEL_TOKEN_SECRET=change-this-signing-secret
 AUTO_OPEN_CRM=true
 ```
 
@@ -379,10 +399,10 @@ cd backend
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 cd ..\frontend
-$env:VITE_SHOPBOT_HUB_ORIGIN="https://192.168.68.51:8484"
-$env:VITE_SHOPBOT_SITE_ID="ai_kart_main"
 npm run dev
 ```
+
+To test the AI connection, paste the one-line Hub script into `Vercel_website/frontend/index.html`. The React/Vite client no longer reads Hub URL environment variables.
 
 ## Deployment Modes
 
@@ -423,17 +443,13 @@ cd ..\frontend
 npm run dev
 ```
 
-AI-enabled customer simulation:
+AI-enabled customer simulation uses the same one-line script a real client would paste:
 
-```powershell
-cd C:\Users\admin\Desktop\Vercel_website
-cd frontend
-$env:VITE_SHOPBOT_HUB_ORIGIN="https://192.168.68.51:8484"
-$env:VITE_SHOPBOT_SITE_ID="ai_kart_main"
-npm run dev
+```html
+<script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main"></script>
 ```
 
-The React frontend dynamically loads the Hub script from `VITE_SHOPBOT_HUB_ORIGIN`. The client website remains external to the Hub; its own admin/product management is not part of AI Hub CRM.
+The client website does not dynamically load Hub code from frontend environment variables. No pasted script means no mic. A disabled client in AI Hub CRM also means no mic.
 
 ## Build The Widget
 

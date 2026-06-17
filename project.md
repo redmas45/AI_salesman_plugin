@@ -63,8 +63,12 @@ An AI-powered voice shopping assistant ("Voice Orb") injected into the storefron
 - **CRM Option-3 Dashboard Refresh**: Dashboard now uses the store-manager analytics layout with a purple sidebar, compact KPI cards, sparklines, intent donut, product-demand bars, active clients, recent activity, light/dark mode, and a simplified header that keeps only the range selector.
 - **Clickable Dashboard Routing**: Dashboard KPI cards and panels route to their detailed tabs: Conversations, Catalogs, Usage, Analytics, Clients, and Client detail. The brand block routes back to Dashboard.
 - **React CRM Build**: The Hub CRM frontend is now a React/Vite/TypeScript/Tailwind app under `crm/`. Docker builds `crm/dist` automatically, and FastAPI serves the compiled bundle at `/crm`.
+- **CRM Token Screen**: The React CRM now handles `CRM_ADMIN_TOKEN` with an in-app token screen and load-error state instead of parallel browser prompt loops.
 - **AI-KART API Catalog Crawl**: The crawler now tries `/api/products` before legacy JSON and platform catalog endpoints, matching the rebuilt React/FastAPI AI-KART storefront.
 - **Crawler Schedule Defaults**: Docker defaults run a startup crawl and then a periodic crawl every 120 seconds, while CRM still provides a manual per-client `Crawl now` action.
+- **Pure Spoke Website Contract**: `Vercel_website` no longer renders its own Voice Orb or injects Hub script through frontend env vars. The Hub connection is only the manually pasted one-line script.
+- **Client Website Admin**: `Vercel_website` owns customer login/signup, store admin users, product add/delete, and local product image uploads.
+- **Client Panel Scaffold**: `client_panel` is now a separate React/Vite client portal using scoped `/v1/client-panel/*` Hub APIs for client-only analytics, usage, conversations, and per-shopper token policy.
 
 
 ---
@@ -298,34 +302,31 @@ Current one-script spoke contract:
 <script defer src="https://hub.example.com/shopbot.js?site=client_site_id" data-site-id="client_site_id"></script>
 ```
 
-For intranet AI-KART testing, the local customer-site simulator can run in two modes:
+For intranet AI-KART testing, the local customer-site simulator runs as its own React/FastAPI app:
 
-Standalone customer site:
-
-```powershell
-cd C:\Users\admin\Desktop\Vercel_website
-python run.py
-```
-
-This serves the storefront/admin and normal `products.json` search with no Voice Orb script.
-
-Manual-paste AI-enabled customer simulation:
+Backend:
 
 ```powershell
 cd C:\Users\admin\Desktop\Vercel_website
-$env:ENABLE_AI_WIDGET="true"
-$env:SHOPBOT_HUB_ORIGIN="https://192.168.68.51:8484"
-$env:SHOPBOT_BACKEND_ORIGIN="http://127.0.0.1:8080"
-python run.py
+cd backend
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-The client page keeps one pasted client-style script:
+Frontend:
+
+```powershell
+cd C:\Users\admin\Desktop\Vercel_website
+cd frontend
+npm run dev
+```
+
+The client website has no built-in Hub URL and renders no local mic. To connect it, paste one client-style script into `frontend/index.html`:
 
 ```html
 <script defer src="https://192.168.68.51:8484/shopbot.js?site=ai_kart_main" data-site-id="ai_kart_main"></script>
 ```
 
-`SHOPBOT_HUB_ORIGIN` is the browser-visible HUB origin used for the script and CSP. `SHOPBOT_BACKEND_ORIGIN=http://127.0.0.1:8080` is the simulator's server-side proxy target for `/v1/*`, `/health`, and checkout PDF requests. Do not use `127.0.0.1:8584` as the Docker crawler URL; Docker must crawl the local simulator through `http://host.docker.internal:8584`.
+No pasted script means no mic. If AI Hub CRM disables the client, the served script is disabled and the mic is removed. Do not use `127.0.0.1:8584` as the Docker crawler URL; Docker must crawl the local simulator through `http://host.docker.internal:8584`.
 
 The legacy AI HUB `run.py` path can still run the full intranet stack behind Caddy: `/crm`, `/shopbot.js`, `/shopbot-widget.js`, `/shopbot-frame`, `/v1/*`, and `/health` route to the HUB backend; normal website pages route to the SPOKE storefront. `run.py` prints and auto-opens the CRM URL unless `AUTO_OPEN_CRM=false`.
 

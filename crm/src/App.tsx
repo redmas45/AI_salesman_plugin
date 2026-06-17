@@ -19,7 +19,7 @@ import {
   Trash2,
   Users,
 } from 'lucide-react';
-import { crmApi } from './api';
+import { UnauthorizedError, clearStoredAdminToken, crmApi, setStoredAdminToken } from './api';
 import type {
   AnalyticsResponse,
   Client,
@@ -109,6 +109,8 @@ export function App() {
   const [range, setRange] = useState(DEFAULT_RANGE);
   const [theme, setTheme] = useState<Theme>(storedTheme());
   const [loading, setLoading] = useState(true);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -132,6 +134,7 @@ export function App() {
 
   async function loadInitial() {
     setLoading(true);
+    setLoadError('');
     try {
       const [nextOverview, nextSettings, nextConversations, nextAnalytics] = await Promise.all([
         crmApi.overview(),
@@ -143,11 +146,32 @@ export function App() {
       setSettings(nextSettings);
       setConversations(nextConversations);
       setAnalytics(nextAnalytics);
+      setAuthRequired(false);
     } catch (error) {
-      showError(error, 'CRM failed to load.');
+      if (error instanceof UnauthorizedError) {
+        clearStoredAdminToken();
+        setAuthRequired(true);
+        setLoadError(error.message);
+      } else {
+        const message = error instanceof Error ? error.message : 'CRM failed to load.';
+        setLoadError(message);
+        showError(error, 'CRM failed to load.');
+      }
     } finally {
       setLoading(false);
     }
+  }
+
+  async function submitAdminToken(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const token = String(formData.get('admin_token') || '').trim();
+    if (!token) {
+      setLoadError('Enter the CRM admin token.');
+      return;
+    }
+    setStoredAdminToken(token);
+    await loadInitial();
   }
 
   async function refreshCurrentView() {
@@ -296,6 +320,12 @@ export function App() {
   }
 
   function showError(error: unknown, fallback: string) {
+    if (error instanceof UnauthorizedError) {
+      clearStoredAdminToken();
+      setAuthRequired(true);
+      setLoadError(error.message);
+      return;
+    }
     setToast(error instanceof Error ? error.message : fallback);
   }
 
@@ -317,12 +347,16 @@ export function App() {
             onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
           />
           <section className="grid gap-4 px-4 py-4 sm:px-6 lg:px-8">
-            {loading || !overview ? (
+            {authRequired ? (
+              <AdminTokenView busy={loading} error={loadError} onSubmit={submitAdminToken} />
+            ) : loading || (!overview && !loadError) ? (
               <EmptyState text="Loading CRM..." />
+            ) : loadError && !overview ? (
+              <LoadErrorView message={loadError} onRetry={loadInitial} />
             ) : (
               <ViewRenderer
                 view={view}
-                overview={overview}
+                overview={overview as Overview}
                 clients={clients}
                 selectedClient={selectedClient}
                 conversations={conversations}
@@ -346,6 +380,60 @@ export function App() {
       <AddClientDialog open={dialogOpen} busy={busy} onClose={() => setDialogOpen(false)} onCreate={createClient} />
       <div className={`toast ${toast ? 'toast-visible' : ''}`}>{toast}</div>
     </div>
+  );
+}
+
+function AdminTokenView({
+  busy,
+  error,
+  onSubmit,
+}: {
+  busy: boolean;
+  error: string;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <section className="mx-auto mt-12 grid w-full max-w-md gap-4 rounded-lg border border-line bg-panel p-5 shadow-xl">
+      <div>
+        <div className="text-xs font-semibold uppercase text-muted">Protected CRM</div>
+        <h2 className="mt-2 text-lg font-semibold">Enter admin token</h2>
+      </div>
+      <form className="grid gap-3" onSubmit={onSubmit}>
+        <Field
+          label="CRM admin token"
+          name="admin_token"
+          type="password"
+          autoComplete="current-password"
+          autoFocus
+          required
+        />
+        {error ? (
+          <p className="text-sm" style={{ color: 'var(--red)' }}>
+            {error}
+          </p>
+        ) : null}
+        <Button type="submit" disabled={busy}>
+          {busy ? 'Checking...' : 'Unlock CRM'}
+        </Button>
+      </form>
+    </section>
+  );
+}
+
+function LoadErrorView({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <section className="mx-auto mt-12 grid w-full max-w-xl gap-4 rounded-lg border border-line bg-panel p-5 text-center shadow-xl">
+      <div>
+        <div className="text-xs font-semibold uppercase text-muted">CRM load failed</div>
+        <h2 className="mt-2 text-lg font-semibold">Could not load AI Hub CRM</h2>
+      </div>
+      <p className="text-sm text-muted">{message}</p>
+      <div className="flex justify-center">
+        <Button variant="secondary" type="button" onClick={onRetry}>
+          Retry
+        </Button>
+      </div>
+    </section>
   );
 }
 

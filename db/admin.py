@@ -5,7 +5,11 @@ from __future__ import annotations
 import os
 import re
 import json
+import base64
+import hashlib
+import hmac
 import logging
+import secrets
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -43,6 +47,9 @@ DEFAULT_CLIENT_NAME = "AI-KART"
 DEFAULT_USAGE_LIMIT = 200
 DEFAULT_CLIENT_TOKEN_LIMIT = 5000
 DEFAULT_SESSION_TOKEN_LIMIT = 1000
+DEFAULT_CLIENT_PANEL_PASSWORD = os.getenv("CLIENT_PANEL_DEFAULT_PASSWORD", "client123")
+PANEL_PASSWORD_ITERATIONS = 210_000
+PANEL_PASSWORD_SALT_BYTES = 16
 TOKEN_CHAR_RATIO = 4
 SITE_ID_MAX_LENGTH = 80
 SESSION_ID_MAX_LENGTH = 120
@@ -179,6 +186,7 @@ CREATE TABLE IF NOT EXISTS hub_clients (
     status TEXT NOT NULL DEFAULT 'live',
     token_limit INTEGER NOT NULL DEFAULT 5000,
     session_token_limit INTEGER NOT NULL DEFAULT 1000,
+    panel_password_hash TEXT NOT NULL DEFAULT '',
     last_crawl_status TEXT NOT NULL DEFAULT 'not_started',
     last_crawl_message TEXT NOT NULL DEFAULT '',
     last_crawl_at TIMESTAMPTZ,
@@ -231,6 +239,8 @@ ALTER TABLE hub_clients
     ADD COLUMN IF NOT EXISTS token_limit INTEGER NOT NULL DEFAULT 5000;
 ALTER TABLE hub_clients
     ADD COLUMN IF NOT EXISTS session_token_limit INTEGER NOT NULL DEFAULT 1000;
+ALTER TABLE hub_clients
+    ADD COLUMN IF NOT EXISTS panel_password_hash TEXT NOT NULL DEFAULT '';
 ALTER TABLE hub_usage_events
     ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE hub_usage_events
@@ -261,12 +271,13 @@ def ensure_default_client() -> None:
         conn.execute(
             """
             INSERT INTO hub_clients
-                (site_id, name, store_url, allowed_origin, deploy_mode, plan, adapter_name, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (site_id, name, store_url, allowed_origin, deploy_mode, plan, adapter_name, status, panel_password_hash)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (site_id) DO UPDATE SET
                 store_url = EXCLUDED.store_url,
                 allowed_origin = EXCLUDED.allowed_origin,
                 deploy_mode = EXCLUDED.deploy_mode,
+                panel_password_hash = COALESCE(NULLIF(hub_clients.panel_password_hash, ''), EXCLUDED.panel_password_hash),
                 updated_at = now()
             """,
             (
@@ -278,6 +289,7 @@ def ensure_default_client() -> None:
                 DEFAULT_PLAN,
                 "ai_kart_adapter.js",
                 CLIENT_STATUS_LIVE,
+                _hash_panel_password(DEFAULT_CLIENT_PANEL_PASSWORD),
             ),
         )
         conn.commit()
@@ -302,8 +314,8 @@ def create_client(
         conn.execute(
             """
             INSERT INTO hub_clients
-                (site_id, name, store_url, allowed_origin, deploy_mode, plan, adapter_name, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (site_id, name, store_url, allowed_origin, deploy_mode, plan, adapter_name, status, panel_password_hash)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (site_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 store_url = EXCLUDED.store_url,
@@ -312,6 +324,7 @@ def create_client(
                 plan = EXCLUDED.plan,
                 adapter_name = EXCLUDED.adapter_name,
                 status = EXCLUDED.status,
+                panel_password_hash = COALESCE(NULLIF(hub_clients.panel_password_hash, ''), EXCLUDED.panel_password_hash),
                 updated_at = now()
             """,
             (
@@ -323,6 +336,7 @@ def create_client(
                 _required_text(plan, "Plan is required."),
                 _required_text(adapter_name, "Adapter name is required."),
                 CLIENT_STATUS_LIVE,
+                _hash_panel_password(DEFAULT_CLIENT_PANEL_PASSWORD),
             ),
         )
         conn.commit()
@@ -367,6 +381,41 @@ def set_client_enabled(site_id: str, enabled: bool) -> dict[str, Any]:
     status = CLIENT_STATUS_LIVE if enabled else CLIENT_STATUS_DISABLED
     _update_client_status(site_id, status)
     return get_client_detail(site_id)
+
+
+def verify_client_panel_password(site_id: str, password: str) -> dict[str, Any]:
+    """Return client detail when the client-panel password is valid."""
+    clean_site_id = _safe_site_id(site_id)
+    client = _client_row(clean_site_id)
+    if not client:
+        raise LookupError(f"Client {clean_site_id} was not found.")
+    password_hash = client.get("panel_password_hash") or ""
+    if not password_hash:
+        password_hash = _set_default_panel_password(clean_site_id)
+    if not _verify_panel_password(password, password_hash):
+        raise PermissionError("Invalid client panel credentials.")
+    return get_client_detail(clean_site_id)
+
+
+def update_client_session_token_limit(site_id: str, limit: int) -> dict[str, Any]:
+    """Allow a client panel to change the per-shopper/session token limit."""
+    clean_site_id = _safe_site_id(site_id)
+    clean_limit = max(1, min(int(limit), 1_000_000))
+    init_admin_schema()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE hub_clients
+            SET session_token_limit = %s,
+                updated_at = now()
+            WHERE site_id = %s AND status <> %s
+            """,
+            (clean_limit, clean_site_id, CLIENT_STATUS_DELETED),
+        )
+        conn.commit()
+    if cursor.rowcount <= 0:
+        raise LookupError(f"Client {clean_site_id} was not found.")
+    return get_client_detail(clean_site_id)
 
 
 def is_client_widget_enabled(site_id: str) -> bool:
@@ -669,8 +718,9 @@ def script_tag_for_site(site_id: str) -> str:
 
 def _client_summary(client: dict[str, Any]) -> dict[str, Any]:
     site_id = client["site_id"]
+    public_client = {key: value for key, value in client.items() if key != "panel_password_hash"}
     return {
-        **client,
+        **public_client,
         "script_tag": script_tag_for_site(site_id),
         "catalog": _safe_catalog_summary(site_id),
         "usage": _usage_summary(site_id),
@@ -1232,6 +1282,58 @@ def _first_text(*values: str) -> str:
         if clean_value:
             return clean_value
     return ""
+
+
+def _set_default_panel_password(site_id: str) -> str:
+    password_hash = _hash_panel_password(DEFAULT_CLIENT_PANEL_PASSWORD)
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE hub_clients
+            SET panel_password_hash = %s,
+                updated_at = now()
+            WHERE site_id = %s
+            """,
+            (password_hash, _safe_site_id(site_id)),
+        )
+        conn.commit()
+    return password_hash
+
+
+def _hash_panel_password(password: str) -> str:
+    clean_password = str(password or "")
+    if len(clean_password) < 6:
+        raise ValueError("Client panel password must be at least 6 characters.")
+    salt = secrets.token_bytes(PANEL_PASSWORD_SALT_BYTES)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        clean_password.encode("utf-8"),
+        salt,
+        PANEL_PASSWORD_ITERATIONS,
+    )
+    return f"pbkdf2_sha256${PANEL_PASSWORD_ITERATIONS}${_b64(salt)}${_b64(digest)}"
+
+
+def _verify_panel_password(password: str, password_hash: str) -> bool:
+    try:
+        algorithm, iterations, salt_text, digest_text = str(password_hash or "").split("$", 3)
+    except ValueError:
+        return False
+    if algorithm != "pbkdf2_sha256":
+        return False
+    salt = _unb64(salt_text)
+    expected = _unb64(digest_text)
+    actual = hashlib.pbkdf2_hmac("sha256", str(password or "").encode("utf-8"), salt, int(iterations))
+    return hmac.compare_digest(actual, expected)
+
+
+def _b64(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _unb64(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(value + padding)
 
 
 def _connect() -> psycopg.Connection:

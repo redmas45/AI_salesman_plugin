@@ -9,6 +9,25 @@ import type {
 
 const TOKEN_STORAGE_KEY = 'aiHubCrmAdminToken';
 
+export class UnauthorizedError extends Error {
+  constructor(message = 'CRM admin token is required.') {
+    super(message);
+    this.name = 'UnauthorizedError';
+  }
+}
+
+export function getStoredAdminToken() {
+  return localStorage.getItem(TOKEN_STORAGE_KEY) ?? '';
+}
+
+export function setStoredAdminToken(token: string) {
+  localStorage.setItem(TOKEN_STORAGE_KEY, token.trim());
+}
+
+export function clearStoredAdminToken() {
+  localStorage.removeItem(TOKEN_STORAGE_KEY);
+}
+
 function appPrefix() {
   const marker = '/crm';
   const index = window.location.pathname.indexOf(marker);
@@ -26,7 +45,7 @@ async function responseMessage(response: Response) {
   }
 }
 
-async function request<T>(path: string, options: RequestInit = {}, retryAfterToken = true): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set('Accept', 'application/json');
   if (options.body) headers.set('Content-Type', 'application/json');
@@ -35,12 +54,7 @@ async function request<T>(path: string, options: RequestInit = {}, retryAfterTok
   if (token) headers.set('x-crm-admin-token', token);
 
   const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
-  if (response.status === 401 && retryAfterToken) {
-    const nextToken = window.prompt('CRM admin token');
-    if (!nextToken) throw new Error('CRM admin token is required.');
-    localStorage.setItem(TOKEN_STORAGE_KEY, nextToken.trim());
-    return request<T>(path, options, false);
-  }
+  if (response.status === 401) throw new UnauthorizedError(await responseMessage(response));
   if (!response.ok) throw new Error(await responseMessage(response));
   return response.json() as Promise<T>;
 }

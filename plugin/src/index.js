@@ -225,7 +225,6 @@ async function syncWidgetAvailability() {
 
 function startWidgetAvailabilityLoop() {
   if (statusPollTimer) return;
-  boot();
   syncWidgetAvailability();
   statusPollTimer = window.setInterval(syncWidgetAvailability, WIDGET_STATUS_POLL_INTERVAL_MS);
 }

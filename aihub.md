@@ -12,7 +12,7 @@ AI Hub CRM:      http://143.198.5.97/aihub/crm/
 Both public apps share port `80`. AI-KART is on the root `/`, and AI Hub is separated by the `/aihub/` URL path.
 DNS is optional for this setup because both apps are accessed by `IP`.
 
-If you are starting from an empty server, deploy AI Hub first through step 8. Then deploy AI-KART from `aikart.md`. After AI-KART works, come back here and run steps 9 through 11.
+If you are starting from an empty server, deploy AI Hub first through step 8. Then deploy AI-KART from `/var/www/Vercel_website/aikart.md`. After AI-KART works, come back here and run steps 9 through 11.
 
 If you are updating an existing server to L7, still run step 4. L7 builds the React CRM inside the Hub Docker image, so a plain container restart can leave the old CRM frontend running.
 
@@ -44,6 +44,7 @@ DEFAULT_SITE_ID=ai_kart_main
 AI_DEFAULT_SITE_ID=ai_kart_main
 
 CLIENT_STORE_URL=http://143.198.5.97/
+CURRENT_URL=http://143.198.5.97/
 
 CRAWL_ON_STARTUP=true
 CRAWL_PERIODIC_ENABLED=true
@@ -51,10 +52,12 @@ CRAWL_PERIODIC_ENABLED=true
 OPENAI_API_KEY=your_openai_key
 GROQ_API_KEY=your_groq_key
 CRM_ADMIN_TOKEN=choose_strong_token
+CLIENT_PANEL_DEFAULT_PASSWORD=choose_client_panel_password
+CLIENT_PANEL_TOKEN_SECRET=choose_client_panel_token_secret
 EOF
 ```
 
-Now edit only these three values:
+Now edit only these five values:
 
 ```bash
 nano /var/www/AI_salesman_plugin/.env
@@ -66,12 +69,15 @@ Replace:
 your_openai_key
 your_groq_key
 choose_strong_token
+choose_client_panel_password
+choose_client_panel_token_secret
 ```
 
-Do not change `CLIENT_STORE_URL` right now. It should stay:
+Do not change `CLIENT_STORE_URL` or `CURRENT_URL` right now. They should stay:
 
 ```text
 CLIENT_STORE_URL=http://143.198.5.97/
+CURRENT_URL=http://143.198.5.97/
 ```
 
 ## 3. Set Docker To Local Port `5176`
@@ -132,7 +138,7 @@ Expected:
 ## 6. Create Shared Nginx Path Config
 
 This configuration serves the standalone AI-KART on the root path `/` and AI Hub on `/aihub/`. 
-*(Note: If you already ran this from the `aikart.md` guide, you do not need to run it again.)*
+*(Note: If you already ran this from the AI-KART website deployment guide, you do not need to run it again.)*
 
 Copy this:
 

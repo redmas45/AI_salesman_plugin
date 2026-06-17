@@ -45,6 +45,9 @@ function resolveApiUrl(url) {
 }
 
 function resolveSessionId(siteId) {
+  const configuredSessionId = clean(window.ShopBotConfig?.sessionId);
+  if (configuredSessionId) return configuredSessionId.slice(0, 120);
+
   const key = `${SESSION_STORAGE_PREFIX}${siteId}`;
   try {
     const currentValue = window.sessionStorage.getItem(key);
@@ -67,7 +70,9 @@ const siteId = resolveSiteId(srcUrl);
 
 export const config = {
   siteId,
-  sessionId: resolveSessionId(siteId),
+  get sessionId() {
+    return resolveSessionId(siteId);
+  },
   apiUrl: resolveApiUrl(srcUrl),
   useWebSocket: clean(currentScript?.getAttribute("data-use-websocket")).toLowerCase() !== "false",
   autoGreet: clean(currentScript?.getAttribute("data-auto-greet")).toLowerCase() !== "false",
