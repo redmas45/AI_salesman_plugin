@@ -14,6 +14,8 @@ DNS is optional for this setup because both apps are accessed by `IP`.
 
 If you are starting from an empty server, deploy AI Hub first through step 8. Then deploy AI-KART from `aikart.md`. After AI-KART works, come back here and run steps 9 through 11.
 
+If you are updating an existing server to L7, still run step 4. L7 builds the React CRM inside the Hub Docker image, so a plain container restart can leave the old CRM frontend running.
+
 ## 1. Fix Permissions
 
 Copy this:
@@ -92,17 +94,26 @@ sudo docker compose stop nginx || true
 sudo docker compose rm -f nginx || true
 ```
 
-## 4. Start AI Hub
+## 4. Pull Latest Code And Start AI Hub
 
 Copy this:
 
 ```bash
 cd /var/www/AI_salesman_plugin
+git pull
 sudo docker compose up -d --build --force-recreate db app
 sudo docker compose ps
 ```
 
 You should see `db` and `app` running.
+
+Use `--build --force-recreate` here. Do not only run `docker compose restart`, because the CRM bundle and crawler code are built into the app image.
+
+This guide uses system Nginx, so only `db` and `app` are recreated. If your server is still using the old Docker Nginx container, use this instead:
+
+```bash
+sudo docker compose up -d --build --force-recreate db app nginx
+```
 
 ## 5. Test Local AI Hub
 
@@ -207,6 +218,7 @@ Copy this:
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:5176/health
 curl -s -o /dev/null -w "%{http_code}\n" http://143.198.5.97/aihub/health
+curl -s -o /dev/null -w "%{http_code}\n" http://143.198.5.97/aihub/crm/
 ```
 
 Expected:
@@ -214,11 +226,14 @@ Expected:
 ```text
 200
 200
+200
 ```
 
 ## 9. Crawl AI-KART
 
 Because AI-KART is now served on the root path `/` instead of `/aikart/`, use the root URL.
+
+The Hub is configured to crawl once during startup and then every 120 seconds. Run this manual crawl after AI-KART is reachable anyway, because it proves the live website catalog is populated before testing customer questions.
 
 Copy this:
 
