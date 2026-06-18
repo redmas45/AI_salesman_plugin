@@ -213,6 +213,69 @@ async def crm_update_settings(req: SettingsUpdateRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to update settings.") from exc
 
 
+# ── AI Readiness Scanner endpoints ──────────────────────────────────────────
+
+
+@router.post("/scan/{site_id}")
+async def crm_scan_site(site_id: str) -> dict[str, Any]:
+    """Run a readiness scan for a client and persist the report."""
+    try:
+        client = admin_db.get_client_detail(site_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        from agent.scanner import scan_site
+        report = await scan_site(
+            client["store_url"],
+            site_id,
+            adapter_name=str(client.get("adapter_name") or ""),
+        )
+        report_dict = report.to_dict()
+        admin_db.save_readiness_report(site_id, report_dict)
+        return {"report": report_dict}
+    except Exception as exc:
+        logger.error("Readiness scan failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Readiness scan failed.") from exc
+
+
+@router.get("/scan/{site_id}")
+async def crm_get_scan(site_id: str) -> dict[str, Any]:
+    """Return the saved readiness report for a client."""
+    report = admin_db.get_readiness_report(site_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="No readiness report found.")
+    return {"report": report}
+
+
+# ── Priority Crawler Report endpoints ───────────────────────────────────────
+
+
+@router.get("/crawl-report/{site_id}")
+async def crm_crawl_report(site_id: str) -> dict[str, Any]:
+    """Return the latest crawl coverage report for a client."""
+    report = admin_db.get_latest_crawl_report(site_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="No crawl report found.")
+    return {"report": report}
+
+
+# ── Runtime Capability Engine endpoints ─────────────────────────────────────
+
+
+@router.get("/capabilities/{site_id}")
+async def crm_capabilities(site_id: str) -> dict[str, Any]:
+    """Return allowed actions and readiness summary for a client."""
+    try:
+        from agent.capabilities import get_allowed_actions, capability_summary
+        allowed = get_allowed_actions(site_id)
+        summary = capability_summary(site_id)
+        return {"site_id": site_id, "allowed_actions": sorted(allowed), **summary}
+    except Exception as exc:
+        logger.error("Capabilities lookup failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Capabilities lookup failed.") from exc
+
+
 def _run_client_crawl(site_id: str, store_url: str) -> None:
     """Execute a client crawl and persist the outcome for CRM status."""
     try:

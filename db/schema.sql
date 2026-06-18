@@ -76,3 +76,33 @@ CREATE TABLE IF NOT EXISTS user_profile (
     payment_method  TEXT,
     preferences     TEXT
 );
+
+-- Phase 2: Product Variants
+CREATE TABLE IF NOT EXISTS product_variants (
+    id              BIGINT PRIMARY KEY,
+    product_id      BIGINT NOT NULL,
+    sku             TEXT,
+    title           TEXT NOT NULL,
+    option1_name    TEXT,
+    option1_value   TEXT,
+    option2_name    TEXT,
+    option2_value   TEXT,
+    option3_name    TEXT,
+    option3_value   TEXT,
+    price           REAL NOT NULL,
+    compare_at_price REAL,
+    stock           INTEGER DEFAULT 0,
+    available       BOOLEAN DEFAULT true,
+    image_url       TEXT,
+    cart_id         TEXT,
+    position        INTEGER DEFAULT 0,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_variants_product ON product_variants(product_id);
+CREATE INDEX IF NOT EXISTS idx_product_variants_sku ON product_variants(sku);
+
+-- Phase 3: Crawl Report storage
+ALTER TABLE catalog_sync_runs ADD COLUMN IF NOT EXISTS report_json TEXT NOT NULL DEFAULT '';
+

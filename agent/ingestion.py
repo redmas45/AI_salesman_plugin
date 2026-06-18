@@ -15,14 +15,17 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from collections import deque
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from html.parser import HTMLParser
+from time import monotonic
 from typing import Any
 from urllib.parse import urldefrag, urljoin, urlparse
 
 import httpx
 
 from agent.rag import _embed, _product_to_text
-from db.database import get_db, init_tenant_schema
+from db.database import get_db, init_tenant_schema, upsert_variants
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,9 @@ CATALOG_ENDPOINT_PATHS = (
     "/wp-json/wc/store/products?per_page=100",
     "/wp-json/wc/store/v1/products?per_page=100",
 )
+SHOPIFY_CATALOG_PAGE_LIMIT = 250
+SHOPIFY_CATALOG_MAX_PAGES = 20
+WOO_CATALOG_MAX_PAGES = 20
 HIGH_VALUE_URL_KEYWORDS = (
     "product",
     "products",
@@ -133,6 +139,31 @@ SKIP_URL_EXTENSIONS = (
 )
 
 
+@dataclass
+class CrawlReport:
+    site_id: str
+    site_url: str
+    source_type: str
+    pages_visited: int
+    pages_failed: int
+    pages_blocked: int
+    product_count: int
+    variant_count: int
+    category_count: int
+    failed_urls: list[str] = field(default_factory=list)
+    blocked_urls: list[str] = field(default_factory=list)
+    coverage_score: float = 0.0
+    duration_ms: float = 0.0
+    stopped_by_limit: bool = False
+    created_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["coverage_score"] = round(float(self.coverage_score), 2)
+        data["duration_ms"] = round(float(self.duration_ms), 1)
+        return data
+
+
 def sanitize_site_id(raw: str) -> str:
     text = (raw or "").strip().lower()
     text = re.sub(r"[^a-z0-9]", "_", text)
@@ -193,6 +224,16 @@ def _to_float(value: Any) -> float:
     except ValueError:
         match = re.search(r"([0-9]+(?:\.[0-9]+)?)", text)
         return float(match.group(1)) if match else 0.0
+
+
+def _to_positive_int_id(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not re.fullmatch(r"\d+", text):
+        return None
+    parsed = int(text)
+    return parsed if parsed > 0 else None
 
 
 def _parse_price(text: str) -> float:
@@ -478,8 +519,7 @@ def _normalize_shopify_product(raw: dict[str, Any], api_url: str) -> dict[str, A
         stock = 100 if available is not False else 0
 
     variant_id = selected_variant.get("id")
-    if variant_id not in (None, "") and _to_float(variant_id) <= 0:
-        variant_id = None
+    variant_id = _to_positive_int_id(variant_id)
 
     return _normalize_product_row(
         {
@@ -565,11 +605,66 @@ def _normalize_woocommerce_product(raw: dict[str, Any], api_url: str) -> dict[st
     )
 
 
+def _extract_platform_variants(
+    raw: dict[str, Any],
+    product: dict[str, Any],
+    source_url: str,
+) -> list[dict[str, Any]]:
+    """Extract variants with platform adapters while keeping ingestion deterministic."""
+    try:
+        product_id = int(product["id"])
+        if _looks_like_shopify_product(raw):
+            from agent.adapters.shopify import ShopifyAdapter
+
+            return ShopifyAdapter().extract_variants(raw, product_id, source_url)
+        if _looks_like_woocommerce_product(raw):
+            from agent.adapters.woocommerce import WooCommerceAdapter
+
+            return WooCommerceAdapter().extract_variants(raw, product_id, source_url)
+    except (ImportError, TypeError, ValueError, KeyError) as exc:
+        logger.info("Variant extraction skipped for %s: %s", source_url, exc)
+    return []
+
+
+def _normalize_with_platform_adapter(
+    raw: dict[str, Any],
+    source_url: str,
+) -> dict[str, Any] | None:
+    """Normalize known platform products through their adapter modules."""
+    try:
+        if _looks_like_shopify_product(raw):
+            from agent.adapters.shopify import ShopifyAdapter
+
+            return ShopifyAdapter().normalize_product(raw, source_url)
+        if _looks_like_woocommerce_product(raw):
+            from agent.adapters.woocommerce import WooCommerceAdapter
+
+            return WooCommerceAdapter().normalize_product(raw, source_url)
+    except (ImportError, TypeError, ValueError, KeyError) as exc:
+        logger.info("Platform normalization skipped for %s: %s", source_url, exc)
+    return None
+
+
+def _with_platform_variants(
+    raw: dict[str, Any],
+    product: dict[str, Any] | None,
+    source_url: str,
+) -> dict[str, Any] | None:
+    """Attach variant rows to a normalized product when source data has them."""
+    if not product:
+        return None
+    variants = _extract_platform_variants(raw, product, source_url)
+    if variants:
+        product = dict(product)
+        product["variants"] = variants
+    return product
+
+
 def _normalize_embedded_json_product(raw: dict[str, Any], source_url: str) -> dict[str, Any] | None:
     if _looks_like_shopify_product(raw):
-        return _normalize_shopify_product(raw, source_url)
+        return _with_platform_variants(raw, _normalize_with_platform_adapter(raw, source_url), source_url)
     if _looks_like_woocommerce_product(raw):
-        return _normalize_woocommerce_product(raw, source_url)
+        return _with_platform_variants(raw, _normalize_with_platform_adapter(raw, source_url), source_url)
 
     name = _clean_text(_first(raw.get("name"), raw.get("title"), raw.get("product_name"), default=""))
     if not name or len(name) > 180:
@@ -753,8 +848,7 @@ def _normalize_product_row(row: dict[str, Any], fallback_category: str, source_u
         except (TypeError, ValueError):
             product_id = _stable_id(source_url, str(raw_id))
 
-    variant = row.get("variant_id")
-    variant_id = int(_to_float(variant)) if variant not in (None, "") else None
+    variant_id = _to_positive_int_id(row.get("variant_id"))
     color = _first(row.get("color"), default=None)
     size_raw = _first(row.get("size_options"), row.get("sizes"), default="[]")
     size_options = (
@@ -860,9 +954,17 @@ def _normalize_catalog_payload(payload: Any, api_url: str) -> list[dict[str, Any
         if not isinstance(raw, dict):
             continue
         if _looks_like_shopify_product(raw):
-            normalized = _normalize_shopify_product(raw, api_url)
+            normalized = _with_platform_variants(
+                raw,
+                _normalize_with_platform_adapter(raw, api_url),
+                api_url,
+            )
         elif _looks_like_woocommerce_product(raw):
-            normalized = _normalize_woocommerce_product(raw, api_url)
+            normalized = _with_platform_variants(
+                raw,
+                _normalize_with_platform_adapter(raw, api_url),
+                api_url,
+            )
         else:
             normalized = _normalize_api_catalog_product(raw, api_url)
         if normalized:
@@ -875,23 +977,57 @@ async def _fetch_api_catalog_products(seed_url: str, timeout: int) -> list[dict[
     """Fetch common public commerce catalog endpoints before rendering HTML."""
     async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
         for api_url in _catalog_endpoints_for(seed_url):
-            try:
-                response = await client.get(api_url, headers={"Accept": "application/json"})
-                if response.status_code in {401, 403, 404, 405}:
-                    continue
-                response.raise_for_status()
-                payload = response.json()
-            except Exception as exc:
-                logger.info("No API catalog available at %s: %s", api_url, exc)
-                continue
-
-            deduped = _normalize_catalog_payload(payload, api_url)
+            deduped = await _fetch_catalog_endpoint_pages(client, api_url)
             if deduped:
                 logger.info("API catalog at %s returned %d products.", api_url, len(deduped))
                 return deduped
             logger.warning("API catalog at %s did not contain a usable product list.", api_url)
 
     return []
+
+
+async def _fetch_catalog_endpoint_pages(
+    client: httpx.AsyncClient,
+    api_url: str,
+) -> list[dict[str, Any]]:
+    """Fetch one catalog endpoint, including standard Shopify/Woo pagination."""
+    products: list[dict[str, Any]] = []
+    for page_url in _catalog_page_urls(api_url):
+        try:
+            response = await client.get(page_url, headers={"Accept": "application/json"})
+            if response.status_code in {401, 403, 404, 405}:
+                break
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            logger.info("No API catalog available at %s: %s", page_url, exc)
+            break
+
+        page_products = _normalize_catalog_payload(payload, page_url)
+        if not page_products:
+            break
+        products.extend(page_products)
+
+        if len(_catalog_page_urls(api_url)) == 1:
+            break
+
+    return _dedupe_products(products)
+
+
+def _catalog_page_urls(api_url: str) -> list[str]:
+    if "/collections/all/products.json" in api_url or api_url.endswith("/products.json"):
+        separator = "&" if "?" in api_url else "?"
+        return [
+            f"{api_url}{separator}limit={SHOPIFY_CATALOG_PAGE_LIMIT}&page={page}"
+            for page in range(1, SHOPIFY_CATALOG_MAX_PAGES + 1)
+        ]
+    if "/wp-json/wc/store" in api_url and "/products" in api_url:
+        separator = "&" if "?" in api_url else "?"
+        return [
+            f"{api_url}{separator}page={page}"
+            for page in range(1, WOO_CATALOG_MAX_PAGES + 1)
+        ]
+    return [api_url]
 
 
 class _HtmlHarvest(HTMLParser):
@@ -1102,6 +1238,8 @@ def _merge_product_candidates(existing: dict[str, Any], incoming: dict[str, Any]
         merged["category"] = other["category"]
     if len(_clean_text(other.get("description"))) > len(_clean_text(merged.get("description"))):
         merged["description"] = other["description"]
+    if not merged.get("variants") and other.get("variants"):
+        merged["variants"] = other["variants"]
 
     preferred_name = _clean_text(merged.get("name"))
     other_name = _clean_text(other.get("name"))
@@ -1363,6 +1501,7 @@ def _persist_catalog(
     products: list[dict[str, Any]],
     reconcile_missing: bool,
     source_name: str,
+    crawl_report: dict[str, Any] | None = None,
 ) -> int:
     init_tenant_schema(site_id)
 
@@ -1375,6 +1514,7 @@ def _persist_catalog(
     changed = 0
     deactivated = 0
     deactivated_names: list[str] = []
+    variant_batches: list[tuple[int, list[dict[str, Any]]]] = []
     with get_db(site_id) as conn:
         for product in products:
             product_id = int(product["id"])
@@ -1490,6 +1630,9 @@ def _persist_catalog(
             if row:
                 changed += 1
                 changed_names.append(product["name"])
+            variants = product.get("variants")
+            if isinstance(variants, list) and variants:
+                variant_batches.append((product_id, variants))
 
         if reconcile_missing and incoming_ids:
             conn.execute(
@@ -1517,15 +1660,26 @@ def _persist_catalog(
             deactivated = len(deactivated_rows)
             deactivated_names = [r["name"] for r in deactivated_rows]
 
+    variant_count = 0
+    for product_id, variants in variant_batches:
+        variant_count += upsert_variants(site_id, product_id, variants)
+
     vectorized = _vectorize(site_id)
     with get_db(site_id) as conn:
         conn.execute(
             """
             INSERT INTO catalog_sync_runs
-              (source_name, source_count, changed_count, deactivated_count, vectorized_count)
-            VALUES (%s, %s, %s, %s, %s)
+              (source_name, source_count, changed_count, deactivated_count, vectorized_count, report_json)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
-            (source_name, len(incoming_ids), changed, deactivated, vectorized),
+            (
+                source_name,
+                len(incoming_ids),
+                changed,
+                deactivated,
+                vectorized,
+                json.dumps(crawl_report or {}, ensure_ascii=False),
+            ),
         )
     logger.info(
         "Catalog sync for %s/%s: source=%s changed=%s deactivated=%s vectorized=%s",
@@ -1538,13 +1692,88 @@ def _persist_catalog(
     )
     print(
         f"[{start_timestamp}] Catalog sync ({source_name}): {len(incoming_ids)} source products, "
-        f"{changed} changed/new, {deactivated} deactivated, {vectorized} vectorized"
+        f"{changed} changed/new, {deactivated} deactivated, {variant_count} variants, {vectorized} vectorized"
     )
     if changed_names:
         print(f"  -> Added/Changed: {', '.join(changed_names)}")
     if deactivated_names:
         print(f"  -> Deactivated/Removed: {', '.join(deactivated_names)}")
     return changed
+
+
+def _count_product_variants(products: list[dict[str, Any]]) -> int:
+    return sum(
+        len(product.get("variants") or [])
+        for product in products
+        if isinstance(product.get("variants"), list)
+    )
+
+
+def _coverage_score(
+    *,
+    stopped_by_limit: bool,
+    pages_visited: int,
+    pages_failed: int,
+    product_count: int,
+    variant_count: int,
+    source_type: str,
+) -> float:
+    score = 1.0
+    if product_count <= 0:
+        score -= 0.55
+    if stopped_by_limit:
+        score -= 0.2
+    total_pages = max(1, pages_visited + pages_failed)
+    score -= min(0.25, (pages_failed / total_pages) * 0.25)
+    if source_type == "api_catalog" and variant_count <= 0:
+        score -= 0.1
+    return max(0.0, min(1.0, score))
+
+
+def _build_crawl_report(
+    *,
+    site_id: str,
+    site_url: str,
+    source_type: str,
+    pages_visited: int,
+    pages_failed: int,
+    pages_blocked: int,
+    products: list[dict[str, Any]],
+    failed_urls: list[str],
+    blocked_urls: list[str],
+    stopped_by_limit: bool,
+    duration_ms: float,
+) -> CrawlReport:
+    variant_count = _count_product_variants(products)
+    category_count = len({
+        _clean_text(product.get("category"))
+        for product in products
+        if _clean_text(product.get("category"))
+    })
+    return CrawlReport(
+        site_id=site_id,
+        site_url=site_url,
+        source_type=source_type,
+        pages_visited=pages_visited,
+        pages_failed=pages_failed,
+        pages_blocked=pages_blocked,
+        product_count=len(products),
+        variant_count=variant_count,
+        category_count=category_count,
+        failed_urls=failed_urls[:50],
+        blocked_urls=blocked_urls[:50],
+        coverage_score=_coverage_score(
+            stopped_by_limit=stopped_by_limit,
+            pages_visited=pages_visited,
+            pages_failed=pages_failed,
+            product_count=len(products),
+            variant_count=variant_count,
+            source_type=source_type,
+        ),
+        duration_ms=duration_ms,
+        stopped_by_limit=stopped_by_limit,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
 
 async def async_web_crawl(
     start_url: str,
@@ -1557,6 +1786,7 @@ async def async_web_crawl(
     timeout: int = 12,
 ) -> str:
     from crawl4ai import AsyncWebCrawler
+    crawl_started = monotonic()
     if not start_url:
         raise ValueError("Start URL is required.")
     if max_pages <= 0 or max_depth < 0:
@@ -1574,6 +1804,10 @@ async def async_web_crawl(
     api_catalog_products = await _fetch_api_catalog_products(seed, timeout)
     extracted_products: list[dict[str, Any]] = list(api_catalog_products)
     pages_seen = 0
+    pages_failed = 0
+    pages_blocked = 0
+    failed_urls: list[str] = []
+    blocked_urls: list[str] = []
     product_links: set[str] = set()
     stopped_by_limit = False
 
@@ -1596,8 +1830,14 @@ async def async_web_crawl(
                     result = await crawler.arun(url=page_url)
                 except Exception as exc:
                     logger.info("Crawl failed for %s: %s", page_url, exc)
+                    pages_failed += 1
+                    if len(failed_urls) < 50:
+                        failed_urls.append(page_url)
                     continue
                 if not result.success:
+                    pages_failed += 1
+                    if len(failed_urls) < 50:
+                        failed_urls.append(page_url)
                     continue
 
                 text = result.html
@@ -1612,6 +1852,9 @@ async def async_web_crawl(
                 for link in parser.links:
                     next_url = urldefrag(urljoin(page_url, link))[0]
                     if not _is_allowed_crawl_url(next_url, allowed_host):
+                        pages_blocked += 1
+                        if len(blocked_urls) < 50:
+                            blocked_urls.append(next_url)
                         continue
                     if any(token in next_url.lower() for token in PRODUCT_URL_KEYWORDS):
                         product_links.add(next_url)
@@ -1634,6 +1877,20 @@ async def async_web_crawl(
 
     deduped_products = _dedupe_products(extracted_products)
     source_label = "api catalog" if api_catalog_products else "advanced html crawl"
+    source_type = "api_catalog" if api_catalog_products else "html_crawl"
+    report = _build_crawl_report(
+        site_id=resolved_site_id,
+        site_url=seed,
+        source_type=source_type,
+        pages_visited=pages_seen,
+        pages_failed=pages_failed,
+        pages_blocked=pages_blocked,
+        products=deduped_products,
+        failed_urls=failed_urls,
+        blocked_urls=blocked_urls,
+        stopped_by_limit=stopped_by_limit,
+        duration_ms=(monotonic() - crawl_started) * 1000,
+    )
     print(
         f"Crawler summary ({source_label}): visited {pages_seen} pages, "
         f"extracted {len(extracted_products)} raw candidates, deduped to {len(deduped_products)}."
@@ -1654,6 +1911,7 @@ async def async_web_crawl(
         deduped_products,
         reconcile_missing=reconcile_missing,
         source_name=source_name,
+        crawl_report=report.to_dict(),
     )
     return resolved_site_id
 

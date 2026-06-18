@@ -27,6 +27,29 @@ function navigationTarget(page) {
   return path ? `/${path}/` : "/";
 }
 
+function positiveIdentifier(value) {
+  const text = String(value || "").trim();
+  return /^\d+$/.test(text) ? text : "";
+}
+
+function actionQuantity(params, fallback = 1) {
+  const quantity = Number(params?.[ACTION_PARAMS.QUANTITY]);
+  return Number.isFinite(quantity) && quantity > 0 ? Math.floor(quantity) : fallback;
+}
+
+async function postJson(path, payload) {
+  const response = await fetch(new URL(path, window.location.origin), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    credentials: "same-origin",
+  });
+  return response.ok;
+}
+
 class ProductOverlayAdapter {
   canHandle(action) {
     return action.action === ACTIONS.SHOW_PRODUCTS;
@@ -185,6 +208,116 @@ class ShopCartAdapter {
   }
 }
 
+class ShopifyNativeAdapter {
+  canHandle(action) {
+    if (!this.isShopify()) return false;
+    return (
+      action.action === ACTIONS.ADD_TO_CART ||
+      action.action === ACTIONS.CLEAR_CART ||
+      action.action === ACTIONS.CHECKOUT ||
+      action.action === ACTIONS.REMOVE_FROM_CART ||
+      action.action === ACTIONS.UPDATE_CART_QUANTITY ||
+      (action.action === ACTIONS.NAVIGATE_TO && CART_PAGE_TARGETS.has(action.parameters?.[ACTION_PARAMS.PAGE]))
+    );
+  }
+
+  isShopify() {
+    return Boolean(
+      window.Shopify ||
+        document.querySelector('meta[name="shopify-checkout-api-token"]') ||
+        document.querySelector('script[src*="cdn.shopify.com"]'),
+    );
+  }
+
+  async handle(action) {
+    const params = action.parameters || {};
+    if (action.action === ACTIONS.ADD_TO_CART) {
+      const variantId = positiveIdentifier(params.variant_id || params.cart_id || params[ACTION_PARAMS.PRODUCT_ID]);
+      if (!variantId) return false;
+      return postJson("/cart/add.js", {
+        items: [{ id: variantId, quantity: actionQuantity(params) }],
+      });
+    }
+    if (action.action === ACTIONS.REMOVE_FROM_CART) {
+      const lineId = positiveIdentifier(params.cart_id || params.variant_id || params[ACTION_PARAMS.PRODUCT_ID]);
+      if (!lineId) return false;
+      return postJson("/cart/change.js", { id: lineId, quantity: 0 });
+    }
+    if (action.action === ACTIONS.UPDATE_CART_QUANTITY) {
+      const lineId = positiveIdentifier(params.cart_id || params.variant_id || params[ACTION_PARAMS.PRODUCT_ID]);
+      if (!lineId) return false;
+      return postJson("/cart/change.js", { id: lineId, quantity: actionQuantity(params, 0) });
+    }
+    if (action.action === ACTIONS.CLEAR_CART) {
+      return postJson("/cart/clear.js", {});
+    }
+    if (action.action === ACTIONS.CHECKOUT) {
+      window.location.href = "/checkout";
+      return true;
+    }
+    if (action.action === ACTIONS.NAVIGATE_TO) {
+      window.location.href = "/cart";
+      return true;
+    }
+    return false;
+  }
+}
+
+class WooCommerceNativeAdapter {
+  canHandle(action) {
+    if (!this.isWooCommerce()) return false;
+    return (
+      action.action === ACTIONS.ADD_TO_CART ||
+      action.action === ACTIONS.CHECKOUT ||
+      action.action === ACTIONS.REMOVE_FROM_CART ||
+      action.action === ACTIONS.UPDATE_CART_QUANTITY ||
+      (action.action === ACTIONS.NAVIGATE_TO && CART_PAGE_TARGETS.has(action.parameters?.[ACTION_PARAMS.PAGE]))
+    );
+  }
+
+  isWooCommerce() {
+    return Boolean(
+      document.body?.classList?.contains("woocommerce") ||
+        window.wc_add_to_cart_params ||
+        document.querySelector('link[href*="woocommerce"], script[src*="woocommerce"]'),
+    );
+  }
+
+  async handle(action) {
+    const params = action.parameters || {};
+    if (action.action === ACTIONS.ADD_TO_CART) {
+      const productId = positiveIdentifier(params.variant_id || params.cart_id || params[ACTION_PARAMS.PRODUCT_ID]);
+      if (!productId) return false;
+      return postJson("/wp-json/wc/store/cart/add-item", {
+        id: Number(productId),
+        quantity: actionQuantity(params),
+      });
+    }
+    if (action.action === ACTIONS.REMOVE_FROM_CART) {
+      const key = String(params.cart_key || params.key || "").trim();
+      if (!key) return false;
+      return postJson("/wp-json/wc/store/cart/remove-item", { key });
+    }
+    if (action.action === ACTIONS.UPDATE_CART_QUANTITY) {
+      const key = String(params.cart_key || params.key || "").trim();
+      if (!key) return false;
+      return postJson("/wp-json/wc/store/cart/update-item", {
+        key,
+        quantity: actionQuantity(params, 0),
+      });
+    }
+    if (action.action === ACTIONS.CHECKOUT) {
+      window.location.href = "/checkout";
+      return true;
+    }
+    if (action.action === ACTIONS.NAVIGATE_TO) {
+      window.location.href = "/cart";
+      return true;
+    }
+    return false;
+  }
+}
+
 class BrowserNavigationAdapter {
   canHandle(action) {
     return action.action === ACTIONS.NAVIGATE_TO && Boolean(navigationTarget(action.parameters?.[ACTION_PARAMS.PAGE]));
@@ -231,6 +364,8 @@ const executor = new ActionExecutor([
   new ProductDetailNavigationAdapter(),
   new ShopBotConfigAdapter(),
   new ShopCartAdapter(),
+  new ShopifyNativeAdapter(),
+  new WooCommerceNativeAdapter(),
   new BrowserNavigationAdapter(),
   new EventAdapter(),
 ]);

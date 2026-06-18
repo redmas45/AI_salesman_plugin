@@ -159,3 +159,31 @@ class CartItemResponse(ProductResponse):
     cart_id: int
     quantity: int
     added_at: str
+
+
+class VariantResponse(BaseModel):
+    """Response model for product variants."""
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    product_id: str
+    sku: Optional[str] = None
+    title: str
+    option1_name: Optional[str] = None
+    option1_value: Optional[str] = None
+    option2_name: Optional[str] = None
+    option2_value: Optional[str] = None
+    option3_name: Optional[str] = None
+    option3_value: Optional[str] = None
+    price: float
+    compare_at_price: Optional[float] = None
+    stock: int = 0
+    available: bool = True
+    image_url: Optional[str] = None
+    cart_id: Optional[str] = None
+
+    @field_validator("id", "product_id", mode="before")
+    @classmethod
+    def serialize_ids_as_string(cls, value: Any) -> str:
+        return str(value)
+

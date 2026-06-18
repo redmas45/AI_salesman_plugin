@@ -22,6 +22,7 @@ GROQ_STT_MODEL: str = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
 STT_PROVIDER: str = os.getenv("STT_PROVIDER", "groq" if GROQ_API_KEY else "openai").strip().lower()
 STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "").strip()
 LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+LLM_EXTRACTOR_ENABLED: bool = _env_bool("LLM_EXTRACTOR_ENABLED", False)
 FAST_VOICE_MODE: bool = _env_bool("FAST_VOICE_MODE", True)
 _RAW_TTS_MODEL: str = os.getenv("TTS_MODEL", "tts-1")
 TTS_MODEL: str = os.getenv("FAST_TTS_MODEL", "tts-1") if FAST_VOICE_MODE else _RAW_TTS_MODEL

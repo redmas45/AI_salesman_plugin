@@ -1,9 +1,12 @@
 import type {
   AnalyticsResponse,
+  CapabilitiesSummary,
   Client,
   ConversationsResponse,
+  CrawlReport,
   CreateClientPayload,
   Overview,
+  ReadinessReport,
   SettingsResponse,
 } from './types';
 
@@ -92,6 +95,16 @@ export const crmApi = {
     request<{ status: string; message: string }>(`/clients/${encodeURIComponent(siteId)}/crawl`, {
       method: 'POST',
     }),
+  scanClient: (siteId: string) =>
+    request<{ report: ReadinessReport }>(`/scan/${encodeURIComponent(siteId)}`, {
+      method: 'POST',
+    }),
+  getScanReport: (siteId: string) =>
+    request<{ report: ReadinessReport }>(`/scan/${encodeURIComponent(siteId)}`),
+  getCapabilities: (siteId: string) =>
+    request<CapabilitiesSummary>(`/capabilities/${encodeURIComponent(siteId)}`),
+  getCrawlReport: (siteId: string) =>
+    request<{ report: CrawlReport }>(`/crawl-report/${encodeURIComponent(siteId)}`),
   updateSettings: (values: Record<string, string>) =>
     request<SettingsResponse>('/settings', {
       method: 'PATCH',

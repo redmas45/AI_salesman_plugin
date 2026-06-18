@@ -225,6 +225,7 @@ def run(
     print(f"{'=' * 60}\n")
 
     final_actions = _add_variant_ids_to_cart_actions(site_id, validated.get("ui_actions", []))
+    final_actions = _apply_capability_filter(site_id, final_actions)
     _ai_log("assistant", validated["response_text"])
     _ai_log("actions", final_actions)
 
@@ -346,6 +347,7 @@ def run_stream(
     timings["guardrail_output_ms"] = _ms(t)
 
     final_actions = _add_variant_ids_to_cart_actions(site_id, validated.get("ui_actions", []))
+    final_actions = _apply_capability_filter(site_id, final_actions)
     _ai_log("assistant", validated["response_text"])
     _ai_log("actions", final_actions)
 
@@ -602,6 +604,19 @@ def _add_variant_ids_to_cart_actions(
         if row and row["variant_id"]:
             action["params"]["variant_id"] = str(row["variant_id"])
     return actions
+
+
+def _apply_capability_filter(
+    site_id: str,
+    actions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Apply runtime capability engine to filter unsupported actions."""
+    try:
+        from agent.capabilities import filter_actions
+        return filter_actions(site_id, actions)
+    except PIPELINE_RECOVERABLE_ERRORS as exc:
+        logger.warning("PIPELINE | capability filter skipped: %s", exc)
+        return actions
 
 
 def _guardrail_audio_b64(message: str, skip_tts: bool) -> str:

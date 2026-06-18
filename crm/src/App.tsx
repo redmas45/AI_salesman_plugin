@@ -22,13 +22,16 @@ import {
 import { UnauthorizedError, clearStoredAdminToken, crmApi, getStoredAdminToken, setStoredAdminToken } from './api';
 import type {
   AnalyticsResponse,
+  CapabilitiesSummary,
   Client,
   ConversationsResponse,
+  CrawlReport,
   CreateClientPayload,
   HealthSnapshot,
   Overview,
   ProductPreview,
   RankRow,
+  ReadinessReport,
   SeriesRow,
   Setting,
   SettingsResponse,
@@ -768,8 +771,32 @@ function ClientDetailView({
   onRemoveClient: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
 }) {
+  const [capabilities, setCapabilities] = useState<CapabilitiesSummary | null>(null);
+  const [scanReport, setScanReport] = useState<ReadinessReport | null>(null);
+  const [crawlReport, setCrawlReport] = useState<CrawlReport | null>(null);
+  const [scanning, setScanning] = useState(false);
+
+  useEffect(() => {
+    crmApi.getCapabilities(client.site_id).then((res) => setCapabilities(res)).catch(() => {});
+    crmApi.getScanReport(client.site_id).then((res) => setScanReport(res.report)).catch(() => {});
+    crmApi.getCrawlReport(client.site_id).then((res) => setCrawlReport(res.report)).catch(() => {});
+  }, [client.site_id]);
+
+  async function handleRunScan() {
+    setScanning(true);
+    try {
+      const res = await crmApi.scanClient(client.site_id);
+      setScanReport(res.report);
+      crmApi.getCapabilities(client.site_id).then((r) => setCapabilities(r)).catch(() => {});
+    } catch {
+      alert("Scan failed");
+    } finally {
+      setScanning(false);
+    }
+  }
+
   return (
-    <>
+    <div className="grid gap-4">
       <section className="section-row">
         <div>
           <h2 className="text-base font-semibold">{client.name}</h2>
@@ -799,10 +826,28 @@ function ClientDetailView({
           <KeyValue label="Adapter" value={client.adapter_name} />
           <KeyValue label="Crawler" value={client.last_crawl_status || 'not_started'} />
           <KeyValue label="Last crawl" value={shortTime(client.last_crawl_at)} />
+          <div className="mt-4 pt-4 border-t border-line">
+            <Button variant="secondary" disabled={scanning} onClick={handleRunScan}>
+              {scanning ? 'Scanning...' : 'Run Readiness Scan'}
+            </Button>
+          </div>
         </Panel>
-        <Panel title="One-line client script">
-          <pre className="code-block">{client.script_tag}</pre>
-        </Panel>
+        <div className="grid gap-4">
+          <Panel title="One-line client script">
+            <pre className="code-block">{client.script_tag}</pre>
+          </Panel>
+          {capabilities && (
+            <Panel title="Capabilities">
+              <KeyValue label="Platform" value={`${capabilities.platform} (${(capabilities.platform_confidence * 100).toFixed(0)}%)`} />
+              <div className="mt-2 text-sm text-muted">Supported UI Actions:</div>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {capabilities.allowed_actions?.map((act: string) => (
+                  <span key={act} className="px-2 py-1 bg-accent/20 text-accent rounded-full text-xs font-semibold">{act}</span>
+                ))}
+              </div>
+            </Panel>
+          )}
+        </div>
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
         <Panel title="Catalog preview">
@@ -831,7 +876,24 @@ function ClientDetailView({
           </Table>
         </Panel>
       </div>
-    </>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        {scanReport && (
+          <Panel title="Readiness Scan Report">
+            <pre className="code-block text-xs" style={{ maxHeight: 300, overflow: 'auto' }}>
+              {JSON.stringify(scanReport, null, 2)}
+            </pre>
+          </Panel>
+        )}
+        {crawlReport && (
+          <Panel title="Priority Crawl Report">
+            <pre className="code-block text-xs" style={{ maxHeight: 300, overflow: 'auto' }}>
+              {JSON.stringify(crawlReport, null, 2)}
+            </pre>
+          </Panel>
+        )}
+      </div>
+    </div>
   );
 }
 

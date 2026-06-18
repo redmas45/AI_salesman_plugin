@@ -56,6 +56,7 @@ from api.models import (
     HealthResponse,
     ProductResponse,
     ShopResponse,
+    VariantResponse,
 )
 from db.database import (
     InvalidProductIdError,
@@ -68,6 +69,7 @@ from db.database import (
     coerce_product_id,
     get_all_products,
     get_cart_items,
+    get_product_variants,
     get_user_profile,
     tenant_catalog_preview,
     tenant_catalog_stats,
@@ -784,6 +786,20 @@ async def list_products_by_ids(ids: str, site_id: str = config.DEFAULT_SITE_ID) 
     except psycopg.Error as exc:
         logger.error("GET /v1/products/by-ids failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to fetch products by IDs.")
+
+
+@app.get("/v1/products/{product_id}/variants", response_model=list[VariantResponse], tags=["Products"])
+async def list_product_variants(
+    product_id: int,
+    site_id: str = config.DEFAULT_SITE_ID,
+) -> list[VariantResponse]:
+    """Return all known variants for one product."""
+    try:
+        variants = get_product_variants(site_id, product_id)
+        return [VariantResponse(**variant) for variant in variants]
+    except psycopg.Error as exc:
+        logger.error("GET /v1/products/{product_id}/variants failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to fetch product variants.")
 
 
 @app.get("/v1/categories", tags=["Products"])
