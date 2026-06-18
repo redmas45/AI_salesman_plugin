@@ -174,6 +174,16 @@ It is fine if this says the container was stopped or removed.
 
 Use a fresh app image. Do not use only `docker compose restart` after CRM, analytics, crawler, settings, widget, or API changes.
 
+If the build fails with `no space left on device`, run these Docker cleanup commands first:
+
+```bash
+sudo docker system df
+sudo docker builder prune -af
+sudo docker system prune -af
+```
+
+Do not run `docker system prune --volumes` on this server unless the database volume has been backed up and you intentionally want to remove unused Docker volumes.
+
 ```bash
 cd /var/www/AI_salesman_plugin
 sudo docker compose build --no-cache app
