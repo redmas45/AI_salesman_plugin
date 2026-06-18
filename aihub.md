@@ -9,6 +9,7 @@ AI Hub public:   http://143.198.5.97/aihub/
 AI Hub CRM:      http://143.198.5.97/aihub/crm/
 Client Panel:    http://143.198.5.97/client-panel/ai_kart
 Project:         /var/www/AI_salesman_plugin
+Shared venv:     /Data/www/aikartvenv
 ```
 
 Public routing is owned by the shared Nginx config in `/var/www/Vercel_website/aikart.md`:
@@ -23,6 +24,7 @@ Public routing is owned by the shared Nginx config in `/var/www/Vercel_website/a
 ## Rules
 
 - AI Hub runs only Docker Compose `db` and `app`.
+- The shared host Python venv is `/Data/www/aikartvenv`. AI Hub runtime still runs inside Docker; the host venv is for server-side helper commands and future shared Python work.
 - Public access comes through AI-KART's system Nginx, not Docker Nginx.
 - `.env`, local data, caches, docs, and deploy backups are ignored runtime files.
 - The deploy command below stashes tracked server edits before pulling. It does not stash ignored runtime files.
@@ -42,6 +44,19 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   git stash push -m "pre-aihub-deploy-$(date +%Y%m%d-%H%M%S)"
 fi
 git pull --ff-only
+
+echo "== shared host python venv =="
+sudo mkdir -p /Data/www
+sudo chown "$(whoami):$(whoami)" /Data/www
+if [ ! -x /Data/www/aikartvenv/bin/python ]; then
+  python3 -m venv /Data/www/aikartvenv
+fi
+if [ -e /Data/www/aikartvenv ] && [ "$(stat -c '%u' /Data/www/aikartvenv)" != "$(id -u)" ]; then
+  sudo chown -R "$(whoami):$(whoami)" /Data/www/aikartvenv
+fi
+. /Data/www/aikartvenv/bin/activate
+which python
+python -m pip install --upgrade pip
 
 echo "== ensure .env exists =="
 if [ ! -f .env ]; then
@@ -124,6 +139,7 @@ If local `127.0.0.1:5176` works but public `/aihub/` fails, apply `/var/www/Verc
 ## Crawl AI-KART
 
 Run this after AI-KART is public and the `ai_kart` client exists in CRM.
+This `python` runs inside the AI Hub Docker container, not in the host `/Data/www/aikartvenv` venv.
 
 ```bash
 cd /var/www/AI_salesman_plugin
