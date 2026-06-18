@@ -4,6 +4,24 @@ AI Salesman Hub is the backend, CRM, crawler/RAG pipeline, voice pipeline, and h
 
 The client website gets one script tag. The Hub owns the AI pipeline, catalog ingestion, analytics, hosted widget, and platform/site adapters.
 
+## Current Milestone
+
+**L8** is the current deployment checkpoint.
+
+- Git sync comment: `L 8`
+- Date: 2026-06-18
+- Meaning: public path-routed deployment is the active baseline. AI Hub runs as Docker `db` + `app` only, served publicly through shared system Nginx at `/aihub/`.
+
+L8 includes:
+
+- `run.py`, local Caddy, local HTTPS helper scripts, and Docker Nginx are removed.
+- `ai_kart` is the active AI-KART tenant ID.
+- AI Hub defaults to `public-ip` and `http://143.198.5.97/aihub`.
+- CRM client detail is tabbed and less cramped.
+- Client Panel is redesigned into tabbed Overview, Demand, Conversations, Catalog, and Token policy sections.
+- AI-KART SQLite runtime DB is removed from git tracking; `backend/products.seed.json` remains the dummy catalog source.
+- `docs/` is ignored and local-only.
+
 ## Current Deployment
 
 Current no-DNS public server shape:
@@ -185,6 +203,23 @@ sudo docker system df
 sudo docker builder prune -af
 sudo docker system prune -af
 ```
+
+If `git pull` on the server is blocked by local edits to `docker-compose.yml` or `docker/entrypoint.sh`, inspect first:
+
+```bash
+cd /var/www/AI_salesman_plugin
+git status --short
+git diff -- docker-compose.yml docker/entrypoint.sh
+```
+
+If those edits are only old server hotfixes now covered by L8, stash them and pull:
+
+```bash
+git stash push -m "pre-l8-server-compose-files" -- docker-compose.yml docker/entrypoint.sh
+git pull
+```
+
+After pull, deploy from `aihub.md`.
 
 ## CRM
 

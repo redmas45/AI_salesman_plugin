@@ -2,6 +2,34 @@
 
 Date: 2026-06-18
 
+Current fallback/deployment milestone: **L8** (`L 8` Git sync comment).
+
+## L8 Checkpoint
+
+L8 is the current public deployment baseline.
+
+What L8 locks in:
+
+- AI Hub runs as Docker `db` + `app` only.
+- Public routing is shared system Nginx: AI-KART at `/`, Hub at `/aihub/`, Client Panel at `/client-panel/<client_id>`.
+- Local intranet/Caddy/Docker-Nginx launcher paths are removed.
+- Active tenant is `ai_kart`.
+- AI Hub environment defaults are public-path routed: `HUB_PUBLIC_URL=http://143.198.5.97/aihub`.
+- CRM client detail uses tabs for Overview, Readiness, Catalog, Crawl, Activity, and Controls.
+- Client Panel uses tabs for Overview, Demand, Conversations, Catalog, and Token policy.
+- AI-KART runtime SQLite DB is no longer tracked; dummy products are source-controlled through `backend/products.seed.json`.
+- `docs/` is local-only and ignored.
+
+Server pull note:
+
+If `/var/www/AI_salesman_plugin git pull` is blocked by local edits to `docker-compose.yml` or `docker/entrypoint.sh`, inspect the diff. If they are old server hotfixes covered by L8, run:
+
+```bash
+cd /var/www/AI_salesman_plugin
+git stash push -m "pre-l8-server-compose-files" -- docker-compose.yml docker/entrypoint.sh
+git pull
+```
+
 ## Goal
 
 AI Salesman Plugin provides a plug-and-play voice commerce layer for client websites.

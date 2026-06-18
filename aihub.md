@@ -74,6 +74,26 @@ cd /var/www/AI_salesman_plugin
 git pull
 ```
 
+If pull is blocked by server-local edits like this:
+
+```text
+error: Your local changes to the following files would be overwritten by merge:
+        docker-compose.yml
+        docker/entrypoint.sh
+```
+
+inspect and stash only those two files:
+
+```bash
+cd /var/www/AI_salesman_plugin
+git status --short
+git diff -- docker-compose.yml docker/entrypoint.sh
+git stash push -m "pre-l8-server-compose-files" -- docker-compose.yml docker/entrypoint.sh
+git pull
+```
+
+Do not run `git stash pop` after this unless you inspect the stash first. Those server edits are usually old deployment hotfixes that L8 already replaces.
+
 ## 3. Create Or Update `.env`
 
 Use this server shape. Replace only secret placeholder values.
