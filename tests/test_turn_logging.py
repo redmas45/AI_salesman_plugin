@@ -8,7 +8,7 @@ def test_turn_summary_prints_conversation_transport_and_timing(capsys):
 
     print_turn_summary(
         transport="websocket",
-        site_id="ai_kart_main",
+        site_id="ai_kart",
         started_at=started_at,
         transcript="show me caps",
         response_text="Here are two cap options.",
@@ -23,7 +23,7 @@ def test_turn_summary_prints_conversation_transport_and_timing(capsys):
     assert "pipeline: 1234ms" in output
     assert "stages: stt=100ms llm=800ms tts=300ms" in output
     assert "actions: 1" in output
-    assert "[SHOPBOT TURN] transport=websocket status=ok site=ai_kart_main" in output
+    assert "[SHOPBOT TURN] transport=websocket status=ok site=ai_kart" in output
     assert "stt=100ms llm=800ms tts=300ms" in output
     assert re.search(r"time_taken: \d+ms", output)
     assert re.search(r"elapsed=\d+ms", output)

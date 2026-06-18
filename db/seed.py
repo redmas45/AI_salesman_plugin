@@ -91,7 +91,7 @@ def seed(site_ids=None):
     from agent.ingestion import _stable_id, _vectorize
 
     if site_ids is None:
-        site_ids = ["site_1", "site_2", "site_3", "site_4", "ai_kart_main"]
+        site_ids = ["site_1", "site_2", "site_3", "site_4", "ai_kart"]
 
     json_path = Path(__file__).parent.parent / "data" / "products.json"
     if not json_path.exists():

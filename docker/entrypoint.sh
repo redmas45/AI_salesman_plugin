@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-hub_origin="${PUBLIC_API_URL:-https://localhost:8484}"
-site_id="${CURRENT_SITE_ID:-ai_kart_main}"
+hub_origin="${PUBLIC_API_URL:-http://143.198.5.97/aihub}"
+site_id="${CURRENT_SITE_ID:-ai_kart}"
 
 printf '\n'
 printf '============================================================\n'

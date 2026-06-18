@@ -22,7 +22,7 @@ def test_inventory_type_count_uses_catalog_without_llm(monkeypatch):
 
     events = list(
         orchestrator.run_stream(
-            site_id="ai_kart_main",
+            site_id="ai_kart",
             text_input="How many types of caps do you have?",
             skip_tts=True,
         )
@@ -60,7 +60,7 @@ def test_inventory_type_missing_uses_real_categories_without_llm(monkeypatch):
 
     events = list(
         orchestrator.run_stream(
-            site_id="ai_kart_main",
+            site_id="ai_kart",
             text_input="How many types of card do you have?",
             skip_tts=True,
         )

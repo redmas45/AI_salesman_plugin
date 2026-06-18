@@ -17,7 +17,7 @@ def test_exact_products_from_query_finds_named_comparison_products(monkeypatch):
 
     matches = orchestrator._exact_products_from_query(
         "Compare Nova sticker with Nova T-shirt.",
-        "ai_kart_main",
+        "ai_kart",
     )
 
     assert [product["name"] for product in matches[:2]] == ["NOVA Sticker", "NOVA T-Shirt"]
@@ -72,7 +72,7 @@ def test_false_empty_inventory_claim_is_rewritten_for_cart_language(monkeypatch)
     orchestrator._prevent_false_empty_inventory_claim(
         response,
         "If you don't have any item in my tray, how could a shop?",
-        "ai_kart_main",
+        "ai_kart",
     )
 
     assert "cart or tray looks empty" in response["response_text"]

@@ -1,5 +1,6 @@
 import type {
   AnalyticsResponse,
+  CatalogProduct,
   CapabilitiesSummary,
   Client,
   ConversationsResponse,
@@ -38,6 +39,7 @@ function appPrefix() {
 }
 
 const API_BASE = `${appPrefix()}/v1/admin`;
+const PUBLIC_API_BASE = `${appPrefix()}/v1`;
 
 async function responseMessage(response: Response) {
   try {
@@ -58,6 +60,16 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (response.status === 401) throw new UnauthorizedError(await responseMessage(response));
+  if (!response.ok) throw new Error(await responseMessage(response));
+  return response.json() as Promise<T>;
+}
+
+async function publicRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers);
+  headers.set('Accept', 'application/json');
+  if (options.body) headers.set('Content-Type', 'application/json');
+
+  const response = await fetch(`${PUBLIC_API_BASE}${path}`, { ...options, headers });
   if (!response.ok) throw new Error(await responseMessage(response));
   return response.json() as Promise<T>;
 }
@@ -105,6 +117,10 @@ export const crmApi = {
     request<CapabilitiesSummary>(`/capabilities/${encodeURIComponent(siteId)}`),
   getCrawlReport: (siteId: string) =>
     request<{ report: CrawlReport }>(`/crawl-report/${encodeURIComponent(siteId)}`),
+  catalogProducts: (siteId: string, limit = 120) =>
+    publicRequest<CatalogProduct[]>(
+      `/products?site_id=${encodeURIComponent(siteId)}&limit=${encodeURIComponent(String(limit))}`,
+    ),
   updateSettings: (values: Record<string, string>) =>
     request<SettingsResponse>('/settings', {
       method: 'PATCH',

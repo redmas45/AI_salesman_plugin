@@ -89,10 +89,32 @@ export interface Client {
 
 export interface ProductPreview {
   id?: string | number;
+  product_id?: string | number;
   name?: string;
+  brand?: string;
   category?: string;
+  category_name?: string;
   price?: number;
-  has_embedding?: boolean;
+  stock?: number;
+  image_url?: string | null;
+  is_active?: boolean | number;
+  has_embedding?: boolean | number;
+}
+
+export interface CatalogProduct {
+  id: string;
+  name: string;
+  brand?: string;
+  category_name?: string;
+  category?: string;
+  description?: string;
+  price: number;
+  original_price?: number | null;
+  rating?: number;
+  review_count?: number;
+  stock?: number;
+  image_url?: string | null;
+  has_embedding?: boolean | number;
 }
 
 export interface OverviewMetrics {

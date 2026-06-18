@@ -26,12 +26,12 @@ services:
       HOST: 0.0.0.0
       PORT: 8585
       DATABASE_URL: postgresql://shopbot:shopbot_password@db:5432/shopping_db
-      PUBLIC_API_URL: ${HUB_PUBLIC_URL:-${PUBLIC_API_URL:-https://localhost:8484}}
-      PUBLIC_STOREFRONT_ORIGIN: ${HUB_PUBLIC_URL:-${PUBLIC_STOREFRONT_ORIGIN:-${PUBLIC_API_URL:-https://localhost:8484}}}
+      PUBLIC_API_URL: ${HUB_PUBLIC_URL:-${PUBLIC_API_URL:-http://143.198.5.97/aihub}}
+      PUBLIC_STOREFRONT_ORIGIN: ${PUBLIC_STOREFRONT_ORIGIN:-http://143.198.5.97}
       CURRENT_SITE_ID: ${CURRENT_SITE_ID:-ai_kart}
       DEFAULT_SITE_ID: ${DEFAULT_SITE_ID:-ai_kart}
       AI_DEFAULT_SITE_ID: ${AI_DEFAULT_SITE_ID:-ai_kart}
-      CURRENT_URL: ${CLIENT_STORE_URL:-http://host.docker.internal:8584}
+      CURRENT_URL: ${CLIENT_STORE_URL:-http://143.198.5.97/}
       CRAWL_ON_STARTUP: ${CRAWL_ON_STARTUP:-true}
       CRAWL_PERIODIC_ENABLED: ${CRAWL_PERIODIC_ENABLED:-true}
       CRAWL_MAX_PAGES: ${CRAWL_MAX_PAGES:-60}
@@ -43,25 +43,10 @@ services:
       LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
       CRM_ADMIN_TOKEN: ${CRM_ADMIN_TOKEN:-}
     ports:
-      - "8585:8585"
+      - "127.0.0.1:5176:8585"
     volumes:
       - ./.env:/app/.env
       - ./data:/app/data
-    restart: always
-
-  nginx:
-    image: nginx:1.27-alpine
-    depends_on:
-      - app
-    environment:
-      HUB_TLS_CERT_FILE: ${HUB_TLS_CERT_FILE:-/certs/ip-192_168_68_56.crt}
-      HUB_TLS_KEY_FILE: ${HUB_TLS_KEY_FILE:-/certs/ip-192_168_68_56.key}
-    ports:
-      - "${HUB_HTTP_PORT:-8080}:80"
-      - "${HUB_HTTPS_PORT:-8484}:443"
-    volumes:
-      - ./deploy/nginx.conf:/etc/nginx/templates/default.conf.template:ro
-      - ./deploy/certs:/certs:ro
     restart: always
 
 volumes:

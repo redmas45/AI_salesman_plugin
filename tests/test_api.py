@@ -15,7 +15,11 @@ from fastapi.testclient import TestClient
 @pytest.fixture(scope="module")
 def client():
     """Create a test client (no real server needed)."""
+    import config
     from api.main import app
+    from db.seed import seed
+
+    seed([config.DEFAULT_SITE_ID])
 
     return TestClient(app)
 

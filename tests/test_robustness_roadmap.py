@@ -1,11 +1,14 @@
+import pytest
+
 from agent.adapters.shopify import ShopifyAdapter
 from agent.adapters.woocommerce import WooCommerceAdapter
 from agent.extractor import extract_selectors_from_html
 from agent.scanner import _client_hook_capabilities, _is_client_hook_adapter
+from db.admin import _validated_settings
 
 
 def test_aikart_site_id_is_client_hook_adapter() -> None:
-    assert _is_client_hook_adapter("generic_adapter.js", "ai_kart_main")
+    assert _is_client_hook_adapter("generic_adapter.js", "ai_kart")
     caps = {cap.name: cap for cap in _client_hook_capabilities("generic_adapter.js")}
     assert caps["cart"].supported
     assert caps["checkout"].supported
@@ -63,3 +66,17 @@ def test_llm_extractor_requires_explicit_flag(monkeypatch) -> None:
     result = extract_selectors_from_html("<h1>Product</h1>", "site_1")
 
     assert result is None
+
+
+def test_settings_validation_accepts_model_temperature_update() -> None:
+    assert _validated_settings({"LLM_TEMPERATURE": "0.3"}) == {"LLM_TEMPERATURE": "0.3"}
+
+
+def test_settings_validation_rejects_invalid_model_temperature() -> None:
+    with pytest.raises(ValueError, match="LLM_TEMPERATURE must be between 0 and 2"):
+        _validated_settings({"LLM_TEMPERATURE": "3"})
+
+
+def test_settings_validation_rejects_non_integer_ports() -> None:
+    with pytest.raises(ValueError, match="PORT must be a whole number"):
+        _validated_settings({"PORT": "8585.5"})

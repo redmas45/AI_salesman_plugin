@@ -41,6 +41,7 @@ tmp/
 crawl.json
 data/*/crawl.json
 .local/
+docs/
 deploy/certs/
 
 # IDEs

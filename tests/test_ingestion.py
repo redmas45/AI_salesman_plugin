@@ -9,7 +9,7 @@ from agent import ingestion
 
 
 def test_sanitize_site_id_normalizes_urlish_input():
-    assert ingestion.sanitize_site_id("ai_kart_main") == "ai_kart_main"
+    assert ingestion.sanitize_site_id("ai_kart") == "ai_kart"
     assert ingestion.sanitize_site_id("https://vercelclonedwebsite.vercel.app/") == "https_vercelclonedwebsite_vercel_app"
 
 

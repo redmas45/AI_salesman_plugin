@@ -42,7 +42,7 @@ CRAWL_STATUS_OK = "ok"
 CRAWL_STATUS_ERROR = "error"
 DEFAULT_PLAN = "Commerce plan"
 DEFAULT_ADAPTER_NAME = "generic_adapter.js"
-DEFAULT_DEPLOY_MODE = "intranet"
+DEFAULT_DEPLOY_MODE = "public-ip"
 DEFAULT_CLIENT_NAME = "AI-KART"
 DEFAULT_USAGE_LIMIT = 200
 DEFAULT_CLIENT_TOKEN_LIMIT = 5000
@@ -203,6 +203,21 @@ SECRET_SETTING_KEYS = {
     "GROQ_API_KEY",
     "OPENAI_API_KEY",
 }
+FLOAT_SETTING_RANGES = {
+    "LLM_TEMPERATURE": (0.0, 2.0),
+}
+INTEGER_SETTING_RANGES = {
+    "BACKEND_PORT": (1, 65535),
+    "CRAWL_MAX_DEPTH": (0, 20),
+    "CRAWL_MAX_PAGES": (1, 10000),
+    "HTTPS_PORT": (1, 65535),
+    "LLM_MAX_TOKENS": (1, 200000),
+    "LLM_MAX_TOKENS_HARD_CAP": (1, 500000),
+    "PORT": (1, 65535),
+    "RAG_TOP_K": (1, 100),
+    "RAG_TOP_N": (1, 100),
+    "STOREFRONT_PORT": (1, 65535),
+}
 
 
 class TokenQuotaExceededError(RuntimeError):
@@ -214,7 +229,7 @@ CREATE TABLE IF NOT EXISTS hub_clients (
     name TEXT NOT NULL,
     store_url TEXT NOT NULL,
     allowed_origin TEXT NOT NULL,
-    deploy_mode TEXT NOT NULL DEFAULT 'intranet',
+    deploy_mode TEXT NOT NULL DEFAULT 'public-ip',
     plan TEXT NOT NULL DEFAULT 'Commerce plan',
     adapter_name TEXT NOT NULL DEFAULT 'generic_adapter.js',
     status TEXT NOT NULL DEFAULT 'live',
@@ -310,8 +325,8 @@ def ensure_default_client() -> None:
     """Register the current AI-KART local client when the CRM starts."""
     init_admin_schema()
     site_id = _safe_site_id(config.CURRENT_SITE_ID or config.DEFAULT_SITE_ID)
-    store_url = _first_text(config.CURRENT_URL, config.PUBLIC_API_URL, "http://127.0.0.1:8584")
-    name = DEFAULT_CLIENT_NAME if site_id == "ai_kart_main" else site_id.replace("_", " ").title()
+    store_url = _first_text(config.CURRENT_URL, config.PUBLIC_API_URL, "http://143.198.5.97/")
+    name = DEFAULT_CLIENT_NAME if site_id == "ai_kart" else site_id.replace("_", " ").title()
     init_tenant_schema(site_id)
     with _connect() as conn:
         conn.execute(
@@ -750,10 +765,6 @@ def update_settings(values: dict[str, str]) -> dict[str, Any]:
     """Write whitelisted settings to .env and the CRM settings table."""
     init_admin_schema()
     clean_values = _validated_settings(values)
-    for key, value in clean_values.items():
-        os.environ[key] = value
-        set_key(str(ENV_FILE), key, value)
-
     with _connect() as conn:
         for key, value in clean_values.items():
             conn.execute(
@@ -768,6 +779,9 @@ def update_settings(values: dict[str, str]) -> dict[str, Any]:
                 (key, value, key in SECRET_SETTING_KEYS),
             )
         conn.commit()
+    for key, value in clean_values.items():
+        os.environ[key] = value
+        set_key(str(ENV_FILE), key, value)
     return settings_snapshot()
 
 
@@ -1337,8 +1351,37 @@ def _validated_settings(values: dict[str, str]) -> dict[str, str]:
         text_value = str(value or "").strip()
         if key in SECRET_SETTING_KEYS and not text_value:
             continue
+        if text_value:
+            _validate_numeric_setting(key, text_value)
         clean_values[key] = text_value
     return clean_values
+
+
+def _validate_numeric_setting(key: str, value: str) -> None:
+    if key in FLOAT_SETTING_RANGES:
+        _validate_float_range(key, value, FLOAT_SETTING_RANGES[key])
+    if key in INTEGER_SETTING_RANGES:
+        _validate_integer_range(key, value, INTEGER_SETTING_RANGES[key])
+
+
+def _validate_float_range(key: str, value: str, valid_range: tuple[float, float]) -> None:
+    try:
+        numeric_value = float(value)
+    except ValueError as exc:
+        raise ValueError(f"{key} must be numeric.") from exc
+    low, high = valid_range
+    if numeric_value < low or numeric_value > high:
+        raise ValueError(f"{key} must be between {low:g} and {high:g}.")
+
+
+def _validate_integer_range(key: str, value: str, valid_range: tuple[int, int]) -> None:
+    try:
+        numeric_value = int(value)
+    except ValueError as exc:
+        raise ValueError(f"{key} must be a whole number.") from exc
+    low, high = valid_range
+    if numeric_value < low or numeric_value > high:
+        raise ValueError(f"{key} must be between {low} and {high}.")
 
 
 def _masked_value(value: str) -> str:
