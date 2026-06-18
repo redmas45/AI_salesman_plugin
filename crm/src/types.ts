@@ -173,15 +173,26 @@ export interface SeriesRow {
 export interface AnalyticsResponse {
   range: string;
   site_id: string;
+  generated_at?: string;
   metrics: {
     turns: number;
     tokens: number;
     sessions: number;
     avg_latency_ms: number;
+    actions?: number;
+    action_rate?: number;
+    error_rate?: number;
+    tokens_per_turn?: number;
   };
   top_intents: RankRow[];
   top_products: RankRow[];
   top_terms: RankRow[];
+  status_mix?: RankRow[];
+  transport_mix?: RankRow[];
+  site_mix?: RankRow[];
+  latency_buckets?: RankRow[];
+  peak_day?: SeriesRow | null;
+  recent_events?: UsageEvent[];
   series: SeriesRow[];
   summary: string;
   summary_source?: string;
@@ -192,9 +203,11 @@ export interface Setting {
   value: string;
   is_secret: boolean;
   configured?: boolean;
+  source?: string;
 }
 
 export interface SettingsResponse {
+  restart_required?: boolean;
   settings: Setting[];
 }
 

@@ -53,6 +53,9 @@ PANEL_PASSWORD_SALT_BYTES = 16
 TOKEN_CHAR_RATIO = 4
 SITE_ID_MAX_LENGTH = 80
 SESSION_ID_MAX_LENGTH = 120
+PERCENT_SCALE = 100
+LATENCY_FAST_MS = 1000
+LATENCY_ACCEPTABLE_MS = 3000
 ENV_FILE = Path(config.BASE_DIR) / ".env"
 ANALYTICS_DEFAULT_RANGE = "7d"
 ANALYTICS_CATALOG_PRODUCT_LIMIT = 1000
@@ -140,35 +143,66 @@ PRODUCT_TYPE_TOKENS = {
 }
 
 SETTING_KEYS = {
-    "OPENAI_API_KEY",
-    "GROQ_API_KEY",
-    "STT_PROVIDER",
-    "STT_MODEL",
-    "GROQ_STT_MODEL",
-    "TTS_PROVIDER",
-    "TTS_MODEL",
-    "TTS_VOICE",
-    "GROQ_TTS_MODEL",
-    "GROQ_TTS_VOICE",
-    "LLM_MODEL",
-    "LLM_TEMPERATURE",
-    "LLM_MAX_TOKENS",
-    "DATABASE_URL",
-    "PUBLIC_API_URL",
-    "PUBLIC_STOREFRONT_ORIGIN",
-    "VOICE_ORB_API_URL",
-    "DEPLOYMENT_MODE",
-    "HOST",
-    "PORT",
-    "STOREFRONT_PORT",
+    "AI_DEFAULT_SITE_ID",
     "BACKEND_PORT",
-    "HTTPS_PORT",
-    "CRAWL_MAX_PAGES",
+    "CLIENT_PANEL_DEFAULT_PASSWORD",
+    "CLIENT_PANEL_TOKEN_SECRET",
+    "CLIENT_STORE_URL",
+    "CORS_ORIGINS",
+    "CRM_ADMIN_TOKEN",
     "CRAWL_MAX_DEPTH",
+    "CRAWL_MAX_PAGES",
     "CRAWL_ON_STARTUP",
     "CRAWL_PERIODIC_ENABLED",
+    "CURRENT_SITE_ID",
+    "CURRENT_URL",
+    "DATABASE_URL",
+    "DEFAULT_SITE_ID",
+    "DEPLOYMENT_MODE",
+    "EMBEDDING_MODEL",
+    "FAST_TTS_MODEL",
+    "FAST_VOICE_MODE",
+    "GROQ_API_KEY",
+    "GROQ_FALLBACK_TO_OPENAI",
+    "GROQ_STT_MODEL",
+    "GROQ_TTS_MODEL",
+    "GROQ_TTS_RESPONSE_FORMAT",
+    "GROQ_TTS_VOICE",
+    "HOST",
+    "HTTPS_PORT",
+    "HUB_PUBLIC_URL",
+    "HUB_TLS_CERT_FILE",
+    "HUB_TLS_KEY_FILE",
+    "LLM_MAX_TOKENS",
+    "LLM_MAX_TOKENS_HARD_CAP",
+    "LLM_MODEL",
+    "LLM_TEMPERATURE",
+    "MANUAL_WIDGET_SCRIPT",
+    "OPENAI_API_KEY",
+    "PORT",
+    "PUBLIC_API_URL",
+    "PUBLIC_HTTPS_ORIGIN",
+    "PUBLIC_STOREFRONT_ORIGIN",
+    "PUBLIC_WIDGET_SCRIPT_URL",
+    "RAG_TOP_K",
+    "RAG_TOP_N",
+    "STOREFRONT_PORT",
+    "STT_LANGUAGE",
+    "STT_MODEL",
+    "STT_PROVIDER",
+    "TTS_MODEL",
+    "TTS_PROVIDER",
+    "TTS_VOICE",
+    "VOICE_ORB_API_URL",
 }
-SECRET_SETTING_KEYS = {"OPENAI_API_KEY", "GROQ_API_KEY", "DATABASE_URL"}
+SECRET_SETTING_KEYS = {
+    "CLIENT_PANEL_DEFAULT_PASSWORD",
+    "CLIENT_PANEL_TOKEN_SECRET",
+    "CRM_ADMIN_TOKEN",
+    "DATABASE_URL",
+    "GROQ_API_KEY",
+    "OPENAI_API_KEY",
+}
 
 
 class TokenQuotaExceededError(RuntimeError):
@@ -607,19 +641,37 @@ def analytics_snapshot(range_key: str = ANALYTICS_DEFAULT_RANGE, site_id: str = 
     sessions = {(row["site_id"], row["session_id"]) for row in rows}
     intents = Counter(row["intent"] or "unknown" for row in rows)
     products = _top_product_mentions(rows)
+    statuses = Counter(row["status"] or "unknown" for row in rows)
+    transports = Counter(row["transport"] or "unknown" for row in rows)
+    sites = Counter(row["site_id"] or "unknown" for row in rows)
+    action_count = sum(int(row.get("action_count") or 0) for row in rows)
+    action_turn_count = sum(1 for row in rows if int(row.get("action_count") or 0) > 0)
+    error_count = sum(1 for row in rows if str(row.get("status") or "").lower() not in {"ok", "success"})
     series = _daily_series(rows)
+    peak_day = _peak_series_day(series)
     return {
         "range": _clean_range_key(range_key),
         "site_id": site_id or "all",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "metrics": {
             "turns": len(rows),
             "tokens": tokens,
             "sessions": len(sessions),
             "avg_latency_ms": _average_latency(rows),
+            "actions": action_count,
+            "action_rate": _percent(action_turn_count, len(rows)),
+            "error_rate": _percent(error_count, len(rows)),
+            "tokens_per_turn": round(tokens / len(rows), 1) if rows else 0,
         },
         "top_intents": _counter_rows(intents, limit=8),
         "top_products": _counter_rows(products, limit=12),
         "top_terms": _counter_rows(products, limit=12),
+        "status_mix": _counter_rows(statuses, limit=8),
+        "transport_mix": _counter_rows(transports, limit=8),
+        "site_mix": _counter_rows(sites, limit=8),
+        "latency_buckets": _latency_bucket_rows(rows),
+        "peak_day": peak_day,
+        "recent_events": rows[:8],
         "series": series,
         "summary": _heuristic_summary(rows, intents, products),
     }
@@ -668,14 +720,15 @@ def settings_snapshot() -> dict[str, Any]:
     init_admin_schema()
     settings: list[dict[str, Any]] = []
     for key in sorted(SETTING_KEYS):
-        value = os.getenv(key, "")
+        value, source = _setting_value(key)
         is_secret = key in SECRET_SETTING_KEYS
         settings.append(
             {
                 "key": key,
                 "value": _masked_value(value) if is_secret else value,
                 "is_secret": is_secret,
-                "configured": bool(value.strip()),
+                "configured": _setting_is_configured(key),
+                "source": source,
             }
         )
     return {"restart_required": True, "settings": settings}
@@ -1105,6 +1158,34 @@ def _counter_rows(counter: Counter[str], limit: int) -> list[dict[str, Any]]:
     return [{"label": label, "count": count} for label, count in counter.most_common(limit)]
 
 
+def _latency_bucket_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    buckets: Counter[str] = Counter()
+    for row in rows:
+        latency_ms = float(row.get("latency_ms") or 0)
+        if latency_ms <= 0:
+            buckets["No timing"] += 1
+        elif latency_ms < LATENCY_FAST_MS:
+            buckets["Under 1s"] += 1
+        elif latency_ms <= LATENCY_ACCEPTABLE_MS:
+            buckets["1s to 3s"] += 1
+        else:
+            buckets["Over 3s"] += 1
+    ordered_labels = ["Under 1s", "1s to 3s", "Over 3s", "No timing"]
+    return [{"label": label, "count": buckets[label]} for label in ordered_labels if buckets[label]]
+
+
+def _peak_series_day(series: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not series:
+        return None
+    return max(series, key=lambda row: int(row.get("turns") or 0))
+
+
+def _percent(value: int, total: int) -> int:
+    if total <= 0:
+        return 0
+    return int(round((value / total) * PERCENT_SCALE))
+
+
 def _heuristic_summary(
     rows: list[dict[str, Any]],
     intents: Counter[str],
@@ -1197,6 +1278,43 @@ def _postgres_health() -> str:
         return "up"
     except psycopg.Error:
         return "down"
+
+
+def _setting_value(key: str) -> tuple[str, str]:
+    env_value = os.getenv(key)
+    if env_value is not None and str(env_value).strip():
+        return str(env_value), "env"
+    fallback = _setting_runtime_default(key)
+    if fallback:
+        return fallback, "runtime default"
+    return "", "empty"
+
+
+def _setting_runtime_default(key: str) -> str:
+    direct_value = getattr(config, key, None)
+    if direct_value is not None:
+        return _setting_text(direct_value)
+    aliases = {
+        "AI_DEFAULT_SITE_ID": config.DEFAULT_SITE_ID,
+        "CLIENT_STORE_URL": config.CURRENT_URL,
+        "FAST_TTS_MODEL": config.TTS_MODEL,
+        "HUB_PUBLIC_URL": _public_hub_origin(),
+    }
+    if key in aliases:
+        return _setting_text(aliases[key])
+    return ""
+
+
+def _setting_text(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value)
+    return str(value or "").strip()
+
+
+def _setting_is_configured(key: str) -> bool:
+    return bool(str(os.getenv(key, "")).strip())
 
 
 def _validated_settings(values: dict[str, str]) -> dict[str, str]:

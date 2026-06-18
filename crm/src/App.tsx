@@ -56,22 +56,51 @@ const RANGE_OPTIONS = [
 const SETTING_GROUPS = [
   {
     title: 'Speech-to-text',
-    keys: ['STT_PROVIDER', 'STT_MODEL', 'GROQ_STT_MODEL'],
+    keys: ['STT_PROVIDER', 'STT_MODEL', 'GROQ_STT_MODEL', 'STT_LANGUAGE'],
   },
   {
     title: 'Text-to-speech',
-    keys: ['TTS_PROVIDER', 'TTS_MODEL', 'TTS_VOICE', 'GROQ_TTS_MODEL', 'GROQ_TTS_VOICE'],
+    keys: [
+      'TTS_PROVIDER',
+      'TTS_MODEL',
+      'FAST_TTS_MODEL',
+      'TTS_VOICE',
+      'GROQ_TTS_MODEL',
+      'GROQ_TTS_VOICE',
+      'GROQ_TTS_RESPONSE_FORMAT',
+      'GROQ_FALLBACK_TO_OPENAI',
+      'FAST_VOICE_MODE',
+    ],
   },
   {
     title: 'LLM',
-    keys: ['OPENAI_API_KEY', 'GROQ_API_KEY', 'LLM_MODEL', 'LLM_TEMPERATURE', 'LLM_MAX_TOKENS'],
+    keys: [
+      'OPENAI_API_KEY',
+      'GROQ_API_KEY',
+      'LLM_MODEL',
+      'LLM_TEMPERATURE',
+      'LLM_MAX_TOKENS',
+      'LLM_MAX_TOKENS_HARD_CAP',
+    ],
+  },
+  {
+    title: 'RAG',
+    keys: ['EMBEDDING_MODEL', 'RAG_TOP_K', 'RAG_TOP_N'],
   },
   {
     title: 'Deployment',
     keys: [
+      'HUB_PUBLIC_URL',
+      'CLIENT_STORE_URL',
+      'CURRENT_URL',
+      'CURRENT_SITE_ID',
+      'DEFAULT_SITE_ID',
+      'AI_DEFAULT_SITE_ID',
       'DATABASE_URL',
       'PUBLIC_API_URL',
       'PUBLIC_STOREFRONT_ORIGIN',
+      'PUBLIC_WIDGET_SCRIPT_URL',
+      'PUBLIC_HTTPS_ORIGIN',
       'VOICE_ORB_API_URL',
       'DEPLOYMENT_MODE',
       'HOST',
@@ -79,11 +108,18 @@ const SETTING_GROUPS = [
       'STOREFRONT_PORT',
       'BACKEND_PORT',
       'HTTPS_PORT',
+      'HUB_TLS_CERT_FILE',
+      'HUB_TLS_KEY_FILE',
+      'CORS_ORIGINS',
     ],
   },
   {
     title: 'Crawler',
     keys: ['CRAWL_MAX_PAGES', 'CRAWL_MAX_DEPTH', 'CRAWL_ON_STARTUP', 'CRAWL_PERIODIC_ENABLED'],
+  },
+  {
+    title: 'Client panel and CRM',
+    keys: ['CRM_ADMIN_TOKEN', 'CLIENT_PANEL_DEFAULT_PASSWORD', 'CLIENT_PANEL_TOKEN_SECRET'],
   },
 ];
 
@@ -504,7 +540,7 @@ function Topbar({
 }) {
   const healthy = Object.values(health).every((value) => value === 'up' || value === 'ready');
   return (
-    <header className="sticky top-0 z-20 flex flex-col gap-3 border-b border-line bg-panel/92 px-4 py-3 backdrop-blur sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
+    <header className="topbar-panel sticky top-0 z-20 flex flex-col gap-3 border-b border-line px-4 py-3 backdrop-blur sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
       <div>
         <div className="text-xs font-semibold text-muted">AI Hub</div>
         <h1 className="mt-0.5 text-xl font-semibold tracking-normal">{title}</h1>
@@ -650,11 +686,13 @@ function DashboardView({
 function ClientsView({
   clients,
   onOpenClient,
+  onRemoveClient,
   onToggleClient,
   onTriggerCrawl,
 }: {
   clients: Client[];
   onOpenClient: (siteId: string) => void;
+  onRemoveClient: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
   onTriggerCrawl: (siteId: string) => void;
 }) {
@@ -700,6 +738,12 @@ function ClientsView({
                     label={client.status === 'live' ? 'Disable' : 'Enable'}
                     icon={CheckCircle2}
                     onClick={() => onToggleClient(client.site_id, client.status !== 'live')}
+                  />
+                  <IconButton
+                    label="Remove client"
+                    icon={Trash2}
+                    tone="danger"
+                    onClick={() => onRemoveClient(client.site_id)}
                   />
                 </div>
               </td>
@@ -913,31 +957,138 @@ function AnalyticsView({
   onRangeChange: (range: string) => void;
   onGenerateSummary: () => void;
 }) {
+  if (!analytics) return <EmptyState text="Analytics are loading." />;
+
   return (
-    <Panel
-      title="Analytics"
-      action={
+    <div className="grid gap-4">
+      <section className="section-row">
+        <div>
+          <h2 className="text-base font-semibold">Analytics command center</h2>
+          <p className="mt-1 text-sm text-muted">
+            Live demand, voice performance, product signals, and operational quality for {rangeLabel(range)}.
+          </p>
+        </div>
         <div className="flex flex-wrap gap-2">
           <RangeControl value={range} onChange={onRangeChange} />
           <Button variant="secondary" onClick={onGenerateSummary}>
             Generate AI summary
           </Button>
         </div>
-      }
-    >
-      {!analytics ? (
-        <EmptyState text="Analytics are loading." />
-      ) : (
-        <div className="grid gap-4">
-          <SummaryCard text={analytics.summary} source={analytics.summary_source} />
-          <div className="grid gap-4 xl:grid-cols-3">
-            <TrendBars rows={analytics.series} />
-            <RankPanel title="Most mentioned products" rows={analytics.top_products} />
-            <RankPanel title="Intent mix" rows={analytics.top_intents} />
+      </section>
+      <AnalyticsMetricGrid analytics={analytics} range={range} />
+      <div className="grid gap-4 2xl:grid-cols-[1.35fr_0.65fr]">
+        <AnalyticsTrendChart rows={analytics.series} peakDay={analytics.peak_day} />
+        <OperationsPanel analytics={analytics} />
+      </div>
+      <SummaryCard text={analytics.summary} source={analytics.summary_source} />
+      <div className="grid gap-4 xl:grid-cols-3">
+        <RankPanel title="Catalog-backed demand" rows={analytics.top_products} />
+        <RankPanel title="Intent mix" rows={analytics.top_intents} />
+        <RankPanel title="Client/site mix" rows={analytics.site_mix ?? []} />
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
+        <Panel title="Transport and response health">
+          <div className="grid gap-4 md:grid-cols-3">
+            <DistributionRows title="Transport" rows={analytics.transport_mix ?? []} />
+            <DistributionRows title="Status" rows={analytics.status_mix ?? []} />
+            <DistributionRows title="Latency" rows={analytics.latency_buckets ?? []} />
           </div>
+        </Panel>
+        <RecentActivityPanel items={analytics.recent_events ?? []} />
+      </div>
+    </div>
+  );
+}
+
+function AnalyticsMetricGrid({ analytics, range }: { analytics: AnalyticsResponse; range: string }) {
+  const metrics = analytics.metrics;
+  return (
+    <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-6">
+      <MetricCard label="Voice turns" value={metrics.turns} detail={rangeLabel(range)} />
+      <MetricCard label="Sessions" value={metrics.sessions} detail="Unique shoppers" />
+      <MetricCard label="Tokens" value={metrics.tokens} detail={`${number(metrics.tokens_per_turn ?? 0)} per turn`} />
+      <MetricCard label="Actions" value={metrics.actions ?? 0} detail={`${number(metrics.action_rate ?? 0)}% action rate`} />
+      <MetricCard label="Error rate" value={`${number(metrics.error_rate ?? 0)}%`} detail="Non-ok turns" />
+      <MetricCard label="Avg latency" value={`${number(metrics.avg_latency_ms)} ms`} detail="Pipeline speed" />
+    </div>
+  );
+}
+
+function AnalyticsTrendChart({ rows, peakDay }: { rows: SeriesRow[]; peakDay?: SeriesRow | null }) {
+  const visibleRows = rows.slice(-14);
+  const maxTurns = Math.max(...visibleRows.map((row) => row.turns), 1);
+  const maxTokens = Math.max(...visibleRows.map((row) => row.tokens), 1);
+  return (
+    <Panel
+      title="Voice demand trend"
+      action={<span className="text-xs text-muted">Peak {peakDay ? `${peakDay.date} / ${number(peakDay.turns)} turns` : '-'}</span>}
+    >
+      {visibleRows.length ? (
+        <div className="analytics-trend">
+          {visibleRows.map((row) => (
+            <div key={row.date} className="trend-column" title={`${row.date}: ${number(row.turns)} turns, ${number(row.tokens)} tokens`}>
+              <span className="trend-token" style={{ bottom: `${Math.max(8, (row.tokens / maxTokens) * 88)}%` }} />
+              <span className="trend-bar" style={{ height: `${Math.max(8, (row.turns / maxTurns) * 100)}%` }} />
+              <small>{row.date.slice(5)}</small>
+            </div>
+          ))}
         </div>
+      ) : (
+        <EmptyState text="No trend data yet." />
       )}
     </Panel>
+  );
+}
+
+function OperationsPanel({ analytics }: { analytics: AnalyticsResponse }) {
+  const actionRate = analytics.metrics.action_rate ?? 0;
+  const errorRate = analytics.metrics.error_rate ?? 0;
+  return (
+    <Panel title="Operations pulse">
+      <div className="grid gap-4">
+        <Meter label="Action completion" value={actionRate} tone="accent" />
+        <Meter label="Error pressure" value={errorRate} tone="danger" />
+        <KeyValue label="Tokens / turn" value={number(analytics.metrics.tokens_per_turn ?? 0)} />
+        <KeyValue label="Generated" value={shortTime(analytics.generated_at)} />
+        <DistributionRows title="Latency bands" rows={analytics.latency_buckets ?? []} />
+      </div>
+    </Panel>
+  );
+}
+
+function Meter({ label, value, tone }: { label: string; value: number; tone: 'accent' | 'danger' }) {
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center justify-between gap-3 text-sm">
+        <span className="text-muted">{label}</span>
+        <strong>{number(value)}%</strong>
+      </div>
+      <div className={`meter meter-${tone}`}>
+        <span style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function DistributionRows({ title, rows }: { title: string; rows: RankRow[] }) {
+  const max = Math.max(...rows.map((row) => row.count), 1);
+  return (
+    <div className="grid gap-3">
+      <h3 className="text-xs font-semibold uppercase text-muted">{title}</h3>
+      {rows.length ? (
+        rows.map((row) => (
+          <div key={`${title}-${row.label}`} className="distribution-row">
+            <span>{row.label}</span>
+            <div>
+              <i style={{ width: `${Math.max(7, (row.count / max) * 100)}%` }} />
+            </div>
+            <b>{number(row.count)}</b>
+          </div>
+        ))
+      ) : (
+        <EmptyState text="No data." />
+      )}
+    </div>
   );
 }
 
@@ -1240,30 +1391,6 @@ function SummaryCard({ text, source }: { text: string; source?: string }) {
   );
 }
 
-function TrendBars({ rows }: { rows: SeriesRow[] }) {
-  const max = Math.max(...rows.map((row) => row.turns), 1);
-  return (
-    <Panel title="Turns by day">
-      {rows.length ? (
-        <div className="flex min-h-[190px] items-end gap-2">
-          {rows.map((row) => (
-            <div key={row.date} className="grid flex-1 grid-rows-[1fr_auto] gap-2">
-              <span
-                className="self-end rounded-t-md bg-info"
-                title={`${row.date}: ${number(row.turns)}`}
-                style={{ height: `${Math.max(8, (row.turns / max) * 150)}px` }}
-              />
-              <small className="truncate text-center text-[10px] text-muted">{row.date.slice(5)}</small>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <EmptyState text="No chart data." />
-      )}
-    </Panel>
-  );
-}
-
 function ProductPreviewGrid({ products }: { products: ProductPreview[] }) {
   if (!products.length) return <EmptyState text="No catalog rows yet." />;
   return (
@@ -1283,14 +1410,19 @@ function ProductPreviewGrid({ products }: { products: ProductPreview[] }) {
 }
 
 function SettingField({ setting }: { setting: Setting }) {
+  const placeholder = setting.is_secret && setting.configured ? setting.value : 'Not configured';
+  const source = setting.source || (setting.configured ? 'env' : 'empty');
   return (
     <label className="field">
-      <span>{setting.key}</span>
+      <span className="flex items-center justify-between gap-3">
+        <span>{setting.key}</span>
+        <small className={`setting-source setting-source-${source.replace(/\s+/g, '-')}`}>{source}</small>
+      </span>
       <input
         name={setting.key}
         type={setting.is_secret ? 'password' : 'text'}
         defaultValue={setting.is_secret ? '' : setting.value || ''}
-        placeholder={setting.is_secret && setting.configured ? setting.value : ''}
+        placeholder={placeholder}
       />
     </label>
   );
@@ -1434,13 +1566,15 @@ function Button({
 function IconButton({
   label,
   icon: Icon,
+  tone = 'default',
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   label: string;
   icon?: typeof RefreshCw;
+  tone?: 'default' | 'danger';
 }) {
   return (
-    <button className="icon-button" type="button" title={label} aria-label={label} {...props}>
+    <button className={`icon-button icon-button-${tone}`} type="button" title={label} aria-label={label} {...props}>
       {Icon ? <Icon size={16} aria-hidden="true" /> : <span>x</span>}
     </button>
   );

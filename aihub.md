@@ -25,6 +25,16 @@ If you are starting from an empty server, deploy AI Hub first through step 5. Th
 
 For this deployment, run step 4 exactly. The React CRM is built inside the Hub Docker image, and the old browser-prompt CRM can remain live if you only restart containers or reuse a cached image.
 
+Current UI/API changes included in this deployment:
+
+- CRM light/dark theme fixes, including the readable top bar after switching themes.
+- Client removal from the Clients table and Client detail page.
+- Expanded Settings page with runtime defaults and editable `.env` keys for models, voice, RAG, crawler, deployment, CRM, and Client Panel.
+- Richer Analytics API payload with action rate, error rate, tokens per turn, status mix, transport mix, latency buckets, site mix, peak day, and recent events.
+- Richer Analytics UI using those new fields.
+
+Deploy AI Hub before deploying the Client Panel, because the redesigned Client Panel reads the newer analytics fields when they are available.
+
 ## 1. Fix Permissions
 
 Copy this:
@@ -57,6 +67,16 @@ CURRENT_URL=http://143.198.5.97/
 
 CRAWL_ON_STARTUP=true
 CRAWL_PERIODIC_ENABLED=true
+
+STT_PROVIDER=groq
+GROQ_STT_MODEL=whisper-large-v3-turbo
+TTS_PROVIDER=groq
+GROQ_TTS_MODEL=canopylabs/orpheus-v1-english
+GROQ_TTS_VOICE=troy
+LLM_MODEL=gpt-4o-mini
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+RAG_TOP_K=10
+RAG_TOP_N=3
 
 OPENAI_API_KEY=your_openai_key
 GROQ_API_KEY=your_groq_key
@@ -125,6 +145,8 @@ You should see `db` and `app` running.
 
 Use `build --no-cache app` and `up --force-recreate` here. Do not only run `docker compose restart`, because the CRM bundle and crawler code are built into the app image.
 
+Run the same fresh build path whenever CRM UI, analytics, settings, client-panel APIs, crawler code, or widget-serving code changes.
+
 This guide uses system Nginx, so only `db` and `app` are recreated. If your server is still using the old Docker Nginx container, use this instead:
 
 ```bash
@@ -141,6 +163,12 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:5176/health
 curl -s http://127.0.0.1:5176/crm/ | grep -E 'assets/index-.*\.js'
 curl -s http://127.0.0.1:5176/crm/app.js | grep 'crm_reload'
 curl -s http://127.0.0.1:5176/crm/app.js | grep -q 'prompt(' && echo "ERROR: old CRM app.js still served" || echo "OK: no old prompt app.js"
+curl -s "http://127.0.0.1:5176/v1/admin/analytics?range=7d" \
+  -H "x-crm-admin-token: YOUR_CRM_ADMIN_TOKEN" \
+  | grep -E '"latency_buckets"|"transport_mix"|"action_rate"'
+curl -s "http://127.0.0.1:5176/v1/admin/settings" \
+  -H "x-crm-admin-token: YOUR_CRM_ADMIN_TOKEN" \
+  | grep -E '"LLM_MODEL"|"GROQ_TTS_MODEL"|"EMBEDDING_MODEL"'
 ```
 
 Expected:
@@ -150,7 +178,11 @@ Expected:
 current CRM bundle path
 legacy reload shim
 OK: no old prompt app.js
+analytics fields present
+settings fields present
 ```
+
+If `CRM_ADMIN_TOKEN` is empty on a local/dev Hub, omit the `-H "x-crm-admin-token: ..."` header. On the public server, replace `YOUR_CRM_ADMIN_TOKEN` with the value from `.env`.
 
 If `/crm/` still references `app.js` and `styles.css`, the server is running the old CRM image. Rebuild the Hub app image instead of only restarting:
 
@@ -184,6 +216,9 @@ curl -s -o /dev/null -w "%{http_code}\n" http://143.198.5.97/aihub/crm/
 curl -s http://143.198.5.97/aihub/crm/ | grep -E 'assets/index-.*\.js'
 curl -s http://143.198.5.97/aihub/crm/app.js | grep 'crm_reload'
 curl -s http://143.198.5.97/aihub/crm/app.js | grep -q 'prompt(' && echo "ERROR: old public CRM app.js still served" || echo "OK: no old public prompt app.js"
+curl -s "http://143.198.5.97/aihub/v1/admin/analytics?range=7d" \
+  -H "x-crm-admin-token: YOUR_CRM_ADMIN_TOKEN" \
+  | grep -E '"latency_buckets"|"transport_mix"|"action_rate"'
 ```
 
 Expected:
@@ -195,6 +230,7 @@ Expected:
 current CRM bundle path
 legacy reload shim
 OK: no old public prompt app.js
+analytics fields present
 ```
 
 If Chrome still shows the old `143.198.5.97 says CRM admin token` prompt after these checks pass, hard refresh the CRM tab with `Ctrl+Shift+R`. The server will now serve no-cache CRM files, so this should only be a browser cache cleanup.
@@ -216,6 +252,8 @@ Site ID: ai_kart
 Website URL: http://143.198.5.97/
 Enabled: yes
 ```
+
+The Clients table now has a remove action. Removing a client soft-deletes the CRM client record and keeps tenant catalog data intact.
 
 ## 8. Crawl AI-KART
 
@@ -248,7 +286,22 @@ Copy this:
 curl -s http://143.198.5.97/ | grep '143.198.5.97/aihub/shopbot.js'
 ```
 
-## 11. Later
+## 11. Verify CRM UI
+
+Open:
+
+```text
+http://143.198.5.97/aihub/crm/
+```
+
+Check:
+
+- Toggle light/dark mode and confirm the top header remains readable.
+- Open Clients and confirm each row has crawl, enable/disable, and remove actions.
+- Open Settings and confirm model/config values such as `LLM_MODEL`, `GROQ_TTS_MODEL`, `EMBEDDING_MODEL`, and crawler settings are visible.
+- Open Analytics and confirm the page shows KPI cards, demand trend, operations pulse, product demand, intent mix, transport/status/latency breakdowns, and recent events.
+
+## 12. Later
 
 Optional DNS records:
 
