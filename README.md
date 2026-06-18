@@ -184,11 +184,11 @@ http://127.0.0.1:5176/crm/
 
 ## Deployment
 
-Use [aihub.md](aihub.md) for the server deployment process.
+Use [aihub.md](aihub.md) for the server deployment process. The runbook includes the safe Git pull step: tracked server edits are stashed automatically, ignored runtime files are preserved, and deployment uses `git pull --ff-only`.
 
 High-level order:
 
-1. Pull AI Hub on `/var/www/AI_salesman_plugin`.
+1. Deploy AI Hub from `/var/www/AI_salesman_plugin/aihub.md`.
 2. Verify `.env` uses public `/aihub` URLs and `DEPLOYMENT_MODE=public-ip`.
 3. Build and restart `db` and `app` with Docker Compose.
 4. Verify `http://127.0.0.1:5176/health`.
@@ -203,23 +203,6 @@ sudo docker system df
 sudo docker builder prune -af
 sudo docker system prune -af
 ```
-
-If `git pull` on the server is blocked by local edits to `docker-compose.yml` or `docker/entrypoint.sh`, inspect first:
-
-```bash
-cd /var/www/AI_salesman_plugin
-git status --short
-git diff -- docker-compose.yml docker/entrypoint.sh
-```
-
-If those edits are only old server hotfixes now covered by L8, stash them and pull:
-
-```bash
-git stash push -m "pre-l8-server-compose-files" -- docker-compose.yml docker/entrypoint.sh
-git pull
-```
-
-After pull, deploy from `aihub.md`.
 
 ## CRM
 

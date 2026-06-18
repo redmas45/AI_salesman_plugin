@@ -20,14 +20,21 @@ What L8 locks in:
 - AI-KART runtime SQLite DB is no longer tracked; dummy products are source-controlled through `backend/products.seed.json`.
 - `docs/` is local-only and ignored.
 
-Server pull note:
+## Deployment Git Contract
 
-If `/var/www/AI_salesman_plugin git pull` is blocked by local edits to `docker-compose.yml` or `docker/entrypoint.sh`, inspect the diff. If they are old server hotfixes covered by L8, run:
+The deployment docs now use one simple rule for all three projects:
 
-```bash
-cd /var/www/AI_salesman_plugin
-git stash push -m "pre-l8-server-compose-files" -- docker-compose.yml docker/entrypoint.sh
-git pull
+- Runtime files are ignored and stay on the server: `.env`, `.env.local`, `.node`, `node_modules`, `dist`, DB files, uploads, and `.deploy-backups`.
+- Deploy commands stash tracked server edits before `git pull --ff-only`.
+- AI-KART backs up `backend/aikart.db` before every pull and restores it if an old tracked DB is removed during the L8 transition.
+- Deployment never uses `git stash pop`. Stashes are only recoverable backups of server-local tracked edits.
+
+Use these runbooks:
+
+```text
+AI Hub:       AI_salesman_plugin/aihub.md
+AI-KART:      Vercel_website/aikart.md
+Client Panel: client_panel/clientpanel.md
 ```
 
 ## Goal

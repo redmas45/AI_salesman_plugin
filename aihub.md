@@ -1,6 +1,6 @@
 # AI Hub Deployment Runbook
 
-Use this for the current public server setup before DNS is ready.
+Use this for the current public-IP server setup.
 
 ```text
 AI-KART website: http://143.198.5.97/
@@ -11,7 +11,7 @@ Client Panel:    http://143.198.5.97/client-panel/ai_kart
 Project:         /var/www/AI_salesman_plugin
 ```
 
-Public routing is owned by the shared system Nginx config from `Vercel_website/aikart.md`:
+Public routing is owned by the shared Nginx config in `/var/www/Vercel_website/aikart.md`:
 
 ```text
 /                         -> AI-KART frontend on 127.0.0.1:5175
@@ -20,86 +20,32 @@ Public routing is owned by the shared system Nginx config from `Vercel_website/a
 /client-panel/<client_id> -> Client Panel on 127.0.0.1:5177
 ```
 
-Deploy order:
+## Rules
 
-1. Deploy AI Hub with this file.
-2. Deploy or reload AI-KART Nginx from `/var/www/Vercel_website/aikart.md`.
-3. Deploy Client Panel from `/var/www/client_panel/clientpanel.md`.
+- AI Hub runs only Docker Compose `db` and `app`.
+- Public access comes through AI-KART's system Nginx, not Docker Nginx.
+- `.env`, local data, caches, docs, and deploy backups are ignored runtime files.
+- The deploy command below stashes tracked server edits before pulling. It does not stash ignored runtime files.
+- Do not run `git stash pop` as part of deployment. Stashes are only backups of server-local tracked edits.
 
-Do not run host-side `python` commands for file edits in this guide. Ubuntu may only have `python3`. The only `python` command below runs inside the AI Hub Docker container.
+## Deploy
 
-## What This Deploy Includes
-
-- Public path-routed AI Hub at `/aihub/`, served by shared system Nginx.
-- CRM light/dark readability fixes.
-- Client remove action from Clients and Client detail.
-- Settings save behavior fixes plus expanded `.env` model, voice, RAG, crawler, CRM, and Client Panel keys.
-- Client detail pages split into tabs: Overview, Readiness, Catalog, Crawl, Activity, and Controls.
-- Readiness and crawl reports shown as readable cards instead of raw cramped JSON.
-- Catalog preview moved into a spacious review tab with images, filters, and pagination.
-- Analytics upgraded with action/error rate, tokens per turn, status mix, transport mix, latency buckets, site mix, peak day, and recent events.
-- Robustness work for readiness scanning, priority crawl reports, variants, adapter recognition, and crawler report storage.
-
-## 1. Preflight
-
-Run on the server:
+Paste this on the server. It is safe to rerun.
 
 ```bash
 set -e
-
 cd /var/www/AI_salesman_plugin
 
-command -v git
-command -v sed
-command -v sudo
-sudo docker compose version
+echo "== safe git pull =="
+git fetch origin
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  git stash push -m "pre-aihub-deploy-$(date +%Y%m%d-%H%M%S)"
+fi
+git pull --ff-only
 
-pwd
-git status --short
-```
-
-Expected:
-
-```text
-/var/www/AI_salesman_plugin
-docker compose version output
-```
-
-If `git status --short` shows local changes on the server, inspect them before pulling.
-
-## 2. Pull Code
-
-```bash
-cd /var/www/AI_salesman_plugin
-git pull
-```
-
-If pull is blocked by server-local edits like this:
-
-```text
-error: Your local changes to the following files would be overwritten by merge:
-        docker-compose.yml
-        docker/entrypoint.sh
-```
-
-inspect and stash only those two files:
-
-```bash
-cd /var/www/AI_salesman_plugin
-git status --short
-git diff -- docker-compose.yml docker/entrypoint.sh
-git stash push -m "pre-l8-server-compose-files" -- docker-compose.yml docker/entrypoint.sh
-git pull
-```
-
-Do not run `git stash pop` after this unless you inspect the stash first. Those server edits are usually old deployment hotfixes that L8 already replaces.
-
-## 3. Create Or Update `.env`
-
-Use this server shape. Replace only secret placeholder values.
-
-```bash
-cat > /var/www/AI_salesman_plugin/.env <<'EOF'
+echo "== ensure .env exists =="
+if [ ! -f .env ]; then
+  cat > .env <<'EOF'
 HUB_PUBLIC_URL=http://143.198.5.97/aihub
 PUBLIC_API_URL=http://143.198.5.97/aihub
 VOICE_ORB_API_URL=http://143.198.5.97/aihub
@@ -136,221 +82,78 @@ CRM_ADMIN_TOKEN=choose_strong_admin_token
 CLIENT_PANEL_DEFAULT_PASSWORD=choose_client_panel_password
 CLIENT_PANEL_TOKEN_SECRET=choose_client_panel_token_secret
 EOF
-
-nano /var/www/AI_salesman_plugin/.env
-```
-
-Keep these values for the current no-DNS deployment:
-
-```text
-HUB_PUBLIC_URL=http://143.198.5.97/aihub
-PUBLIC_STOREFRONT_ORIGIN=http://143.198.5.97
-CLIENT_STORE_URL=http://143.198.5.97/
-CURRENT_URL=http://143.198.5.97/
-DEPLOYMENT_MODE=public-ip
-```
-
-Do not put AI-KART website admin credentials in this file. AI-KART admin credentials belong in `/var/www/Vercel_website/backend/.env`.
-
-## 4. Verify Docker Compose
-
-AI Hub must bind only to local port `5176`. Public access comes from shared system Nginx.
-
-```bash
-cd /var/www/AI_salesman_plugin
-
-grep -n '127.0.0.1:5176:8585' docker-compose.yml
-if grep -q '^  nginx:' docker-compose.yml; then
-  echo "ERROR: docker-compose.yml still contains Docker nginx"
+  echo "Created /var/www/AI_salesman_plugin/.env. Fill the secrets, then rerun this deploy block."
   exit 1
 fi
 
-sudo docker compose config --services | grep -E '^(db|app)$'
-```
+echo "== compose sanity =="
+grep -q '127.0.0.1:5176:8585' docker-compose.yml
+if grep -q '^  nginx:' docker-compose.yml; then
+  echo "ERROR: docker-compose.yml must not contain a Docker nginx service."
+  exit 1
+fi
+SERVICES="$(sudo docker compose config --services | sort | tr '\n' ' ')"
+if [ "$SERVICES" != "app db " ]; then
+  echo "ERROR: expected compose services 'app db', got: $SERVICES"
+  exit 1
+fi
 
-Expected:
-
-```text
-app and db services listed
-```
-
-## 5. Build And Start AI Hub
-
-Use a fresh app image. Do not use only `docker compose restart` after CRM, analytics, crawler, settings, widget, or API changes.
-
-If the build fails with `no space left on device`, run:
-
-```bash
-sudo docker system df
-sudo docker builder prune -af
-sudo docker system prune -af
-```
-
-Do not run `docker system prune --volumes` unless database volumes have been backed up and you intentionally want to remove unused Docker volumes.
-
-Build and start:
-
-```bash
-cd /var/www/AI_salesman_plugin
+echo "== build and restart =="
 sudo docker compose build --no-cache app
 sudo docker compose up -d --force-recreate db app
 sudo docker compose ps
+
+echo "== local smoke =="
+curl -fsS http://127.0.0.1:5176/health >/dev/null
+curl -fsS http://127.0.0.1:5176/crm/ | grep -E 'assets/index-.*\.js' >/dev/null
+echo "AI Hub local deploy OK."
 ```
 
-Expected:
+## Public Smoke
 
-```text
-db   running/healthy
-app  running
-```
-
-## 6. Test Local AI Hub
-
-Test the app before touching public Nginx.
+Run after AI-KART's shared Nginx route has been applied.
 
 ```bash
-cd /var/www/AI_salesman_plugin
-set -a
-. ./.env
-set +a
-
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:5176/health
-curl -s http://127.0.0.1:5176/crm/ | grep -E 'assets/index-.*\.js'
-curl -s http://127.0.0.1:5176/crm/app.js | grep 'crm_reload'
-curl -s http://127.0.0.1:5176/crm/app.js | grep -q 'prompt(' \
-  && echo "ERROR: old CRM app.js still served" \
-  || echo "OK: no old prompt app.js"
-curl -s "http://127.0.0.1:5176/v1/admin/analytics?range=7d" \
-  -H "x-crm-admin-token: ${CRM_ADMIN_TOKEN}" \
-  | grep -E '"latency_buckets"|"transport_mix"|"action_rate"'
-curl -s "http://127.0.0.1:5176/v1/admin/settings" \
-  -H "x-crm-admin-token: ${CRM_ADMIN_TOKEN}" \
-  | grep -E '"LLM_MODEL"|"GROQ_TTS_MODEL"|"EMBEDDING_MODEL"'
+curl -fsS http://143.198.5.97/aihub/health >/dev/null
+curl -fsS http://143.198.5.97/aihub/crm/ | grep -E 'assets/index-.*\.js' >/dev/null
+echo "AI Hub public route OK."
 ```
 
-Expected:
+If local `127.0.0.1:5176` works but public `/aihub/` fails, apply `/var/www/Vercel_website/aikart.md`.
 
-```text
-200
-current CRM asset path
-legacy reload shim
-OK: no old prompt app.js
-analytics fields present
-settings fields present
-```
+## Crawl AI-KART
 
-If this fails, stop and inspect:
-
-```bash
-sudo docker compose logs --tail=160 app
-sudo docker compose ps
-```
-
-## 7. Public Routing
-
-AI Hub does not own public Nginx in this same-IP setup. Public `/aihub/` routing is configured from:
-
-```text
-/var/www/Vercel_website/aikart.md
-```
-
-After AI-KART/shared Nginx is applied, test public Hub routes:
-
-```bash
-cd /var/www/AI_salesman_plugin
-set -a
-. ./.env
-set +a
-
-curl -s -o /dev/null -w "%{http_code}\n" http://143.198.5.97/aihub/health
-curl -s -o /dev/null -w "%{http_code}\n" http://143.198.5.97/aihub/crm/
-curl -s http://143.198.5.97/aihub/crm/ | grep -E 'assets/index-.*\.js'
-curl -s http://143.198.5.97/aihub/crm/app.js | grep 'crm_reload'
-curl -s http://143.198.5.97/aihub/crm/app.js | grep -q 'prompt(' \
-  && echo "ERROR: old public CRM app.js still served" \
-  || echo "OK: no old public prompt app.js"
-curl -s "http://143.198.5.97/aihub/v1/admin/analytics?range=7d" \
-  -H "x-crm-admin-token: ${CRM_ADMIN_TOKEN}" \
-  | grep -E '"latency_buckets"|"transport_mix"|"action_rate"'
-```
-
-If local `http://127.0.0.1:5176/health` is `200` but public `/aihub/health` is not `200`, fix shared Nginx from `Vercel_website/aikart.md`.
-
-## 8. Create Or Update AI-KART Client
-
-Open:
-
-```text
-http://143.198.5.97/aihub/crm/
-```
-
-Use `CRM_ADMIN_TOKEN` from `.env`.
-
-Client values:
-
-```text
-Site ID: ai_kart
-Website URL: http://143.198.5.97/
-Enabled: yes
-Deploy mode: public-ip
-Adapter: ai_kart_adapter.js
-```
-
-The Clients table has crawl, enable/disable, and remove actions. Remove is a soft delete of the CRM client record; tenant catalog data is not dropped.
-
-## 9. Crawl AI-KART
-
-Run after AI-KART is publicly reachable:
+Run this after AI-KART is public and the `ai_kart` client exists in CRM.
 
 ```bash
 cd /var/www/AI_salesman_plugin
 sudo docker compose exec app python -c "from agent.ingestion import sync_web_crawl; sync_web_crawl('http://143.198.5.97/', max_pages=1024, max_depth=100, site_id='ai_kart', reconcile_missing=True, source_name='crm_crawler')"
-```
 
-Then test one text turn:
-
-```bash
-curl -s -X POST http://127.0.0.1:5176/v1/shop \
+curl -fsS -X POST http://127.0.0.1:5176/v1/shop \
   -H "Content-Type: application/json" \
   -d '{"message":"Do you have dog sweater?","site_id":"ai_kart"}'
 ```
 
-## 10. Final CRM Smoke
+## Git Recovery
 
-Open:
+The deploy command already handles the old `docker-compose.yml` and `docker/entrypoint.sh` pull blockers by stashing tracked server edits before `git pull --ff-only`.
 
-```text
-http://143.198.5.97/aihub/crm/
+Useful inspection commands:
+
+```bash
+cd /var/www/AI_salesman_plugin
+git status --short
+git stash list --grep=pre-aihub-deploy
 ```
 
-Check:
+If `git pull --ff-only` says the branch has diverged, the server has local commits. Do not force reset from a deploy paste. Inspect with:
 
-- Light/dark toggle keeps text readable.
-- Clients table has crawl, enable/disable, and remove actions.
-- Client detail uses tabs instead of one cramped page.
-- Readiness and crawl reports are readable cards, not raw JSON strips.
-- Catalog review shows product images and allows searching/filtering.
-- Settings shows `LLM_MODEL`, `LLM_TEMPERATURE`, `GROQ_TTS_MODEL`, `EMBEDDING_MODEL`, crawler settings, and client-panel secrets.
-- Analytics shows KPI cards, demand trend, operations, product demand, intent mix, transport/status/latency breakdowns, and recent events.
-
-## 11. Common Failure Map
-
-```text
-python: command not found
-  -> This guide does not use host-side python. Use the shell commands exactly as written.
-
-127.0.0.1:5176/health fails
-  -> AI Hub app is not running correctly. Check docker compose logs app.
-
-127.0.0.1:5176 works but /aihub/health fails publicly
-  -> Shared system Nginx route is missing or stale. Apply Vercel_website/aikart.md.
-
-CRM still shows old browser token prompt
-  -> Old image or browser cache. Rebuild app with --no-cache, then hard refresh.
-
-Client Panel has a plain old UI
-  -> Rebuild client_panel with npm run build and restart PM2.
-
-Mic does not work on public HTTP
-  -> Browser microphone access requires HTTPS on public origins. Use DNS + HTTPS when ready.
+```bash
+git log --oneline --left-right HEAD...@{u}
 ```
+
+## Ownership
+
+- AI Hub settings and secrets live in `/var/www/AI_salesman_plugin/.env`.
+- AI-KART admin credentials do not belong in AI Hub. They live in `/var/www/Vercel_website/backend/.env`.
+- Deploy order is AI Hub, AI-KART/shared Nginx, then Client Panel.
