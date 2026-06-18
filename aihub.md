@@ -105,8 +105,8 @@ RAG_TOP_N=3
 OPENAI_API_KEY=your_openai_key
 GROQ_API_KEY=your_groq_key
 CRM_ADMIN_TOKEN=choose_strong_token
-CLIENT_PANEL_DEFAULT_PASSWORD=choose_client_panel_password
-CLIENT_PANEL_TOKEN_SECRET=choose_client_panel_token_secret
+CLIENT_PANEL_DEFAULT_PASSWORD=client_pass_1
+CLIENT_PANEL_TOKEN_SECRET=client_token_1
 EOF
 
 nano /var/www/AI_salesman_plugin/.env
