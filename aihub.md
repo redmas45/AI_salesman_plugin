@@ -1,6 +1,6 @@
-# AI Hub Deployment
+# AI Hub Deployment Runbook
 
-Use this for the current setup:
+Use this for the current no-DNS server setup.
 
 ```text
 AI-KART website: http://143.198.5.97/
@@ -8,49 +8,71 @@ AI Hub local:    http://127.0.0.1:5176
 AI Hub public:   http://143.198.5.97/aihub/
 AI Hub CRM:      http://143.198.5.97/aihub/crm/
 Client Panel:    http://143.198.5.97/client-panel/ai_kart
+Project:         /var/www/AI_salesman_plugin
 ```
 
-All public apps share port `80` and are separated by URL paths:
+Public routing is owned by AI-KART Nginx config:
 
 ```text
-/                  -> AI-KART website
-/api/              -> AI-KART backend
-/aihub/            -> AI Hub
-/client-panel/<client_id> -> Client Panel
+/                         -> AI-KART frontend on 127.0.0.1:5175
+/api/                     -> AI-KART backend on 127.0.0.1:8000
+/aihub/                   -> AI Hub app on 127.0.0.1:5176
+/client-panel/<client_id> -> Client Panel on 127.0.0.1:5177
 ```
 
-DNS is optional for this setup because all apps are accessed by `IP`.
+Deploy order:
 
-If you are starting from an empty server, deploy AI Hub first through step 5. Then deploy AI-KART from `/var/www/Vercel_website/aikart.md` and Client Panel from `/var/www/client_panel/clientpanel.md`; the AI-KART guide owns the shared public Nginx routing for `/`, `/api/`, `/aihub/`, and `/client-panel/`. After AI-KART works and `/aihub/` is routed, come back here and run steps 8 through 10.
+1. Deploy AI Hub with this file.
+2. Deploy or reload AI-KART Nginx from `/var/www/Vercel_website/aikart.md`.
+3. Deploy Client Panel from `/var/www/client_panel/clientpanel.md`.
 
-For this deployment, run step 4 exactly. The React CRM is built inside the Hub Docker image, and the old browser-prompt CRM can remain live if you only restart containers or reuse a cached image.
+Do not use host-side `python` in this guide. Ubuntu may only have `python3`.
 
-Current UI/API changes included in this deployment:
+## What This Deploy Includes
 
-- CRM light/dark theme fixes, including the readable top bar after switching themes.
-- Client removal from the Clients table and Client detail page.
-- Expanded Settings page with runtime defaults and editable `.env` keys for models, voice, RAG, crawler, deployment, CRM, and Client Panel.
-- Richer Analytics API payload with action rate, error rate, tokens per turn, status mix, transport mix, latency buckets, site mix, peak day, and recent events.
-- Richer Analytics UI using those new fields.
+- CRM light/dark theme readability fix.
+- Remove-client action in the Clients table and Client detail page.
+- Expanded Settings page for model, voice, RAG, crawler, deployment, CRM, and Client Panel `.env` keys.
+- Analytics API fields: `action_rate`, `error_rate`, `tokens_per_turn`, `status_mix`, `transport_mix`, `latency_buckets`, `site_mix`, `peak_day`, and `recent_events`.
+- Richer CRM Analytics UI.
 
-Deploy AI Hub before deploying the Client Panel, because the redesigned Client Panel reads the newer analytics fields when they are available.
+## 1. Preflight
 
-## 1. Fix Permissions
+Run this on the server:
 
-Copy this:
+```bash
+set -e
+
+cd /var/www/AI_salesman_plugin
+
+command -v git
+command -v sed
+command -v sudo
+sudo docker compose version
+
+pwd
+git status --short
+```
+
+Expected:
+
+```text
+/var/www/AI_salesman_plugin
+docker compose version output
+```
+
+If `git status --short` shows local changes on the server, stop and inspect them before pulling.
+
+## 2. Pull Code
 
 ```bash
 cd /var/www/AI_salesman_plugin
-sudo chown -R $(whoami):$(whoami) /var/www/AI_salesman_plugin
-chmod +x /var/www/AI_salesman_plugin/docker/entrypoint.sh
-mkdir -p /var/www/AI_salesman_plugin/data
-mkdir -p /var/www/AI_salesman_plugin/deploy/certs
-sudo chown -R $(whoami):$(whoami) /var/www/AI_salesman_plugin/data /var/www/AI_salesman_plugin/deploy/certs
+git pull
 ```
 
-## 2. Create `.env`
+## 3. Create Or Update `.env`
 
-Copy this:
+Use this full server `.env` shape. Replace only the secret placeholder values.
 
 ```bash
 cat > /var/www/AI_salesman_plugin/.env <<'EOF'
@@ -67,6 +89,8 @@ CURRENT_URL=http://143.198.5.97/
 
 CRAWL_ON_STARTUP=true
 CRAWL_PERIODIC_ENABLED=true
+CRAWL_MAX_PAGES=1024
+CRAWL_MAX_DEPTH=100
 
 STT_PROVIDER=groq
 GROQ_STT_MODEL=whisper-large-v3-turbo
@@ -84,11 +108,7 @@ CRM_ADMIN_TOKEN=choose_strong_token
 CLIENT_PANEL_DEFAULT_PASSWORD=choose_client_panel_password
 CLIENT_PANEL_TOKEN_SECRET=choose_client_panel_token_secret
 EOF
-```
 
-Now edit only these five values:
-
-```bash
 nano /var/www/AI_salesman_plugin/.env
 ```
 
@@ -102,72 +122,93 @@ choose_client_panel_password
 choose_client_panel_token_secret
 ```
 
-Do not change `CLIENT_STORE_URL` or `CURRENT_URL` right now. They should stay:
+Keep these as shown for the current path-routed public IP setup:
 
 ```text
+HUB_PUBLIC_URL=http://143.198.5.97/aihub
 CLIENT_STORE_URL=http://143.198.5.97/
 CURRENT_URL=http://143.198.5.97/
 ```
 
-## 3. Set Docker To Local Port `5176`
+## 4. Configure Docker App Port
 
-Copy this:
+The AI Hub app must bind only to local port `5176`. System Nginx exposes it publicly under `/aihub/`.
+
+Run this exact idempotent block:
 
 ```bash
 cd /var/www/AI_salesman_plugin
 
-python - <<'PY'
-from pathlib import Path
+if grep -q '      - "8585:8585"' docker-compose.yml; then
+  sed -i 's#      - "8585:8585"#      - "127.0.0.1:5176:8585"#' docker-compose.yml
+fi
 
-path = Path("docker-compose.yml")
-text = path.read_text(encoding="utf-8")
-text = text.replace('      - "8585:8585"', '      - "127.0.0.1:5176:8585"')
-path.write_text(text, encoding="utf-8")
-PY
+if ! grep -q '127.0.0.1:5176:8585' docker-compose.yml; then
+  echo "ERROR: docker-compose.yml does not expose app on 127.0.0.1:5176"
+  grep -n '8585' docker-compose.yml || true
+  exit 1
+fi
 
+grep -n '5176:8585' docker-compose.yml
+```
+
+Expected:
+
+```text
+127.0.0.1:5176:8585
+```
+
+## 5. Disable Docker Nginx For This Server
+
+This setup uses system Nginx from the AI-KART guide, not the Docker Nginx service.
+
+```bash
+cd /var/www/AI_salesman_plugin
 sudo docker compose stop nginx || true
 sudo docker compose rm -f nginx || true
 ```
 
-## 4. Pull Latest Code And Start AI Hub With Fresh CRM Build
+It is fine if this says the container was stopped or removed.
 
-Copy this:
+## 6. Build And Start AI Hub
+
+Use a fresh app image. Do not use only `docker compose restart` after CRM, analytics, crawler, settings, widget, or API changes.
 
 ```bash
 cd /var/www/AI_salesman_plugin
-git pull
 sudo docker compose build --no-cache app
 sudo docker compose up -d --force-recreate db app
 sudo docker compose ps
 ```
 
-You should see `db` and `app` running.
+Expected:
 
-Use `build --no-cache app` and `up --force-recreate` here. Do not only run `docker compose restart`, because the CRM bundle and crawler code are built into the app image.
-
-Run the same fresh build path whenever CRM UI, analytics, settings, client-panel APIs, crawler code, or widget-serving code changes.
-
-This guide uses system Nginx, so only `db` and `app` are recreated. If your server is still using the old Docker Nginx container, use this instead:
-
-```bash
-sudo docker compose build --no-cache app
-sudo docker compose up -d --force-recreate db app nginx
+```text
+db   running/healthy
+app  running
 ```
 
-## 5. Test Local AI Hub
+## 7. Test Local AI Hub
 
-Copy this:
+Load the admin token from `.env` and test the local app before touching public Nginx.
 
 ```bash
+cd /var/www/AI_salesman_plugin
+set -a
+. ./.env
+set +a
+
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:5176/health
 curl -s http://127.0.0.1:5176/crm/ | grep -E 'assets/index-.*\.js'
 curl -s http://127.0.0.1:5176/crm/app.js | grep 'crm_reload'
-curl -s http://127.0.0.1:5176/crm/app.js | grep -q 'prompt(' && echo "ERROR: old CRM app.js still served" || echo "OK: no old prompt app.js"
+curl -s http://127.0.0.1:5176/crm/app.js | grep -q 'prompt(' \
+  && echo "ERROR: old CRM app.js still served" \
+  || echo "OK: no old prompt app.js"
 curl -s "http://127.0.0.1:5176/v1/admin/analytics?range=7d" \
-  -H "x-crm-admin-token: YOUR_CRM_ADMIN_TOKEN" \
+  -H "x-crm-admin-token: ${CRM_ADMIN_TOKEN}" \
   | grep -E '"latency_buckets"|"transport_mix"|"action_rate"'
 curl -s "http://127.0.0.1:5176/v1/admin/settings" \
-  -H "x-crm-admin-token: YOUR_CRM_ADMIN_TOKEN" \
+  -H "x-crm-admin-token: ${CRM_ADMIN_TOKEN}" \
   | grep -E '"LLM_MODEL"|"GROQ_TTS_MODEL"|"EMBEDDING_MODEL"'
 ```
 
@@ -175,49 +216,45 @@ Expected:
 
 ```text
 200
-current CRM bundle path
+current CRM asset path
 legacy reload shim
 OK: no old prompt app.js
 analytics fields present
 settings fields present
 ```
 
-If `CRM_ADMIN_TOKEN` is empty on a local/dev Hub, omit the `-H "x-crm-admin-token: ..."` header. On the public server, replace `YOUR_CRM_ADMIN_TOKEN` with the value from `.env`.
-
-If `/crm/` still references `app.js` and `styles.css`, the server is running the old CRM image. Rebuild the Hub app image instead of only restarting:
+If this fails, do not continue to public routing. Check:
 
 ```bash
-sudo docker compose build --no-cache app
-sudo docker compose up -d --force-recreate db app
+sudo docker compose logs --tail=120 app
+sudo docker compose ps
 ```
 
-Do not open the CRM in the browser until these checks pass.
+## 8. Public Routing
 
-## 6. Public Routing Requirement
-
-AI Hub should only expose this local upstream from its own deployment:
+AI Hub does not own public Nginx in this same-IP setup. Public `/aihub/` is configured from:
 
 ```text
-http://127.0.0.1:5176
+/var/www/Vercel_website/aikart.md
 ```
 
-The public `/aihub/` route is edge/shared Nginx config. In the current same-IP setup, AI-KART owns `/` and `/api/`, so the shared Nginx block belongs in `/var/www/Vercel_website/aikart.md`.
-
-Do not add AI-KART `/`, `/api/`, Client Panel `/client-panel/`, or frontend proxy rules in this Hub guide. If you later use a dedicated hostname such as `aihub.ergobite.com`, configure that hostname in Nginx to proxy directly to `http://127.0.0.1:5176`.
-
-After AI-KART/shared Nginx is deployed, test the public Hub routes:
-
-Copy this:
+After AI-KART/shared Nginx is applied, test public Hub routes:
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:5176/health
+cd /var/www/AI_salesman_plugin
+set -a
+. ./.env
+set +a
+
 curl -s -o /dev/null -w "%{http_code}\n" http://143.198.5.97/aihub/health
 curl -s -o /dev/null -w "%{http_code}\n" http://143.198.5.97/aihub/crm/
 curl -s http://143.198.5.97/aihub/crm/ | grep -E 'assets/index-.*\.js'
 curl -s http://143.198.5.97/aihub/crm/app.js | grep 'crm_reload'
-curl -s http://143.198.5.97/aihub/crm/app.js | grep -q 'prompt(' && echo "ERROR: old public CRM app.js still served" || echo "OK: no old public prompt app.js"
+curl -s http://143.198.5.97/aihub/crm/app.js | grep -q 'prompt(' \
+  && echo "ERROR: old public CRM app.js still served" \
+  || echo "OK: no old public prompt app.js"
 curl -s "http://143.198.5.97/aihub/v1/admin/analytics?range=7d" \
-  -H "x-crm-admin-token: YOUR_CRM_ADMIN_TOKEN" \
+  -H "x-crm-admin-token: ${CRM_ADMIN_TOKEN}" \
   | grep -E '"latency_buckets"|"transport_mix"|"action_rate"'
 ```
 
@@ -226,16 +263,15 @@ Expected:
 ```text
 200
 200
-200
-current CRM bundle path
+current CRM asset path
 legacy reload shim
 OK: no old public prompt app.js
 analytics fields present
 ```
 
-If Chrome still shows the old `143.198.5.97 says CRM admin token` prompt after these checks pass, hard refresh the CRM tab with `Ctrl+Shift+R`. The server will now serve no-cache CRM files, so this should only be a browser cache cleanup.
+If local `http://127.0.0.1:5176/health` is `200` but public `/aihub/health` is not `200`, the fix belongs in the AI-KART Nginx guide, not in this repo.
 
-## 7. Create/Update AI-KART Client In CRM
+## 9. Create Or Update AI-KART Client
 
 Open:
 
@@ -243,9 +279,9 @@ Open:
 http://143.198.5.97/aihub/crm/
 ```
 
-Use the CRM admin token from `CRM_ADMIN_TOKEN`.
+Use `CRM_ADMIN_TOKEN` from `.env`.
 
-Create or update the AI-KART client with:
+Client values:
 
 ```text
 Site ID: ai_kart
@@ -253,24 +289,18 @@ Website URL: http://143.198.5.97/
 Enabled: yes
 ```
 
-The Clients table now has a remove action. Removing a client soft-deletes the CRM client record and keeps tenant catalog data intact.
+The Clients table has crawl, enable/disable, and remove actions. Remove is a soft delete of the CRM client record; tenant catalog data is not dropped.
 
-## 8. Crawl AI-KART
+## 10. Crawl AI-KART
 
-Because AI-KART is now served on the root path `/` instead of `/aikart/`, use the root URL.
-
-The Hub is configured to crawl once during startup and then every 120 seconds. Run this manual crawl after AI-KART is reachable anyway, because it proves the live website catalog is populated before testing customer questions.
-
-Copy this:
+Run after AI-KART is publicly reachable:
 
 ```bash
 cd /var/www/AI_salesman_plugin
 sudo docker compose exec app python -c "from agent.ingestion import sync_web_crawl; sync_web_crawl('http://143.198.5.97/', max_pages=1024, max_depth=100, site_id='ai_kart', reconcile_missing=True, source_name='crm_crawler')"
 ```
 
-## 9. Test AI Answer
-
-Copy this:
+Then test a text turn:
 
 ```bash
 curl -s -X POST http://127.0.0.1:5176/v1/shop \
@@ -278,15 +308,7 @@ curl -s -X POST http://127.0.0.1:5176/v1/shop \
   -d '{"message":"Do you have dog sweater?","site_id":"ai_kart"}'
 ```
 
-## 10. Verify Script In AI-KART
-
-Copy this:
-
-```bash
-curl -s http://143.198.5.97/ | grep '143.198.5.97/aihub/shopbot.js'
-```
-
-## 11. Verify CRM UI
+## 11. Final CRM Smoke
 
 Open:
 
@@ -296,25 +318,26 @@ http://143.198.5.97/aihub/crm/
 
 Check:
 
-- Toggle light/dark mode and confirm the top header remains readable.
-- Open Clients and confirm each row has crawl, enable/disable, and remove actions.
-- Open Settings and confirm model/config values such as `LLM_MODEL`, `GROQ_TTS_MODEL`, `EMBEDDING_MODEL`, and crawler settings are visible.
-- Open Analytics and confirm the page shows KPI cards, demand trend, operations pulse, product demand, intent mix, transport/status/latency breakdowns, and recent events.
+- Light/dark toggle keeps the top header readable.
+- Clients table has crawl, enable/disable, and remove actions.
+- Settings shows `LLM_MODEL`, `GROQ_TTS_MODEL`, `EMBEDDING_MODEL`, crawler settings, and client-panel secrets.
+- Analytics shows KPI cards, demand trend, operations pulse, product demand, intent mix, transport/status/latency breakdowns, and recent events.
 
-## 12. Later
-
-Optional DNS records:
+## 12. Common Failure Map
 
 ```text
-aikart.ergobite.com -> 143.198.5.97
-aihub.ergobite.com  -> 143.198.5.97
+python: command not found
+  -> This guide does not use host-side python. Use the sed block in step 4.
+
+127.0.0.1:5176/health fails
+  -> AI Hub app is not running correctly. Check docker compose logs app.
+
+127.0.0.1:5176 works but /aihub/health fails publicly
+  -> Shared system Nginx route is missing or stale. Apply Vercel_website/aikart.md.
+
+CRM still shows old browser token prompt
+  -> Old CRM image or browser cache. Rebuild app with --no-cache, then hard refresh.
+
+Client Panel has a plain old UI
+  -> Rebuild client_panel with npm run build and restart PM2.
 ```
-
-With DNS hostname routing, use:
-
-```text
-http://aikart.ergobite.com
-http://aihub.ergobite.com
-```
-
-Later, switch from path routing to hostname routing if you want separate clean domains. Voice microphone testing needs HTTPS.
