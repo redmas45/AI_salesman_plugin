@@ -1,30 +1,28 @@
 # AI Salesman Hub
 
-AI Salesman Hub is the backend, CRM, crawler/RAG pipeline, voice pipeline, and hosted one-line widget script for AI-enabled commerce sites.
+AI Salesman Hub is the central backend for AI-enabled commerce sites. It serves the hosted voice widget, CRM, crawler, RAG catalog, AI orchestration, analytics, tenant APIs, and Client Panel APIs.
 
-The client website gets one script tag. The Hub owns the AI pipeline, catalog ingestion, analytics, hosted widget, and platform/site adapters.
+The client website receives one script tag. The Hub owns the AI layer, catalog ingestion, hosted widget bundle, and adapter logic. The storefront keeps ownership of its own users, products, cart, checkout, and admin system.
 
-## Current Milestone
+## Current Baseline
 
-**L8** is the current deployment checkpoint.
+Current deployment checkpoint: **L8**
 
-- Git sync comment: `L 8`
-- Date: 2026-06-18
-- Meaning: public path-routed deployment is the active baseline. AI Hub runs as Docker `db` + `app` only, served publicly through shared system Nginx at `/aihub/`.
+Date: 2026-06-18
 
-L8 includes:
+L8 is the current public path-routed deployment baseline:
 
-- `run.py`, local Caddy, local HTTPS helper scripts, and Docker Nginx are removed.
-- `ai_kart` is the active AI-KART tenant ID.
-- AI Hub defaults to `public-ip` and `http://143.198.5.97/aihub`.
-- CRM client detail is tabbed and less cramped.
-- Client Panel is redesigned into tabbed Overview, Demand, Conversations, Catalog, and Token policy sections.
-- AI-KART SQLite runtime DB is removed from git tracking; `backend/products.seed.json` remains the dummy catalog source.
-- `docs/` is ignored and local-only.
+- AI Hub runs through Docker Compose with only `db` and `app`.
+- Public routing is handled by the shared system Nginx config from AI-KART.
+- AI Hub is served publicly at `/aihub/`.
+- CRM is served at `/aihub/crm/`.
+- The active tenant is `ai_kart`.
+- `docs/` is local-only and ignored.
+- AI-KART runtime SQLite data is not owned by this repo.
 
-## Current Deployment
+## Public Topology
 
-Current no-DNS public server shape:
+Current no-DNS public server layout:
 
 ```text
 AI-KART website: http://143.198.5.97/
@@ -33,7 +31,7 @@ AI Hub API:      http://143.198.5.97/aihub/
 Client Panel:    http://143.198.5.97/client-panel/ai_kart
 ```
 
-Shared system Nginx, configured from `Vercel_website/aikart.md`, routes traffic:
+Shared Nginx routes:
 
 ```text
 /                         -> AI-KART frontend on 127.0.0.1:5175
@@ -42,24 +40,40 @@ Shared system Nginx, configured from `Vercel_website/aikart.md`, routes traffic:
 /client-panel/<client_id> -> Client Panel on 127.0.0.1:5177
 ```
 
-Use Docker Compose for AI Hub and the shared public Nginx edge for routing.
+AI Hub does not own public Nginx in this setup. Public route changes belong in `Vercel_website/aikart.md`.
 
-## Architecture
+## Responsibilities
+
+AI Hub owns:
+
+- Voice widget serving at `/shopbot.js`.
+- Voice turn APIs under `/v1/shop`.
+- STT, LLM, TTS, prompts, guardrails, and orchestration.
+- Tenant catalog ingestion and RAG search.
+- Product crawling, readiness scanning, crawl reports, and vectorization.
+- CRM admin UI and `/v1/admin/*` APIs.
+- Client Panel scoped APIs under `/v1/client-panel/*`.
+- Hosted adapter behavior for navigation, product panels, cart actions, and checkout handoff where supported.
+
+AI Hub does not own:
+
+- AI-KART website admin credentials.
+- AI-KART product database as runtime state.
+- Client storefront user accounts.
+- Payment or checkout ownership.
+- Public root Nginx routing.
+
+## Repository Layout
 
 ```text
-Client website
-  -> loads /shopbot.js from AI Hub
-  -> Voice Orb records audio and sends turns to /v1/shop
-  -> Hub returns text, audio, and UI actions
-  -> hosted adapter handles navigation, product panels, cart actions, and checkout handoff
-
-AI Salesman Hub
-  -> FastAPI backend
-  -> React CRM at /crm
-  -> STT, LLM, TTS orchestration
-  -> crawler and RAG ingestion
-  -> PostgreSQL + pgvector tenant catalog
-  -> hosted widget bundle
+agent/       AI orchestration, prompts, RAG, crawler, STT/TTS, adapters
+api/         FastAPI routes, CRM APIs, Client Panel APIs, widget serving
+crm/         React/Vite CRM frontend served by the Hub
+db/          Database schema, tenant catalog access, seed helpers
+plugin/      Hosted browser widget source and built shopbot.js
+tests/       Backend, ingestion, guardrail, API, and widget contract tests
+data/        Local development data and source product fixtures
+docker/      Container entrypoint
 ```
 
 ## One-Line Client Script
@@ -76,23 +90,36 @@ Generic client script:
 <script defer src="https://hub.example.com/shopbot.js?site=client_site_id" data-site-id="client_site_id"></script>
 ```
 
-The adapter is bundled inside the Hub-served script. A normal client should not paste a second hook block. If a client needs Shopify, WooCommerce, custom cart, checkout, or variant behavior, we add that behavior to the Hub-hosted adapter for that site or platform.
+Normal clients should not paste separate hook blocks. Site-specific behavior belongs in the Hub-hosted adapter layer.
 
-## Main Capabilities
+## Runtime Model
 
-- Voice assistant widget with STT, LLM, TTS, conversation history, and UI actions.
-- Multi-tenant catalog isolation by `site_id`.
-- Public crawler with API-first discovery, sitemap/robots discovery, priority URL planning, and Crawl4AI fallback.
-- Product extraction from catalog APIs, JSON-LD, Shopify/Woo-like JSON, Next.js/React payloads, visible text, and optional gated LLM extraction.
-- CRM for clients, crawler runs, catalog status, readiness reports, usage, conversations, analytics, adapters, settings, and health.
-- Client Panel APIs for scoped client-facing analytics, usage, conversations, catalog status, and token policy.
-- Hosted platform/site adapters for navigation, product display, add to cart, cart updates, checkout handoff, and variants where supported.
+Production AI Hub runs in Docker:
+
+```text
+db  -> PostgreSQL with pgvector
+app -> FastAPI app, CRM static files, widget bundle, AI pipeline
+```
+
+Important server rule:
+
+```text
+AI Hub production does not use a host Python venv.
+```
+
+Local development can use `.venv`, but the public server deploy uses Docker Compose only.
 
 ## Environment
 
-Root `.env` belongs to AI Hub only. Do not store AI-KART website admin credentials here.
+Root `.env` belongs to AI Hub only.
 
-Minimal server shape:
+Do not put AI-KART website admin credentials here. AI-KART admin credentials belong in:
+
+```text
+Vercel_website/backend/.env
+```
+
+Minimal server `.env` shape:
 
 ```env
 HUB_PUBLIC_URL=http://143.198.5.97/aihub
@@ -132,15 +159,9 @@ CLIENT_PANEL_DEFAULT_PASSWORD=
 CLIENT_PANEL_TOKEN_SECRET=
 ```
 
-AI-KART website admin credentials belong in:
-
-```text
-Vercel_website/backend/.env
-```
-
 ## Local Development
 
-Backend dependencies:
+Backend Python environment for local work:
 
 ```powershell
 cd C:\Users\admin\Desktop\AI_salesman_plugin
@@ -169,13 +190,13 @@ npm run build
 cd ..
 ```
 
-Docker Hub app:
+Docker app:
 
 ```powershell
 docker compose up -d --build db app
 ```
 
-Local AI Hub is then available at:
+Local URLs:
 
 ```text
 http://127.0.0.1:5176/health
@@ -184,25 +205,33 @@ http://127.0.0.1:5176/crm/
 
 ## Deployment
 
-Use [aihub.md](aihub.md) for the server deployment process. The runbook includes the safe Git pull step: tracked server edits are stashed automatically, ignored runtime files are preserved, and deployment uses `git pull --ff-only`.
+Use [aihub.md](aihub.md) for deployment.
+
+The runbook handles:
+
+- Safe Git pull using `git pull --ff-only`.
+- Automatic stash of tracked server-local edits.
+- Preservation of ignored runtime files.
+- Docker Compose sanity checks.
+- Fresh app image build and restart.
+- Local and public smoke checks.
 
 High-level order:
 
 1. Deploy AI Hub from `/var/www/AI_salesman_plugin/aihub.md`.
-2. Verify `.env` uses public `/aihub` URLs and `DEPLOYMENT_MODE=public-ip`.
-3. Build and restart `db` and `app` with Docker Compose.
-4. Verify `http://127.0.0.1:5176/health`.
-5. Apply shared Nginx routing from `Vercel_website/aikart.md`.
-6. Verify `http://143.198.5.97/aihub/health` and `http://143.198.5.97/aihub/crm/`.
-7. Crawl `http://143.198.5.97/` for `site_id=ai_kart`.
+2. Deploy or reload AI-KART shared Nginx from `/var/www/Vercel_website/aikart.md`.
+3. Deploy Client Panel from `/var/www/client_panel/clientpanel.md`.
+4. Crawl AI-KART for `site_id=ai_kart`.
 
-If Docker space is full:
+If Docker space is exhausted:
 
 ```bash
 sudo docker system df
 sudo docker builder prune -af
 sudo docker system prune -af
 ```
+
+Do not run `docker system prune --volumes` unless database volumes are intentionally backed up and disposable.
 
 ## CRM
 
@@ -214,31 +243,36 @@ CRM is served by the Hub at:
 
 Current CRM scope:
 
-- Dashboard: range-driven KPIs, demand trend, operations, active clients, and recent activity.
-- Clients: add, remove, enable/disable, copy script, and crawl.
-- Client detail: tabbed Overview, Readiness, Catalog, Crawl, Activity, and Controls.
-- Catalog: product counts, categories, vectorization status, previews, images, and filters.
-- Usage: turns, tokens, latency, session quotas, and events.
-- Conversations: session review with transcript, AI reply, intent, tokens, and latency.
-- Analytics: product demand, intent mix, transport/status/latency breakdowns, and recent events.
-- Settings: whitelisted environment keys for providers, models, crawler, CRM, and Client Panel.
+- Dashboard KPIs, demand trend, operations, active clients, and recent activity.
+- Client create, remove, enable, disable, copy script, and crawl actions.
+- Client detail tabs: Overview, Readiness, Catalog, Crawl, Activity, and Controls.
+- Catalog review with counts, categories, vector status, product images, filters, and pagination.
+- Usage and conversation review with turns, tokens, latency, transport, status, and session data.
+- Analytics for product demand, intent mix, transport mix, latency buckets, and recent events.
+- Settings for whitelisted AI, crawler, CRM, and Client Panel environment keys.
 
-Set `CRM_ADMIN_TOKEN` in `.env` to protect `/v1/admin/*`.
+Protect `/v1/admin/*` with `CRM_ADMIN_TOKEN`.
 
-## Client Panel
+## Client Panel API
 
-The separate `client_panel` project is the client-facing portal. It consumes scoped Hub APIs under `/v1/client-panel/*` and returns only that client's analytics, usage, catalog, conversations, and token policy.
+The separate `client_panel` project uses Hub APIs under:
 
-Hub keys:
+```text
+/v1/client-panel/*
+```
+
+Required Hub keys:
 
 ```env
 CLIENT_PANEL_DEFAULT_PASSWORD=change-this-client-password
 CLIENT_PANEL_TOKEN_SECRET=change-this-signing-secret
 ```
 
+These values control Client Panel login and token signing. They do not control AI-KART storefront admin login.
+
 ## Crawler And Adapters
 
-The crawler prefers product APIs first:
+The crawler prefers public product APIs first:
 
 ```text
 /api/products
@@ -248,13 +282,13 @@ The crawler prefers product APIs first:
 /wp-json/wc/store/products?per_page=100
 ```
 
-Then it uses robots, sitemaps, common product/category/shop URLs, rendered HTML, JSON-LD, framework payloads, and visible-text heuristics.
+Then it uses robots, sitemaps, product/category/shop URL planning, rendered HTML, JSON-LD, framework payloads, and visible-text extraction.
 
-The adapter layer decides what the browser can safely do on a client site:
+Integration levels:
 
-- Basic script-only mode: product advice, catalog Q&A, comparison explanations, support answers, simple navigation, and analytics.
-- Commerce adapter mode: native add to cart, remove from cart, cart quantity updates, product detail routing, variants, filters, and checkout handoff when platform/site APIs allow it.
-- Full integration mode: platform API keys, feeds, live inventory, variant IDs, order/checkout handoff, stronger stock confidence, and custom client-approved adapters.
+- Script only: product advice, catalog Q&A, comparison, support answers, simple navigation, analytics.
+- Script plus adapter: better catalog routing, add/remove cart, quantity updates, variant selection, filters, checkout handoff where supported.
+- Full support: product feeds, platform API keys, live inventory, variant IDs, custom checkout/order handoff rules, staging/test access.
 
 ## Tests
 
@@ -264,12 +298,12 @@ Backend:
 python -m pytest
 ```
 
-Focused tests:
+Focused examples:
 
 ```powershell
 python -m pytest tests/test_api.py -v
 python -m pytest tests/test_ingestion.py -v
-python -m pytest tests/test_crm_api.py -v
+python -m pytest tests/test_guardrails.py -v
 ```
 
 CRM:
@@ -297,8 +331,35 @@ docker compose config --services
 
 ## Operational Notes
 
-- Disabling a client removes the mic/widget for that client, but admin-triggered crawling can still run.
-- Removing a client is a CRM soft delete; it does not drop tenant catalog tables.
-- Public HTTP pages can load the UI, but browser microphone access requires HTTPS on public origins. DNS plus HTTPS should be the production target.
-- `ai_kart` is the active tenant ID.
-- Use the Docker/shared Nginx deployment path documented in `aihub.md`.
+- Active tenant is `ai_kart`.
+- Disabling a client removes the widget for shoppers, but admin-triggered crawling can still run.
+- Removing a client is a CRM soft delete and does not drop tenant catalog data.
+- Public HTTP can load the UI, but browser microphone access requires HTTPS on public origins.
+- DNS plus HTTPS is the production target for reliable microphone behavior.
+- Server deploy stashes are backup records. Do not run `git stash pop` during normal deployment.
+
+## Troubleshooting
+
+`/aihub/health` fails publicly but `127.0.0.1:5176/health` works:
+
+```text
+Shared Nginx route is missing or stale. Apply Vercel_website/aikart.md.
+```
+
+CRM shows old assets:
+
+```text
+Rebuild the Docker app with --no-cache using aihub.md, then hard refresh the browser.
+```
+
+Client Panel login fails:
+
+```text
+Check CLIENT_PANEL_DEFAULT_PASSWORD and CLIENT_PANEL_TOKEN_SECRET in AI Hub .env, then redeploy AI Hub.
+```
+
+AI-KART admin login fails:
+
+```text
+Do not change AI Hub .env. AI-KART admin credentials live in Vercel_website/backend/.env.
+```
