@@ -1,21 +1,25 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { ButtonHTMLAttributes, FormEvent, InputHTMLAttributes, ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ButtonHTMLAttributes, CSSProperties, FormEvent, InputHTMLAttributes, ReactNode } from 'react';
 import {
   Activity,
   AlertTriangle,
+  ArrowRight,
   BarChart3,
+  ChevronDown,
   CheckCircle2,
   ClipboardCheck,
   Code2,
   Copy,
   Database,
   EllipsisVertical,
+  ExternalLink,
   Eye,
   FileText,
   Gauge,
   HeartPulse,
   KeyRound,
   LayoutDashboard,
+  Menu,
   MessageSquare,
   Moon,
   PackageOpen,
@@ -31,6 +35,7 @@ import {
   Trash2,
   Users,
   XCircle,
+  type LucideIcon,
 } from 'lucide-react';
 import { UnauthorizedError, clearStoredAdminToken, crmApi, getStoredAdminToken, setStoredAdminToken } from './api';
 import type {
@@ -234,6 +239,8 @@ export function App() {
   const [toast, setToast] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [passwordDialogClient, setPasswordDialogClient] = useState<Client | null>(null);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [crawlingSites, setCrawlingSites] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     document.body.dataset.theme = theme;
@@ -472,6 +479,7 @@ export function App() {
   }
 
   async function triggerCrawl(siteId: string) {
+    setCrawlingSites((current) => new Set(current).add(siteId));
     setBusy(true);
     try {
       await crmApi.crawlClient(siteId);
@@ -481,10 +489,38 @@ export function App() {
         setSelectedClient(response.client);
       }
       setToast('Crawler started.');
+      void pollCrawlStatus(siteId);
     } catch (error) {
+      setCrawlingSites((current) => {
+        const next = new Set(current);
+        next.delete(siteId);
+        return next;
+      });
       showError(error, 'Crawler failed to start.');
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function pollCrawlStatus(siteId: string) {
+    const startedAt = Date.now();
+    try {
+      while (Date.now() - startedAt < 60000) {
+        await delay(5000);
+        const response = await crmApi.client(siteId);
+        syncClient(response.client);
+        const status = String(response.client.last_crawl_status || '').toLowerCase();
+        if (status && status !== 'running' && status !== 'crawling') break;
+      }
+      setOverview(await crmApi.overview());
+    } catch (error) {
+      showError(error, 'Crawler status refresh failed.');
+    } finally {
+      setCrawlingSites((current) => {
+        const next = new Set(current);
+        next.delete(siteId);
+        return next;
+      });
     }
   }
 
@@ -534,26 +570,37 @@ export function App() {
   const pageTitle = titleForView(view);
 
   return (
-    <div className="min-h-dvh bg-page text-ink">
-      <div className="grid min-h-dvh grid-cols-1 lg:grid-cols-[248px_minmax(0,1fr)]">
-        <Sidebar view={view} setView={setView} />
-        <main className="min-w-0">
+    <>
+      <div className="crm-shell">
+      <Sidebar
+        view={view}
+        setView={(nextView) => {
+          setView(nextView);
+          setMobileSidebarOpen(false);
+        }}
+        health={overview?.health ?? {}}
+        selectedClient={selectedClient}
+        open={mobileSidebarOpen}
+      />
+      <div className="crm-body">
           <Topbar
             title={pageTitle}
             health={overview?.health ?? {}}
+            selectedClient={selectedClient}
             theme={theme}
             busy={busy}
+            onToggleSidebar={() => setMobileSidebarOpen((open) => !open)}
             onRefresh={refreshCurrentView}
             onAddClient={() => setDialogOpen(true)}
             onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             onLogout={logoutAdmin}
             authenticated={!authRequired && Boolean(overview)}
           />
-          <section className="grid gap-4 px-4 py-4 sm:px-6 lg:px-8">
+          <main className="crm-content">
             {authRequired ? (
               <AdminTokenView busy={loading} error={loadError} onSubmit={submitAdminToken} />
             ) : loading || (!overview && !loadError) ? (
-              <EmptyState text="Loading CRM..." />
+              <SkeletonDashboard />
             ) : loadError && !overview ? (
               <LoadErrorView message={loadError} onRetry={loadInitial} />
             ) : (
@@ -566,8 +613,10 @@ export function App() {
                 analytics={analytics}
                 settings={settings}
                 range={range}
+                crawlingSites={crawlingSites}
                 onRangeChange={updateRange}
                 onViewChange={setView}
+                onAddClient={() => setDialogOpen(true)}
                 onOpenClient={openClient}
                 onCopyScript={copyScript}
                 onTriggerCrawl={triggerCrawl}
@@ -579,8 +628,16 @@ export function App() {
                 onGenerateSummary={generateSummary}
               />
             )}
-          </section>
-        </main>
+          </main>
+      </div>
+      {mobileSidebarOpen ? (
+        <button
+          className="fixed inset-0 z-40 border-0 bg-black/30 lg:hidden"
+          type="button"
+          aria-label="Close navigation"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      ) : null}
       </div>
       <AddClientDialog open={dialogOpen} busy={busy} onClose={() => setDialogOpen(false)} onCreate={createClient} />
       <ClientPanelPasswordDialog
@@ -590,8 +647,8 @@ export function App() {
         onUpdatePassword={updateClientPanelPassword}
         onRevokePassword={revokeClientPanelPassword}
       />
-      <div className={`toast ${toast ? 'toast-visible' : ''}`}>{toast}</div>
-    </div>
+      <div className={`toast ${toast ? 'visible' : ''}`}>{toast}</div>
+    </>
   );
 }
 
@@ -649,25 +706,41 @@ function LoadErrorView({ message, onRetry }: { message: string; onRetry: () => v
   );
 }
 
-function Sidebar({ view, setView }: { view: View; setView: (view: View) => void }) {
+function Sidebar({
+  view,
+  setView,
+  health,
+  selectedClient,
+  open,
+}: {
+  view: View;
+  setView: (view: View) => void;
+  health: HealthSnapshot;
+  selectedClient: Client | null;
+  open: boolean;
+}) {
   const grouped = groupNavItems();
+  const healthy = Object.values(health).every((value) => value === 'up' || value === 'ready');
   return (
-    <aside className="border-r border-line bg-sidebar text-sidebar">
+    <aside className={`crm-sidebar ${open ? 'open' : ''}`}>
       <button
         type="button"
-        className="flex w-full items-center gap-3 border-b border-sidebar-line px-4 py-5 text-left"
+        className="sidebar-brand"
         onClick={() => setView(DEFAULT_VIEW)}
       >
-        <span className="grid h-9 w-9 place-items-center rounded-lg bg-white/10 text-sm font-semibold">AH</span>
-        <span>
-          <span className="block text-sm font-semibold">AI Hub CRM</span>
-          <span className="block text-xs text-sidebar-muted">crawler and AI ops</span>
+        <span className="sidebar-brand-mark">AK</span>
+        <span className="sidebar-brand-text">
+          <strong>
+            AI Hub CRM
+            <i className={`health-dot ${healthy ? 'ok' : ''}`} aria-label={healthy ? 'Healthy' : 'Degraded'} />
+          </strong>
+          <span>crawler and AI ops</span>
         </span>
       </button>
-      <nav className="grid gap-2 p-3" aria-label="CRM navigation">
+      <nav className="sidebar-nav" aria-label="CRM navigation">
         {Object.entries(grouped).map(([section, items]) => (
-          <div key={section} className="grid gap-1">
-            <div className="px-2 pt-3 text-[11px] font-semibold uppercase text-sidebar-muted">{section}</div>
+          <div key={section}>
+            <div className="sidebar-section-label">{section}</div>
             {items.map((item) => {
               const Icon = item.icon;
               const active = view === item.view || (view === 'client-detail' && item.view === 'clients');
@@ -675,10 +748,10 @@ function Sidebar({ view, setView }: { view: View; setView: (view: View) => void 
                 <button
                   key={item.view}
                   type="button"
-                  className={`nav-button ${active ? 'nav-button-active' : ''}`}
+                  className={`sidebar-item ${active ? 'active' : ''}`}
                   onClick={() => setView(item.view)}
                 >
-                  <Icon size={16} aria-hidden="true" />
+                  <Icon className="sidebar-item-icon" aria-hidden="true" />
                   <span>{item.label}</span>
                 </button>
               );
@@ -686,6 +759,23 @@ function Sidebar({ view, setView }: { view: View; setView: (view: View) => void 
           </div>
         ))}
       </nav>
+      <div className="sidebar-footer">
+        {selectedClient ? (
+          <div className="sidebar-client-pin">
+            <div className="sidebar-client-pin-label">Current client</div>
+            <div className="sidebar-client-pin-id">{selectedClient.site_id}</div>
+            <div className="sidebar-client-pin-url" title={selectedClient.store_url}>
+              {selectedClient.store_url}
+            </div>
+          </div>
+        ) : (
+          <div className="sidebar-client-card">
+            <span>Workspace</span>
+            <strong>All clients</strong>
+            <span>Admin overview</span>
+          </div>
+        )}
+      </div>
     </aside>
   );
 }
@@ -693,9 +783,11 @@ function Sidebar({ view, setView }: { view: View; setView: (view: View) => void 
 function Topbar({
   title,
   health,
+  selectedClient,
   theme,
   busy,
   authenticated,
+  onToggleSidebar,
   onRefresh,
   onAddClient,
   onToggleTheme,
@@ -703,9 +795,11 @@ function Topbar({
 }: {
   title: string;
   health: HealthSnapshot;
+  selectedClient: Client | null;
   theme: Theme;
   busy: boolean;
   authenticated: boolean;
+  onToggleSidebar: () => void;
   onRefresh: () => void;
   onAddClient: () => void;
   onToggleTheme: () => void;
@@ -713,13 +807,28 @@ function Topbar({
 }) {
   const healthy = Object.values(health).every((value) => value === 'up' || value === 'ready');
   return (
-    <header className="topbar-panel sticky top-0 z-20 flex flex-col gap-3 border-b border-line px-4 py-3 backdrop-blur sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
-      <div>
-        <div className="text-xs font-semibold text-muted">AI Hub</div>
-        <h1 className="mt-0.5 text-xl font-semibold tracking-normal">{title}</h1>
+    <header className="crm-topbar">
+      <div className="flex items-center gap-3">
+        <button className="btn btn-secondary btn-icon mobile-menu-btn" type="button" aria-label="Open navigation" onClick={onToggleSidebar}>
+          <Menu size={17} aria-hidden="true" />
+        </button>
+        <div className="crm-topbar-title" aria-label={`AI Hub, ${title}${selectedClient ? `, ${selectedClient.site_id}` : ''}`}>
+          <span className="topbar-crumb-muted">AI Hub</span>
+          <span className="topbar-crumb-separator">›</span>
+          <span>{title}</span>
+          {selectedClient ? (
+            <>
+              <span className="topbar-crumb-separator">›</span>
+              <span className="topbar-crumb-client">{selectedClient.site_id}</span>
+            </>
+          ) : null}
+        </div>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <StatusPill value={healthy ? 'hub running' : 'hub degraded'} />
+      <div className="crm-topbar-actions">
+        <span className={`topbar-live-badge ${healthy ? '' : 'degraded'}`}>
+          <span className="topbar-live-dot" />
+          {healthy ? 'Live' : 'Degraded'}
+        </span>
         <IconButton
           label={theme === 'dark' ? 'Light mode' : 'Dark mode'}
           icon={theme === 'dark' ? Sun : Moon}
@@ -750,10 +859,12 @@ function ViewRenderer(props: {
   analytics: AnalyticsResponse | null;
   settings: SettingsResponse | null;
   range: string;
+  crawlingSites: Set<string>;
   onRangeChange: (range: string) => void;
   onViewChange: (view: View) => void;
+  onAddClient: () => void;
   onOpenClient: (siteId: string) => void;
-  onCopyScript: (client: Client) => void;
+  onCopyScript: (client: Client) => Promise<void>;
   onTriggerCrawl: (siteId: string) => void;
   onRemoveClient: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
@@ -776,7 +887,14 @@ function ViewRenderer(props: {
         <ClientsView {...props} />
       );
     case 'catalogs':
-      return <CatalogsView clients={props.clients} onOpenClient={props.onOpenClient} onTriggerCrawl={props.onTriggerCrawl} />;
+      return (
+        <CatalogsView
+          clients={props.clients}
+          crawlingSites={props.crawlingSites}
+          onOpenClient={props.onOpenClient}
+          onTriggerCrawl={props.onTriggerCrawl}
+        />
+      );
     case 'usage':
       return <UsageView clients={props.clients} recentActivity={props.overview.recent_activity} />;
     case 'conversations':
@@ -827,7 +945,7 @@ function DashboardView({
   const metrics = overview.metrics;
   const analyticsMetrics = analytics?.metrics;
   return (
-    <>
+    <div className="grid gap-4">
       <section className="section-row">
         <div>
           <h2 className="text-base font-semibold">Store analytics</h2>
@@ -835,46 +953,203 @@ function DashboardView({
         </div>
         <RangeControl value={range} onChange={onRangeChange} />
       </section>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard
-          label="Total voice turns"
-          value={analyticsMetrics?.turns ?? 0}
-          detail={rangeLabel(range)}
-          onClick={() => onViewChange('conversations')}
-        />
-        <MetricCard
-          label="Products indexed"
-          value={metrics.products_indexed}
-          detail="Catalog coverage"
-          onClick={() => onViewChange('catalogs')}
-        />
-        <MetricCard
-          label="Avg pipeline latency"
-          value={`${number(analyticsMetrics?.avg_latency_ms ?? 0)} ms`}
-          detail={rangeLabel(range)}
-          onClick={() => onViewChange('usage')}
-        />
-        <MetricCard
-          label="Est. tokens used"
-          value={analyticsMetrics?.tokens ?? 0}
-          detail={rangeLabel(range)}
-          onClick={() => onViewChange('usage')}
-        />
+      <div className="dashboard-bento fade-in">
+        <KpiCard className="bento-kpi" label="Total clients" value={clients.length} icon={Users} tone="accent" />
+        <KpiCard className="bento-kpi" label="Active sessions" value={analyticsMetrics?.sessions ?? 0} icon={Activity} tone="blue" />
+        <KpiCard className="bento-kpi" label="Turns today" value={metrics.voice_turns_today ?? 0} icon={MessageSquare} tone="green" />
+        <KpiCard className="bento-kpi" label="Catalog items" value={metrics.products_indexed ?? 0} icon={Database} tone="amber" />
+
+        <div className="bento-wide card">
+          <DashboardTrendChart analytics={analytics} range={range} onOpenAnalytics={() => onViewChange('analytics')} />
+        </div>
+        <div className="bento-narrow card">
+          <ActiveClientsList clients={clients.slice(0, 5)} onOpenClient={onOpenClient} onOpenClients={() => onViewChange('clients')} />
+        </div>
+
+        <div className="bento-half card">
+          <RecentActivityFeed items={overview.recent_activity.slice(0, 30)} onOpen={() => onViewChange('conversations')} />
+        </div>
+        <div className="bento-half card">
+          <HealthStatusPanel health={overview.health} />
+        </div>
       </div>
-      <div className="grid gap-4 xl:grid-cols-[0.75fr_1.25fr]">
-        <IntentPanel rows={analytics?.top_intents ?? []} onClick={() => onViewChange('analytics')} />
-        <RankPanel title="Top products by mentions" rows={analytics?.top_products ?? []} onClick={() => onViewChange('analytics')} />
+    </div>
+  );
+}
+
+function KpiCard({
+  label,
+  value,
+  icon: Icon,
+  tone,
+  className = '',
+}: {
+  label: string;
+  value: string | number;
+  icon: LucideIcon;
+  tone: 'accent' | 'blue' | 'green' | 'amber';
+  className?: string;
+}) {
+  return (
+    <section className={`card kpi-card kpi-${tone} ${className}`}>
+      <div className="kpi-icon-bg">
+        <Icon size={40} aria-hidden="true" />
       </div>
-      <div className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
-        <ActiveClientsPanel clients={clients} onOpenClient={onOpenClient} onOpenClients={() => onViewChange('clients')} />
-        <RecentActivityPanel items={overview.recent_activity} onClick={() => onViewChange('conversations')} />
+      <span className="kpi-label">{label}</span>
+      <strong className="kpi-value">{typeof value === 'number' ? number(value) : value}</strong>
+    </section>
+  );
+}
+
+function DashboardTrendChart({
+  analytics,
+  range,
+  onOpenAnalytics,
+}: {
+  analytics: AnalyticsResponse | null;
+  range: string;
+  onOpenAnalytics: () => void;
+}) {
+  const visibleRows = (analytics?.series ?? []).slice(-14);
+  const maxTurns = Math.max(...visibleRows.map((row) => row.turns), 1);
+  const maxTokens = Math.max(...visibleRows.map((row) => row.tokens), 1);
+  return (
+    <>
+      <div className="card-header">
+        <div>
+          <h2>Demand trend</h2>
+          <span className="card-meta">{rangeLabel(range)}</span>
+        </div>
+        <Button variant="ghost" type="button" onClick={onOpenAnalytics}>
+          View analytics
+        </Button>
       </div>
+      {visibleRows.length ? (
+        <div className="analytics-trend">
+          {visibleRows.map((row) => (
+            <div key={row.date} className="trend-column">
+              <span className="trend-tooltip">
+                {row.date}: {number(row.turns)} turns, {number(row.tokens)} tokens
+              </span>
+              <span className="trend-token" style={{ bottom: `${Math.max(8, (row.tokens / maxTokens) * 88)}%` }} />
+              <span className="trend-bar" style={{ height: `${Math.max(8, (row.turns / maxTurns) * 100)}%` }} />
+              <small>{row.date.slice(5)}</small>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <EmptyState text="No trend data yet." />
+      )}
+    </>
+  );
+}
+
+function ActiveClientsList({
+  clients,
+  onOpenClient,
+  onOpenClients,
+}: {
+  clients: Client[];
+  onOpenClient: (siteId: string) => void;
+  onOpenClients: () => void;
+}) {
+  return (
+    <>
+      <div className="card-header">
+        <div>
+          <h2>Active clients</h2>
+          <span className="card-meta">{number(clients.length)} shown</span>
+        </div>
+        <Button variant="ghost" type="button" onClick={onOpenClients}>
+          Open all
+        </Button>
+      </div>
+      {clients.length ? (
+        <div className="client-mini-list">
+          {clients.map((client, index) => (
+            <button
+              key={client.site_id}
+              className="client-mini-row"
+              type="button"
+              onClick={() => onOpenClient(client.site_id)}
+              style={{ animationDelay: `${index * 30}ms` }}
+            >
+              <span className="client-mini-avatar">{client.site_id.slice(0, 2).toUpperCase()}</span>
+              <div className="client-mini-copy">
+                <strong title={client.name}>{client.name}</strong>
+                <span title={client.store_url}>{number(client.catalog.active_products)} products · {client.store_url}</span>
+              </div>
+              <StatusPill value={client.status} />
+              <ArrowRight size={14} aria-hidden="true" className="client-mini-arrow" />
+            </button>
+          ))}
+        </div>
+      ) : (
+        <EmptyState title="No clients yet" message="Add a client to start crawling products and tracking voice assistant demand." />
+      )}
+    </>
+  );
+}
+
+function RecentActivityFeed({ items, onOpen }: { items: UsageEvent[]; onOpen: () => void }) {
+  return (
+    <>
+      <div className="card-header">
+        <div>
+          <h2>Recent activity</h2>
+          <span className="card-meta">Latest {number(items.length)} events</span>
+        </div>
+        <Button variant="ghost" type="button" onClick={onOpen}>
+          Open conversations
+        </Button>
+      </div>
+      <ActivityList items={items.slice(0, 6)} />
+      {items.length > 6 ? (
+        <div className="mt-4">
+          <Button variant="secondary" type="button" onClick={onOpen}>
+            Load more
+          </Button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function HealthStatusPanel({ health }: { health: HealthSnapshot }) {
+  const entries = Object.entries(health);
+  return (
+    <>
+      <div className="card-header">
+        <div>
+          <h2>Quick health</h2>
+          <span className="card-meta">{number(entries.length)} checks</span>
+        </div>
+      </div>
+      {entries.length ? (
+        <div className="health-grid">
+          {entries.map(([key, value]) => {
+            const state = healthState(value);
+            return (
+              <article key={key} className={`health-item ${state}`}>
+                <span className="health-item-label">{labelize(key)}</span>
+                <span className="health-item-status">
+                  <StatusPill value={value || 'unknown'} />
+                </span>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState text="No health checks returned." />
+      )}
     </>
   );
 }
 
 function ClientsView({
   clients,
+  crawlingSites,
+  onAddClient,
   onOpenClient,
   onRemoveClient,
   onToggleClient,
@@ -882,68 +1157,174 @@ function ClientsView({
   onOpenPasswordDialog,
 }: {
   clients: Client[];
+  crawlingSites: Set<string>;
+  onAddClient: () => void;
   onOpenClient: (siteId: string) => void;
   onRemoveClient: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
   onTriggerCrawl: (siteId: string) => void;
   onOpenPasswordDialog: (client: Client) => void;
 }) {
+  const useCards = clients.length <= 8;
   return (
-    <Panel title="Clients">
-      <Table>
-        <thead>
-          <tr>
-            <th>Client</th>
-            <th>Site ID</th>
-            <th>Status</th>
-            <th>Products</th>
-            <th>Turns</th>
-            <th>Tokens</th>
-            <th>Crawler</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {clients.map((client) => (
-            <tr key={client.site_id}>
-              <td>
-                <button className="link-strong" type="button" onClick={() => onOpenClient(client.site_id)}>
-                  {client.name}
-                </button>
-              </td>
-              <td>
-                <code>{client.site_id}</code>
-              </td>
-              <td>
-                <StatusPill value={client.status} />
-              </td>
-              <td>{number(client.catalog.active_products)}</td>
-              <td>{number(client.usage.total_turns)}</td>
-              <td>{number(client.usage.tokens_estimated)}</td>
-              <td>
-                <StatusPill value={client.last_crawl_status || 'not_started'} />
-              </td>
-              <td>
-                <div className="flex gap-2">
-                  <IconButton label="Crawl now" icon={Play} onClick={() => onTriggerCrawl(client.site_id)} />
-                  <IconButton
-                    label={client.status === 'live' ? 'Disable' : 'Enable'}
-                    icon={CheckCircle2}
-                    onClick={() => onToggleClient(client.site_id, client.status !== 'live')}
-                  />
-                  <ClientActionMenu
-                    client={client}
-                    onOpenClient={onOpenClient}
-                    onOpenPasswordDialog={onOpenPasswordDialog}
-                    onRemoveClient={onRemoveClient}
-                  />
-                </div>
-              </td>
-            </tr>
+    <div>
+      <div className="page-header">
+        <div>
+          <h2>Clients</h2>
+          <p>Manage tenants, crawler state, catalog coverage, and client panel access.</p>
+        </div>
+        <Button icon={Plus} type="button" onClick={onAddClient}>
+          Add client
+        </Button>
+      </div>
+      {!clients.length ? (
+        <div className="card">
+          <div className="empty-state">
+            <Users size={48} className="empty-icon" aria-hidden="true" />
+            <h3>No clients yet</h3>
+            <p>Add your first client to start crawling and serving the AI widget.</p>
+            <Button icon={Plus} type="button" onClick={onAddClient}>
+              Add client
+            </Button>
+          </div>
+        </div>
+      ) : useCards ? (
+        <div className="client-grid">
+          {clients.map((client, index) => (
+            <ClientCard
+              key={client.site_id}
+              client={client}
+              crawling={crawlingSites.has(client.site_id)}
+              style={{ animationDelay: `${index * 40}ms` }}
+              onOpenClient={onOpenClient}
+              onToggleClient={onToggleClient}
+              onTriggerCrawl={onTriggerCrawl}
+            />
           ))}
-        </tbody>
-      </Table>
-    </Panel>
+        </div>
+      ) : (
+        <Panel title="Client directory">
+          <Table>
+            <thead>
+              <tr>
+                <th>Client</th>
+                <th>Site ID</th>
+                <th>Status</th>
+                <th>Products</th>
+                <th>Turns</th>
+                <th>Tokens</th>
+                <th>Crawler</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {clients.map((client) => (
+                <tr key={client.site_id} className="clickable-row" onClick={() => onOpenClient(client.site_id)}>
+                  <td>
+                    <strong>{client.name}</strong>
+                    <span className="mt-1 block text-xs text-muted truncate-text" title={client.store_url}>
+                      {client.store_url}
+                    </span>
+                  </td>
+                  <td>
+                    <code>{client.site_id}</code>
+                  </td>
+                  <td>
+                    <StatusPill value={client.status} />
+                  </td>
+                  <td>{number(client.catalog.active_products)}</td>
+                  <td>{number(client.usage.total_turns)}</td>
+                  <td>{number(client.usage.tokens_estimated)}</td>
+                  <td>
+                    <StatusPill value={client.last_crawl_status || 'not_started'} />
+                  </td>
+                  <td>
+                    <div className="flex gap-2" onClick={(event) => event.stopPropagation()}>
+                      <CrawlButton
+                        siteId={client.site_id}
+                        label="Crawl"
+                        active={crawlingSites.has(client.site_id)}
+                        onTriggerCrawl={onTriggerCrawl}
+                        compact
+                      />
+                      <IconButton
+                        label={client.status === 'live' ? 'Disable' : 'Enable'}
+                        icon={CheckCircle2}
+                        onClick={() => onToggleClient(client.site_id, client.status !== 'live')}
+                      />
+                      <ClientActionMenu
+                        client={client}
+                        onOpenClient={onOpenClient}
+                        onOpenPasswordDialog={onOpenPasswordDialog}
+                        onRemoveClient={onRemoveClient}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+function ClientCard({
+  client,
+  crawling,
+  style,
+  onOpenClient,
+  onToggleClient,
+  onTriggerCrawl,
+}: {
+  client: Client;
+  crawling: boolean;
+  style?: CSSProperties;
+  onOpenClient: (siteId: string) => void;
+  onToggleClient: (siteId: string, enabled: boolean) => void;
+  onTriggerCrawl: (siteId: string) => void;
+}) {
+  return (
+    <article className="client-card" style={style} role="button" tabIndex={0} onClick={() => onOpenClient(client.site_id)} onKeyDown={(event) => {
+      if (event.key === 'Enter' || event.key === ' ') onOpenClient(client.site_id);
+    }}>
+      <div className="client-card-head">
+        <div className="min-w-0">
+          <div className="client-card-id">{client.site_id}</div>
+          <div className="client-card-url" title={client.store_url}>{client.store_url}</div>
+        </div>
+        <StatusPill value={client.status} />
+      </div>
+      <div className="client-card-chips">
+        <span className="badge badge-muted">{number(client.catalog.active_products)} catalog items</span>
+        <StatusPill value={client.last_crawl_status || 'not_started'} />
+      </div>
+      <div className="grid gap-1 text-sm">
+        <strong>{client.name}</strong>
+        <span className="text-muted">Last crawl: {shortTime(client.last_crawl_at)}</span>
+      </div>
+      <div className="client-card-actions" onClick={(event) => event.stopPropagation()}>
+        <Button
+          variant="secondary"
+          size="sm"
+          type="button"
+          onClick={() => onToggleClient(client.site_id, client.status !== 'live')}
+        >
+          {client.status === 'live' ? 'Disable' : 'Enable'}
+        </Button>
+        <CrawlButton
+          siteId={client.site_id}
+          label="Crawl"
+          active={crawling}
+          onTriggerCrawl={onTriggerCrawl}
+          compact
+        />
+        <Button variant="secondary" size="sm" type="button" icon={Eye} onClick={() => onOpenClient(client.site_id)}>
+          View
+        </Button>
+      </div>
+    </article>
   );
 }
 
@@ -959,31 +1340,69 @@ function ClientActionMenu({
   onRemoveClient: (siteId: string) => void;
 }) {
   return (
-    <details className="row-action-menu">
-      <summary title="Client actions" aria-label={`Actions for ${client.name}`}>
+    <ActionMenu
+      items={[
+        { label: 'Open client', icon: Eye, onClick: () => onOpenClient(client.site_id) },
+        { label: 'Panel password', icon: KeyRound, onClick: () => onOpenPasswordDialog(client) },
+        { label: 'Remove client', icon: Trash2, onClick: () => onRemoveClient(client.site_id), danger: true },
+      ]}
+    />
+  );
+}
+
+function ActionMenu({
+  items,
+}: {
+  items: { label: string; icon: LucideIcon; onClick: () => void; danger?: boolean }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handle(event: MouseEvent) {
+      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, []);
+
+  return (
+    <div ref={ref} className="action-menu-wrapper" role="menu">
+      <button
+        className="btn btn-secondary btn-icon"
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
         <EllipsisVertical size={16} aria-hidden="true" />
-      </summary>
-      <div className="row-action-menu-panel">
-        <button type="button" onClick={() => onOpenClient(client.site_id)}>
-          <Eye size={15} aria-hidden="true" />
-          <span>Open client</span>
-        </button>
-        <button type="button" onClick={() => onOpenPasswordDialog(client)}>
-          <KeyRound size={15} aria-hidden="true" />
-          <span>Panel password</span>
-        </button>
-        <button className="danger" type="button" onClick={() => onRemoveClient(client.site_id)}>
-          <Trash2 size={15} aria-hidden="true" />
-          <span>Remove client</span>
-        </button>
-      </div>
-    </details>
+      </button>
+      {open ? (
+        <div className="action-menu-panel">
+          {items.map(({ label, icon: Icon, onClick, danger }) => (
+            <button
+              key={label}
+              className={`action-menu-item ${danger ? 'danger' : ''}`}
+              type="button"
+              onClick={() => {
+                onClick();
+                setOpen(false);
+              }}
+            >
+              <Icon size={15} aria-hidden="true" />
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
 function ClientDetailView({
   client,
   recentActivity,
+  crawlingSites,
   onCopyScript,
   onTriggerCrawl,
   onRemoveClient,
@@ -994,7 +1413,8 @@ function ClientDetailView({
 }: {
   client: Client;
   recentActivity: UsageEvent[];
-  onCopyScript: (client: Client) => void;
+  crawlingSites: Set<string>;
+  onCopyScript: (client: Client) => Promise<void>;
   onTriggerCrawl: (siteId: string) => void;
   onRemoveClient: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
@@ -1011,6 +1431,7 @@ function ClientDetailView({
   const [catalogError, setCatalogError] = useState('');
   const [reportError, setReportError] = useState('');
   const [scanning, setScanning] = useState(false);
+  const crawling = crawlingSites.has(client.site_id);
 
   useEffect(() => {
     let cancelled = false;
@@ -1088,12 +1509,8 @@ function ClientDetailView({
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" icon={Copy} onClick={() => onCopyScript(client)}>
-            Copy script
-          </Button>
-          <Button variant="secondary" icon={Play} onClick={() => onTriggerCrawl(client.site_id)}>
-            Crawl now
-          </Button>
+          <CopyScriptButton client={client} onCopyScript={onCopyScript} />
+          <CrawlButton siteId={client.site_id} label="Crawl now" active={crawling} onTriggerCrawl={onTriggerCrawl} />
           <Button variant="secondary" icon={KeyRound} onClick={() => onOpenPasswordDialog(client)}>
             Panel password
           </Button>
@@ -1105,7 +1522,7 @@ function ClientDetailView({
           </Button>
         </div>
       </section>
-      <nav className="client-tabbar" aria-label="Client detail sections">
+      <nav className="client-tabs" aria-label="Client detail sections">
         {CLIENT_WORKSPACE_TABS.map((tab) => (
           <ClientTabButton key={tab.id} tab={tab} active={activeTab === tab.id} onClick={() => setActiveTab(tab.id)} />
         ))}
@@ -1120,6 +1537,7 @@ function ClientDetailView({
           onTriggerCrawl={onTriggerCrawl}
           onRunScan={handleRunScan}
           scanning={scanning}
+          crawling={crawling}
         />
       ) : null}
       {activeTab === 'readiness' ? (
@@ -1137,17 +1555,19 @@ function ClientDetailView({
           error={catalogError}
           fallbackCount={client.catalog_preview?.length ?? 0}
           totalProducts={client.catalog.active_products}
+          crawling={crawling}
           onTriggerCrawl={() => onTriggerCrawl(client.site_id)}
         />
       ) : null}
       {activeTab === 'crawl' ? (
-        <ClientCrawlTab client={client} crawlReport={crawlReport} onTriggerCrawl={() => onTriggerCrawl(client.site_id)} />
+        <ClientCrawlTab client={client} crawlReport={crawlReport} crawling={crawling} onTriggerCrawl={() => onTriggerCrawl(client.site_id)} />
       ) : null}
       {activeTab === 'activity' ? <ClientActivityTab client={client} recentActivity={recentActivity} /> : null}
       {activeTab === 'controls' ? (
         <ClientControlsTab
           client={client}
           scanning={scanning}
+          crawling={crawling}
           onCopyScript={onCopyScript}
           onTriggerCrawl={onTriggerCrawl}
           onRunScan={handleRunScan}
@@ -1173,7 +1593,7 @@ function ClientTabButton({
 }) {
   const Icon = tab.icon;
   return (
-    <button className={`client-tab ${active ? 'client-tab-active' : ''}`} type="button" onClick={onClick}>
+    <button className={`client-tab-btn ${active ? 'active' : ''}`} type="button" onClick={onClick}>
       <Icon size={15} aria-hidden="true" />
       <span>{tab.label}</span>
     </button>
@@ -1185,6 +1605,7 @@ function ClientOverviewTab({
   capabilities,
   crawlReport,
   scanning,
+  crawling,
   onCopyScript,
   onTriggerCrawl,
   onRunScan,
@@ -1193,12 +1614,13 @@ function ClientOverviewTab({
   capabilities: CapabilitiesSummary | null;
   crawlReport: CrawlReport | null;
   scanning: boolean;
-  onCopyScript: (client: Client) => void;
+  crawling: boolean;
+  onCopyScript: (client: Client) => Promise<void>;
   onTriggerCrawl: (siteId: string) => void;
   onRunScan: () => void;
 }) {
   return (
-    <div className="grid gap-4">
+    <div className="tab-content fade-in">
       <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
         <MetricCard label="Active products" value={client.catalog.active_products} detail={`${number(client.catalog.categories ?? 0)} categories`} />
         <MetricCard label="Missing vectors" value={client.catalog.missing_embeddings} detail="Needs RAG sync" />
@@ -1217,9 +1639,7 @@ function ClientOverviewTab({
         <Panel
           title="One-line client script"
           action={
-            <Button variant="secondary" icon={Copy} onClick={() => onCopyScript(client)}>
-              Copy
-            </Button>
+            <CopyScriptButton client={client} onCopyScript={onCopyScript} compact />
           }
         >
           <pre className="code-block install-script">{client.script_tag}</pre>
@@ -1239,9 +1659,7 @@ function ClientOverviewTab({
             <Button variant="secondary" disabled={scanning} onClick={onRunScan}>
               {scanning ? 'Scanning...' : 'Run readiness'}
             </Button>
-            <Button variant="secondary" icon={Play} onClick={() => onTriggerCrawl(client.site_id)}>
-              Crawl now
-            </Button>
+            <CrawlButton siteId={client.site_id} label="Crawl now" active={crawling} onTriggerCrawl={onTriggerCrawl} />
           </div>
         </Panel>
       </div>
@@ -1293,7 +1711,7 @@ function ClientReadinessTab({
   onRunScan: () => void;
 }) {
   return (
-    <div className="grid gap-4">
+    <div className="tab-content fade-in">
       <section className="section-row">
         <div>
           <h2 className="text-base font-semibold">Readiness checks</h2>
@@ -1364,6 +1782,7 @@ function ClientCatalogTab({
   error,
   fallbackCount,
   totalProducts,
+  crawling,
   onTriggerCrawl,
 }: {
   products: DisplayProduct[];
@@ -1371,6 +1790,7 @@ function ClientCatalogTab({
   error: string;
   fallbackCount: number;
   totalProducts: number;
+  crawling: boolean;
   onTriggerCrawl: () => void;
 }) {
   const [query, setQuery] = useState('');
@@ -1394,7 +1814,7 @@ function ClientCatalogTab({
   }, [page, pageCount]);
 
   return (
-    <div className="grid gap-4">
+    <div className="tab-content fade-in">
       <section className="section-row">
         <div>
           <h2 className="text-base font-semibold">Catalog review</h2>
@@ -1402,14 +1822,12 @@ function ClientCatalogTab({
             Product media, price, stock, categories, and vector status in one focused view.
           </p>
         </div>
-        <Button variant="secondary" icon={Play} onClick={onTriggerCrawl}>
-          Crawl now
-        </Button>
+        <CrawlButton label="Crawl now" active={crawling} onTriggerCrawl={onTriggerCrawl} />
       </section>
       {error ? <NoticeBanner tone="info" message={`${error} ${fallbackCount ? `Using ${fallbackCount} preview rows.` : ''}`} /> : null}
       <div className="grid gap-3 md:grid-cols-3">
         <MetricCard label="Loaded products" value={products.length} detail={`${number(totalProducts)} total active`} />
-        <MetricCard label="Visible after filters" value={visibleProducts.length} detail={loading ? 'Loading catalog...' : `Page ${page} of ${pageCount}`} />
+        <MetricCard label="Visible after filters" value={visibleProducts.length} detail={loading ? 'Refreshing catalog' : `Page ${page} of ${pageCount}`} />
         <MetricCard label="Categories" value={categories.length} detail="Detected in loaded products" />
       </div>
       <div className="catalog-toolbar">
@@ -1451,8 +1869,14 @@ function ClientCatalogTab({
           </div>
           <PaginationControl page={page} pageCount={pageCount} onPageChange={setPage} />
         </>
+      ) : loading ? (
+        <div className="product-gallery">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <SkeletonCard key={index} height={320} />
+          ))}
+        </div>
       ) : (
-        <EmptyState text={loading ? 'Catalog is loading.' : 'No products match the selected filters.'} />
+        <EmptyState title="No products match" message="Adjust the search, category, or vector filters to widen this catalog view." />
       )}
     </div>
   );
@@ -1490,7 +1914,6 @@ function PaginationControl({
   pageCount: number;
   onPageChange: (page: number) => void;
 }) {
-  if (pageCount <= 1) return null;
   return (
     <div className="pagination-control">
       <Button variant="secondary" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
@@ -1522,22 +1945,22 @@ function ProductImage({ product }: { product: DisplayProduct }) {
 function ClientCrawlTab({
   client,
   crawlReport,
+  crawling,
   onTriggerCrawl,
 }: {
   client: Client;
   crawlReport: CrawlReport | null;
+  crawling: boolean;
   onTriggerCrawl: () => void;
 }) {
   return (
-    <div className="grid gap-4">
+    <div className="tab-content fade-in">
       <section className="section-row">
         <div>
           <h2 className="text-base font-semibold">Crawl history</h2>
           <p className="mt-1 text-sm text-muted">Coverage, failures, blocked pages, and recent sync runs.</p>
         </div>
-        <Button variant="secondary" icon={Play} onClick={onTriggerCrawl}>
-          Start crawl
-        </Button>
+        <CrawlButton label="Start crawl" active={crawling} onTriggerCrawl={onTriggerCrawl} />
       </section>
       <CrawlReportSummary report={crawlReport} />
       <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
@@ -1605,30 +2028,65 @@ function SyncRunTimeline({ runs }: { runs: SyncRun[] }) {
 }
 
 function UrlList({ title, urls }: { title: string; urls: string[] }) {
+  const [open, setOpen] = useState(false);
   if (!urls.length) return null;
   return (
-    <details className="url-list">
-      <summary>{title} ({urls.length})</summary>
-      <div className="grid gap-2 pt-3">
+    <div className="url-list">
+      <button className="summary-toggle" type="button" onClick={() => setOpen((current) => !current)}>
+        <ChevronDown className={open ? 'open' : ''} size={16} aria-hidden="true" />
+        <span>{title} ({urls.length})</span>
+      </button>
+      {open ? (
+        <div className="grid gap-2 pt-3">
         {urls.slice(0, 12).map((url) => (
           <code key={url}>{url}</code>
         ))}
-      </div>
-    </details>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
 function ClientActivityTab({ client, recentActivity }: { client: Client; recentActivity: UsageEvent[] }) {
+  const tokenLimit = client.quota.client.limit || client.token_limit || 0;
+  const tokenUsed = client.quota.client.used || client.usage.tokens_estimated || 0;
+  const tokenRemaining = client.quota.client.remaining || Math.max(0, tokenLimit - tokenUsed);
+  const tokenPct = tokenLimit ? Math.round((tokenUsed / tokenLimit) * 100) : 0;
+
   return (
-    <div className="grid gap-4">
+    <div className="tab-content fade-in">
       <div className="grid gap-3 md:grid-cols-3">
         <MetricCard label="Total turns" value={client.usage.total_turns} detail="All time" />
         <MetricCard label="Turns today" value={client.usage.turns_today} detail="Since midnight" />
         <MetricCard label="Avg latency" value={`${number(client.usage.avg_latency_ms)} ms`} detail="Voice response" />
       </div>
-      <Panel title="Recent customer activity">
-        <ActivityList items={recentActivity} />
-      </Panel>
+      <div className="activity-insight-grid">
+        <Panel title="Recent customer activity">
+          <ActivityList items={recentActivity} />
+          {recentActivity.length > 0 && recentActivity.length < 5 ? (
+            <div className="activity-nudge">
+              More activity will appear as your AI widget receives traffic.
+            </div>
+          ) : null}
+        </Panel>
+        <section className="card token-burn-card">
+          <div className="card-header">
+            <div>
+              <h3>Token burn</h3>
+              <span className="card-meta">Client quota pressure</span>
+            </div>
+            <span className="badge badge-blue">{number(tokenPct)}%</span>
+          </div>
+          <div className="token-burn-meter">
+            <span style={{ width: `${Math.max(3, Math.min(100, tokenPct))}%` }} />
+          </div>
+          <div className="token-burn-stats">
+            <KeyValue label="Used" value={`${number(tokenUsed)} tokens`} />
+            <KeyValue label="Remaining" value={`${number(tokenRemaining)} tokens`} />
+            <KeyValue label="Session cap" value={`${number(client.session_token_limit ?? 0)} tokens`} />
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
@@ -1636,6 +2094,7 @@ function ClientActivityTab({ client, recentActivity }: { client: Client; recentA
 function ClientControlsTab({
   client,
   scanning,
+  crawling,
   onCopyScript,
   onTriggerCrawl,
   onRunScan,
@@ -1647,7 +2106,8 @@ function ClientControlsTab({
 }: {
   client: Client;
   scanning: boolean;
-  onCopyScript: (client: Client) => void;
+  crawling: boolean;
+  onCopyScript: (client: Client) => Promise<void>;
   onTriggerCrawl: (siteId: string) => void;
   onRunScan: () => void;
   onRemoveClient: (siteId: string) => void;
@@ -1657,33 +2117,47 @@ function ClientControlsTab({
   onViewChange: (view: View) => void;
 }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
-      <Panel title="Operator controls">
-        <div className="control-grid">
-          <Button variant="secondary" icon={Copy} onClick={() => onCopyScript(client)}>
-            Copy one-line script
-          </Button>
-          <Button variant="secondary" icon={Play} onClick={() => onTriggerCrawl(client.site_id)}>
-            Run crawler
-          </Button>
-          <Button variant="secondary" icon={ClipboardCheck} disabled={scanning} onClick={onRunScan}>
-            {scanning ? 'Scanning...' : 'Run readiness'}
-          </Button>
-          <Button variant="secondary" icon={Settings} onClick={() => onViewChange('settings')}>
-            Global settings
-          </Button>
-          <Button variant="secondary" icon={Eye} onClick={() => onToggleClient(client.site_id, client.status !== 'live')}>
-            {client.status === 'live' ? 'Disable widget' : 'Enable widget'}
-          </Button>
-          <Button variant="secondary" icon={KeyRound} onClick={() => onOpenPasswordDialog(client)}>
-            Panel password
-          </Button>
-          <Button variant="danger" icon={Trash2} onClick={() => onRemoveClient(client.site_id)}>
-            Remove client
-          </Button>
+    <div className="tab-content fade-in">
+      <div className="control-card-grid">
+        <Panel title="Operator controls">
+          <div className="control-grid">
+            <CopyScriptButton client={client} onCopyScript={onCopyScript} />
+            <CrawlButton siteId={client.site_id} label="Run crawler" active={crawling} onTriggerCrawl={onTriggerCrawl} />
+            <Button variant="secondary" icon={ClipboardCheck} disabled={scanning} onClick={onRunScan}>
+              {scanning ? 'Scanning...' : 'Run readiness'}
+            </Button>
+            <Button variant="secondary" icon={Settings} onClick={() => onViewChange('settings')}>
+              Global settings
+            </Button>
+            <Button variant="secondary" icon={Eye} onClick={() => onToggleClient(client.site_id, client.status !== 'live')}>
+              {client.status === 'live' ? 'Disable widget' : 'Enable widget'}
+            </Button>
+          </div>
+        </Panel>
+        <div className="card">
+          <div className="card-header">
+            <h3>Client Panel</h3>
+            <span className="card-meta">Client-facing</span>
+          </div>
+          <p style={{ fontSize: 13, color: 'var(--muted)', margin: '0 0 14px' }}>
+            Direct your client to their analytics panel. They log in with their site ID and the panel password you set.
+          </p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <a
+              href={`/client-panel/${client.site_id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-secondary"
+            >
+              <Eye size={14} aria-hidden="true" /> Open client panel
+            </a>
+            <button className="btn btn-ghost" type="button" onClick={() => onOpenPasswordDialog(client)}>
+              <KeyRound size={14} aria-hidden="true" /> Manage password
+            </button>
+          </div>
         </div>
-      </Panel>
-      <div className="grid gap-4">
+      </div>
+      <div className="control-card-grid">
         <TokenLimitsPanel client={client} onUpdateTokenLimits={onUpdateTokenLimits} />
         <Panel title="Runtime limits and install">
           <KeyValue label="Client token limit" value={client.token_limit} />
@@ -1694,6 +2168,20 @@ function ClientControlsTab({
           <pre className="code-block install-script mt-4">{client.script_tag}</pre>
         </Panel>
       </div>
+      <section className="card danger-zone">
+        <div className="card-header">
+          <h3>Danger zone</h3>
+          <span className="card-meta">Destructive actions</span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="danger" icon={Trash2} onClick={() => onRemoveClient(client.site_id)}>
+            Remove client
+          </Button>
+          <Button variant="danger" icon={KeyRound} onClick={() => onOpenPasswordDialog(client)}>
+            Manage password revoke
+          </Button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -1758,6 +2246,7 @@ function TokenLimitsPanel({
             step={1}
             value={tokenLimit}
             onChange={(event) => setTokenLimit(event.currentTarget.value)}
+            onBlur={() => setTokenLimit(normalizePositiveInteger(tokenLimit))}
           />
           <Field
             label="Per shopper/session limit"
@@ -1766,6 +2255,7 @@ function TokenLimitsPanel({
             step={1}
             value={sessionTokenLimit}
             onChange={(event) => setSessionTokenLimit(event.currentTarget.value)}
+            onBlur={() => setSessionTokenLimit(normalizePositiveInteger(sessionTokenLimit))}
           />
         </div>
         <div className="grid gap-2 md:grid-cols-3">
@@ -1796,15 +2286,17 @@ function NoticeBanner({ tone, message }: { tone: SettingNoticeTone; message: str
 }
 
 function TechnicalDetails({ title, data }: { title: string; data: unknown }) {
+  const [open, setOpen] = useState(false);
   if (!data) return <EmptyState text="No technical report is available yet." />;
   return (
-    <details className="technical-details">
-      <summary>
+    <div className="technical-details">
+      <button className="summary-toggle" type="button" onClick={() => setOpen((current) => !current)}>
+        <ChevronDown className={open ? 'open' : ''} size={16} aria-hidden="true" />
         <Code2 size={16} aria-hidden="true" />
         <span>{title}</span>
-      </summary>
-      <pre className="code-block technical-json">{JSON.stringify(data, null, 2)}</pre>
-    </details>
+      </button>
+      {open ? <pre className="code-block technical-json">{JSON.stringify(data, null, 2)}</pre> : null}
+    </div>
   );
 }
 
@@ -1862,10 +2354,12 @@ function firstText(...values: Array<string | number | null | undefined>) {
 
 function CatalogsView({
   clients,
+  crawlingSites,
   onOpenClient,
   onTriggerCrawl,
 }: {
   clients: Client[];
+  crawlingSites: Set<string>;
   onOpenClient: (siteId: string) => void;
   onTriggerCrawl: (siteId: string) => void;
 }) {
@@ -1882,9 +2376,12 @@ function CatalogsView({
             <Button variant="secondary" onClick={() => onOpenClient(client.site_id)}>
               Open detail
             </Button>
-            <Button variant="secondary" icon={Play} onClick={() => onTriggerCrawl(client.site_id)}>
-              Crawl now
-            </Button>
+            <CrawlButton
+              siteId={client.site_id}
+              label="Crawl now"
+              active={crawlingSites.has(client.site_id)}
+              onTriggerCrawl={onTriggerCrawl}
+            />
           </div>
         </Panel>
       ))}
@@ -1903,17 +2400,62 @@ function UsageView({ clients, recentActivity }: { clients: Client[]; recentActiv
     { turns: 0, today: 0, tokens: 0, remaining: 0 },
   );
   return (
-    <>
-      <div className="grid gap-3 md:grid-cols-4">
-        <MetricCard label="Total turns" value={totals.turns} detail="All clients" />
-        <MetricCard label="Turns today" value={totals.today} detail="Since midnight" />
-        <MetricCard label="Tokens used" value={totals.tokens} detail="Estimated" />
-        <MetricCard label="Tokens remaining" value={totals.remaining} detail="Configured quotas" />
+    <div className="usage-page fade-in">
+      <section className="section-row">
+        <div>
+          <h2 className="text-base font-semibold">Usage</h2>
+          <p className="mt-1 text-sm text-muted">Quota pressure, voice turns, and recent assistant events across clients.</p>
+        </div>
+        <span className="badge badge-muted">{number(recentActivity.length)} recent events</span>
+      </section>
+      <div className="usage-kpi-grid">
+        <KpiCard label="Total turns" value={totals.turns} icon={MessageSquare} tone="accent" />
+        <KpiCard label="Turns today" value={totals.today} icon={Activity} tone="green" />
+        <KpiCard label="Tokens used" value={totals.tokens} icon={Database} tone="blue" />
+        <KpiCard label="Tokens left" value={totals.remaining} icon={Gauge} tone="amber" />
       </div>
-      <Panel title="Recent usage">
-        <ActivityList items={recentActivity} />
-      </Panel>
-    </>
+      <section className="card usage-timeline-card">
+        <div className="card-header">
+          <div>
+            <h2>Recent usage timeline</h2>
+            <span className="card-meta">Latest voice turns and policy signals</span>
+          </div>
+        </div>
+        <UsageTimeline items={recentActivity} />
+      </section>
+    </div>
+  );
+}
+
+function UsageTimeline({ items }: { items: UsageEvent[] }) {
+  if (!items.length) {
+    return <EmptyState title="No usage events yet" message="Usage events will appear here after shoppers start talking to the assistant." />;
+  }
+
+  return (
+    <div className="usage-timeline">
+      {items.slice(0, 24).map((item, index) => {
+        const tokenTotal = Number(item.input_tokens || 0) + Number(item.output_tokens || 0);
+        return (
+          <article key={`${item.created_at}-${item.session_id}-${index}`} className="usage-event-row">
+            <span className="usage-event-dot" aria-hidden="true" />
+            <div className="usage-event-main">
+              <div className="usage-event-head">
+                <strong>{item.site_id}</strong>
+                <StatusPill value={item.status || 'ok'} />
+              </div>
+              <p>{item.transcript || item.response_text || 'Assistant turn recorded.'}</p>
+              <div className="usage-event-meta">
+                <span>{shortTime(item.created_at)}</span>
+                <span>{item.intent || 'turn'}</span>
+                <span>{number(tokenTotal)} tokens</span>
+                <span>{number(item.latency_ms)} ms</span>
+              </div>
+            </div>
+          </article>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1926,48 +2468,131 @@ function ConversationsView({
   range: string;
   onRangeChange: (range: string) => void;
 }) {
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
+  const sessions = useMemo(
+    () =>
+      (conversations?.groups ?? []).flatMap((group) =>
+        group.sessions.map((session) => ({
+          ...session,
+          date: group.date,
+        })),
+      ),
+    [conversations],
+  );
+  const filteredSessions = useMemo(() => {
+    const search = query.trim().toLowerCase();
+    if (!search) return sessions;
+    return sessions.filter((session) => {
+      const haystack = [
+        session.site_id,
+        session.session_id,
+        session.date,
+        ...session.turns.flatMap((turn) => [turn.intent, turn.transcript, turn.response_text]),
+      ]
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(search);
+    });
+  }, [query, sessions]);
+  const pageCount = Math.max(1, Math.ceil(filteredSessions.length / 20));
+  const pageSessions = filteredSessions.slice((page - 1) * 20, page * 20);
+
+  useEffect(() => {
+    setPage(1);
+  }, [query, range]);
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+
   return (
-    <Panel title="Conversations" action={<RangeControl value={range} onChange={onRangeChange} />}>
-      {!conversations?.groups.length ? (
-        <EmptyState text="No conversations logged for this range." />
+    <div className="grid gap-4">
+      <section className="section-row">
+        <div>
+          <h2 className="text-base font-semibold">Conversations</h2>
+          <p className="mt-1 text-sm text-muted">Search and inspect shopper sessions for the selected range.</p>
+        </div>
+        <RangeControl value={range} onChange={onRangeChange} />
+      </section>
+      <div className="convo-toolbar card">
+        <label className="field" style={{ minWidth: 280, flex: '1 1 320px' }}>
+          <span>Search conversations</span>
+          <input value={query} placeholder="Site, session, transcript, response, or intent" onChange={(event) => setQuery(event.currentTarget.value)} />
+        </label>
+        <span className="badge badge-muted">{number(filteredSessions.length)} sessions</span>
+      </div>
+      {!pageSessions.length ? (
+        <EmptyState title="No conversations logged" message="Try a wider range or wait for new shopper sessions to arrive." />
       ) : (
         <div className="grid gap-4">
-          {conversations.groups.map((group) => (
-            <section key={group.date} className="grid gap-3">
-              <h3 className="text-xs font-semibold uppercase text-muted">{group.date}</h3>
-              {group.sessions.map((session) => (
-                <article key={`${session.site_id}-${session.session_id}`} className="rounded-lg border border-line bg-soft p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
-                    <div>
-                      <strong>{session.site_id}</strong>
-                      <code className="ml-2">{session.session_id}</code>
-                    </div>
-                    <span className="text-xs text-muted">
-                      {number(session.turn_count)} turns / {number(session.tokens_used)} tokens
-                    </span>
-                  </div>
-                  <div className="mt-3 grid gap-3">
-                    {session.turns.map((turn) => (
-                      <div key={`${turn.created_at}-${turn.transcript}`} className="rounded-lg border border-line bg-panel p-3">
-                        <div className="flex flex-wrap gap-2 text-xs text-muted">
-                          <span>{shortTime(turn.created_at)}</span>
-                          <span>{turn.transport}</span>
-                          <StatusPill value={turn.status || 'ok'} />
-                          <span>{number(turn.tokens)} tokens</span>
-                          <span>{number(turn.latency_ms)} ms</span>
-                        </div>
-                        <Dialogue label="User" text={turn.transcript} />
-                        <Dialogue label="AI" text={turn.response_text} />
-                      </div>
-                    ))}
-                  </div>
-                </article>
-              ))}
-            </section>
+          {pageSessions.map((session) => (
+            <CrmConversationCard key={`${session.site_id}-${session.session_id}`} session={session} />
           ))}
+          <PaginationControl page={page} pageCount={pageCount} onPageChange={setPage} />
         </div>
       )}
-    </Panel>
+    </div>
+  );
+}
+
+function CrmConversationCard({
+  session,
+}: {
+  session: ConversationsResponse['groups'][number]['sessions'][number] & { date: string };
+}) {
+  const [open, setOpen] = useState(false);
+  const turns = open ? session.turns : session.turns.slice(0, 1);
+  return (
+    <article className="convo-card">
+      <button className="convo-header" type="button" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
+        <div className="convo-header-copy">
+          <div className="convo-title-row">
+            <strong>{session.site_id}</strong>
+            <code>{session.session_id}</code>
+          </div>
+          <span>
+            {session.date} · {number(session.turn_count)} turns · {number(session.tokens_used)} tokens
+          </span>
+        </div>
+        <span className={`convo-expand-btn ${open ? 'open' : ''}`} aria-hidden="true">
+          <ChevronDown size={16} />
+        </span>
+      </button>
+      <div className="convo-turns">
+        {turns.map((turn) => (
+          <div key={`${turn.created_at}-${turn.transcript}`} className="grid gap-3">
+            <div className="turn-user">
+              <span className="turn-avatar">U</span>
+              <div className="turn-body">
+                <p>{turn.transcript || '-'}</p>
+                <div className="turn-meta">
+                  <span>{shortTime(turn.created_at)}</span>
+                  <span>{turn.transport}</span>
+                  <StatusPill value={turn.status || 'ok'} />
+                </div>
+              </div>
+            </div>
+            <div className="turn-ai">
+              <span className="turn-avatar">AI</span>
+              <div className="turn-body">
+                <p>{turn.response_text || '-'}</p>
+                <div className="turn-meta">
+                  <span>{turn.intent || 'unknown'}</span>
+                  <span>{number(turn.tokens)} tokens</span>
+                  <span>{number(turn.latency_ms)} ms</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+        {session.turns.length > 1 ? (
+          <Button variant="ghost" size="sm" type="button" onClick={() => setOpen((current) => !current)}>
+            {open ? 'Show less' : `Show ${session.turns.length - 1} more turns`}
+          </Button>
+        ) : null}
+      </div>
+    </article>
   );
 }
 
@@ -1982,7 +2607,7 @@ function AnalyticsView({
   onRangeChange: (range: string) => void;
   onGenerateSummary: () => void;
 }) {
-  if (!analytics) return <EmptyState text="Analytics are loading." />;
+  if (!analytics) return <AnalyticsSkeleton />;
 
   return (
     <div className="grid gap-4">
@@ -2028,13 +2653,13 @@ function AnalyticsView({
 function AnalyticsMetricGrid({ analytics, range }: { analytics: AnalyticsResponse; range: string }) {
   const metrics = analytics.metrics;
   return (
-    <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-6">
-      <MetricCard label="Voice turns" value={metrics.turns} detail={rangeLabel(range)} />
-      <MetricCard label="Sessions" value={metrics.sessions} detail="Unique shoppers" />
-      <MetricCard label="Tokens" value={metrics.tokens} detail={`${number(metrics.tokens_per_turn ?? 0)} per turn`} />
-      <MetricCard label="Actions" value={metrics.actions ?? 0} detail={`${number(metrics.action_rate ?? 0)}% action rate`} />
-      <MetricCard label="Error rate" value={`${number(metrics.error_rate ?? 0)}%`} detail="Non-ok turns" />
-      <MetricCard label="Avg latency" value={`${number(metrics.avg_latency_ms)} ms`} detail="Pipeline speed" />
+    <div className="analytics-kpi-grid">
+      <KpiCard label="Voice turns" value={metrics.turns} icon={MessageSquare} tone="accent" />
+      <KpiCard label="Sessions" value={metrics.sessions ?? 0} icon={Users} tone="blue" />
+      <KpiCard label="Tokens" value={metrics.tokens} icon={Database} tone="green" />
+      <KpiCard label="Actions" value={metrics.actions ?? 0} icon={Activity} tone="amber" />
+      <KpiCard label="Error rate" value={`${number(metrics.error_rate ?? 0)}%`} icon={AlertTriangle} tone="amber" />
+      <KpiCard label="Avg latency" value={`${number(metrics.avg_latency_ms)} ms`} icon={Gauge} tone="blue" />
     </div>
   );
 }
@@ -2052,6 +2677,9 @@ function AnalyticsTrendChart({ rows, peakDay }: { rows: SeriesRow[]; peakDay?: S
         <div className="analytics-trend">
           {visibleRows.map((row) => (
             <div key={row.date} className="trend-column" title={`${row.date}: ${number(row.turns)} turns, ${number(row.tokens)} tokens`}>
+              <span className="trend-tooltip">
+                {row.date}: {number(row.turns)} turns, {number(row.tokens)} tokens
+              </span>
               <span className="trend-token" style={{ bottom: `${Math.max(8, (row.tokens / maxTokens) * 88)}%` }} />
               <span className="trend-bar" style={{ height: `${Math.max(8, (row.turns / maxTurns) * 100)}%` }} />
               <small>{row.date.slice(5)}</small>
@@ -2118,18 +2746,51 @@ function DistributionRows({ title, rows }: { title: string; rows: RankRow[] }) {
 }
 
 function AdaptersView({ clients, onOpenClient }: { clients: Client[]; onOpenClient: (siteId: string) => void }) {
+  if (!clients.length) {
+    return <EmptyState title="No adapters yet" message="Add a client before configuring storefront adapters." />;
+  }
+
   return (
-    <div className="grid gap-4 xl:grid-cols-3">
-      {clients.map((client) => (
-        <button key={client.site_id} className="panel text-left" type="button" onClick={() => onOpenClient(client.site_id)}>
-          <strong className="block">{client.name}</strong>
-          <span className="mt-2 block text-sm text-muted">{client.adapter_name}</span>
-          <span className="mt-1 block text-sm text-muted">{client.allowed_origin}</span>
-          <span className="mt-3 inline-flex">
-            <StatusPill value={client.status} />
-          </span>
-        </button>
-      ))}
+    <div className="adapter-grid fade-in">
+      {clients.map((client) => {
+        const configured = Boolean(client.adapter_name && client.adapter_name !== '-');
+        return (
+          <article key={client.site_id} className="card adapter-card interactive">
+            <div className="adapter-card-top">
+              <div>
+                <span className="adapter-eyebrow">{client.deploy_mode || 'storefront'}</span>
+                <h2>{client.name}</h2>
+              </div>
+              <StatusPill value={client.status} />
+            </div>
+            <div className="adapter-detail-list">
+              <KeyValue label="Adapter" value={configured ? client.adapter_name : 'Not configured'} />
+              <KeyValue label="Origin" value={client.allowed_origin || client.store_url || '-'} />
+              <KeyValue label="Products" value={number(client.catalog.active_products)} />
+            </div>
+            {!configured ? (
+              <div className="adapter-empty-note">
+                <strong>No adapter configured</strong>
+                <span>Open the client workspace to finish adapter setup.</span>
+              </div>
+            ) : null}
+            <div className="adapter-actions">
+              <Button variant="secondary" size="sm" type="button" onClick={() => onOpenClient(client.site_id)}>
+                Test connection
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                type="button"
+                icon={ExternalLink}
+                onClick={() => window.open(client.store_url, '_blank', 'noopener,noreferrer')}
+              >
+                Open store
+              </Button>
+            </div>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -2143,6 +2804,7 @@ function SettingsView({
 }) {
   const [notice, setNotice] = useState<SettingNotice | null>(null);
   const [saving, setSaving] = useState(false);
+  const [pendingChanges, setPendingChanges] = useState(false);
   const byKey = useMemo(() => new Map((settings?.settings ?? []).map((setting) => [setting.key, setting])), [settings]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -2170,6 +2832,7 @@ function SettingsView({
           ? 'Settings saved. Restart AI Hub to apply runtime model changes.'
           : 'Settings saved.',
       });
+      setPendingChanges(false);
     } catch (error) {
       setNotice({
         tone: 'error',
@@ -2184,27 +2847,41 @@ function SettingsView({
   }
 
   return (
-    <form className="grid gap-4" onSubmit={submit}>
+    <form className="settings-grid" onSubmit={submit} onChange={() => setPendingChanges(true)}>
       <section className="section-row">
         <div>
           <h2 className="text-base font-semibold">Settings</h2>
           <p className="mt-1 text-sm text-muted">Changes are saved to .env and require a hub restart.</p>
         </div>
-        <Button type="submit" disabled={saving}>
+        <Button type="submit" disabled={saving || !pendingChanges}>
           {saving ? 'Saving...' : 'Save settings'}
         </Button>
       </section>
+      {pendingChanges ? (
+        <div className="pending-banner">
+          <span>You have unsaved changes.</span>
+          <Button type="submit" disabled={saving}>
+            {saving ? 'Saving...' : 'Save'}
+          </Button>
+        </div>
+      ) : null}
       {notice ? <NoticeBanner tone={notice.tone} message={notice.message} /> : null}
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="settings-grid">
         {SETTING_GROUPS.map((group) => (
-          <Panel key={group.title} title={group.title}>
-            <div className="grid gap-3">
-              {group.keys.map((key) => {
-                const setting = byKey.get(key);
-                return setting ? <SettingField key={key} setting={setting} /> : null;
-              })}
+          <div key={group.title} className="settings-section">
+            <div className="sticky-section-header">
+              <h3>{group.title}</h3>
+              <span>{number(group.keys.length)} settings</span>
             </div>
-          </Panel>
+            <section className="card settings-group">
+              <div className="settings-fields">
+                {group.keys.map((key) => {
+                  const setting = byKey.get(key);
+                  return setting ? <SettingField key={key} setting={setting} /> : null;
+                })}
+              </div>
+            </section>
+          </div>
         ))}
       </div>
     </form>
@@ -2213,13 +2890,42 @@ function SettingsView({
 
 function HealthView({ health, clients }: { health: HealthSnapshot; clients: Client[] }) {
   const products = clients.reduce((sum, client) => sum + client.catalog.active_products, 0);
+  const liveClients = clients.filter((client) => client.status === 'live').length;
   return (
-    <div className="grid gap-4 xl:grid-cols-3">
+    <div className="grid gap-4">
       <Panel title="System health">
-        {Object.entries(health).map(([key, value]) => (
-          <KeyValue key={key} label={labelize(key)} value={value || '-'} />
-        ))}
+        <div className="health-grid">
+          {Object.entries(health).map(([key, value]) => {
+            const state = healthState(value);
+            return (
+              <article key={key} className={`health-item ${state}`}>
+                <span className="health-item-label">{labelize(key)}</span>
+                <span className="health-item-status">
+                  <StatusPill value={value || 'unknown'} />
+                </span>
+              </article>
+            );
+          })}
+        </div>
       </Panel>
+      <div className="health-summary-grid">
+        <section className="card health-summary-card">
+          <span className="kpi-label">Last checked</span>
+          <strong className="kpi-value">{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong>
+          <p className="text-sm text-muted">Use the topbar refresh control to run a fresh health and client snapshot.</p>
+        </section>
+        <section className="card health-summary-card">
+          <span className="kpi-label">Live clients</span>
+          <strong className="kpi-value">{number(liveClients)}</strong>
+          <p className="text-sm text-muted">{number(clients.length)} total tenant schemas are configured.</p>
+        </section>
+        <section className="card health-summary-card">
+          <span className="kpi-label">Catalog coverage</span>
+          <strong className="kpi-value">{number(products)}</strong>
+          <p className="text-sm text-muted">Active products available to retrieval and shopping actions.</p>
+        </section>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-2">
       <Panel title="Database">
         <KeyValue label="Tenant schemas" value={clients.length} />
         <KeyValue label="Products" value={products} />
@@ -2230,6 +2936,7 @@ function HealthView({ health, clients }: { health: HealthSnapshot; clients: Clie
         <KeyValue label="Periodic crawl" value="120 seconds" />
         <KeyValue label="Manual trigger" value="available per client" />
       </Panel>
+      </div>
     </div>
   );
 }
@@ -2254,14 +2961,16 @@ function AddClientDialog({
     onCreate(payload);
   }
   return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-black/45 p-4">
-      <form className="grid w-full max-w-xl gap-4 rounded-lg border border-line bg-panel p-5 shadow-xl" onSubmit={submit}>
-        <div className="flex items-start justify-between gap-3">
+    <div className="modal-backdrop">
+      <form className="modal modal-wide" onSubmit={submit}>
+        <div className="modal-header">
           <div>
             <div className="text-xs font-semibold text-muted">Client</div>
-            <h2 className="mt-1 text-lg font-semibold">Add client</h2>
+            <h2>Add client</h2>
           </div>
-          <IconButton label="Close" onClick={onClose} />
+          <button className="modal-close" type="button" aria-label="Close" onClick={onClose}>
+            x
+          </button>
         </div>
         <Field label="Client name" name="name" placeholder="AI-KART" required />
         <Field label="Website URL" name="store_url" placeholder="https://client-store.com" required />
@@ -2278,7 +2987,7 @@ function AddClientDialog({
           <Field label="Plan" name="plan" defaultValue="Commerce plan" />
         </div>
         <Field label="Adapter" name="adapter_name" defaultValue="generic_adapter.js" />
-        <div className="flex justify-end gap-2">
+        <div className="modal-footer">
           <Button variant="secondary" type="button" onClick={onClose}>
             Cancel
           </Button>
@@ -2380,17 +3089,19 @@ function ClientPanelPasswordDialog({
     message.toLowerCase().includes('failed') || message.toLowerCase().includes('must') ? 'error' : 'info';
 
   return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-black/45 p-4">
-      <form className="grid w-full max-w-xl gap-4 rounded-lg border border-line bg-panel p-5 shadow-xl" onSubmit={submit}>
-        <div className="flex items-start justify-between gap-3">
+    <div className="modal-backdrop">
+      <form className="modal modal-wide" onSubmit={submit}>
+        <div className="modal-header">
           <div>
             <div className="text-xs font-semibold text-muted">Client panel password</div>
-            <h2 className="mt-1 text-lg font-semibold">{client.name}</h2>
+            <h2>{client.name}</h2>
             <p className="mt-1 text-sm text-muted">
               {client.site_id} - {panelPasswordLabel(client)}
             </p>
           </div>
-          <IconButton label="Close" onClick={onClose} />
+          <button className="modal-close" type="button" aria-label="Close" onClick={onClose}>
+            x
+          </button>
         </div>
         <Field
           label="New password"
@@ -2413,7 +3124,7 @@ function ClientPanelPasswordDialog({
           </div>
         ) : null}
         {message ? <NoticeBanner tone={messageTone} message={message} /> : null}
-        <div className="flex flex-wrap justify-between gap-2">
+        <div className="modal-footer">
           <Button type="button" variant="danger" icon={Trash2} disabled={disabled} onClick={revokePassword}>
             Revoke password
           </Button>
@@ -2652,12 +3363,12 @@ function MetricCard({
   );
   if (onClick) {
     return (
-      <button className="panel text-left transition hover:border-accent" type="button" onClick={onClick}>
+      <button className="card interactive text-left" type="button" onClick={onClick}>
         {content}
       </button>
     );
   }
-  return <div className="panel">{content}</div>;
+  return <div className="card">{content}</div>;
 }
 
 function MiniMetric({ label, value }: { label: string; value: number }) {
@@ -2682,8 +3393,8 @@ function Panel({
 }) {
   const content = (
     <>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">{title}</h2>
+      <div className="card-header">
+        <h2>{title}</h2>
         {action}
       </div>
       {children}
@@ -2691,12 +3402,12 @@ function Panel({
   );
   if (onClick) {
     return (
-      <button className="panel text-left transition hover:border-accent" type="button" onClick={onClick}>
+      <button className="card interactive text-left" type="button" onClick={onClick}>
         {content}
       </button>
     );
   }
-  return <section className="panel">{content}</section>;
+  return <section className="card">{content}</section>;
 }
 
 function Table({ children, compact = false }: { children: ReactNode; compact?: boolean }) {
@@ -2740,18 +3451,94 @@ function RangeControl({ value, onChange }: { value: string; onChange: (value: st
   );
 }
 
+function CopyScriptButton({
+  client,
+  onCopyScript,
+  compact = false,
+}: {
+  client: Client;
+  onCopyScript: (client: Client) => Promise<void>;
+  compact?: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    await onCopyScript(client);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <Button
+      variant="secondary"
+      size={compact ? 'sm' : undefined}
+      icon={copied ? CheckCircle2 : Copy}
+      type="button"
+      onClick={handleCopy}
+    >
+      {copied ? 'Copied!' : compact ? 'Copy' : 'Copy script'}
+    </Button>
+  );
+}
+
+function CrawlButton({
+  siteId,
+  label,
+  active,
+  compact = false,
+  onTriggerCrawl,
+}: {
+  siteId?: string;
+  label: string;
+  active: boolean;
+  compact?: boolean;
+  onTriggerCrawl: (siteId: string) => void;
+} | {
+  siteId?: never;
+  label: string;
+  active: boolean;
+  compact?: boolean;
+  onTriggerCrawl: () => void;
+}) {
+  return (
+    <Button
+      variant="secondary"
+      size={compact ? 'sm' : undefined}
+      icon={active ? RefreshCw : Play}
+      spinning={active}
+      disabled={active}
+      type="button"
+      onClick={() => {
+        if (siteId) {
+          (onTriggerCrawl as (nextSiteId: string) => void)(siteId);
+        } else {
+          (onTriggerCrawl as () => void)();
+        }
+      }}
+    >
+      {active ? 'Crawling...' : label}
+    </Button>
+  );
+}
+
 function Button({
   children,
   icon: Icon,
   variant = 'primary',
+  size,
+  spinning = false,
+  className = '',
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
-  icon?: typeof Plus;
-  variant?: 'primary' | 'secondary' | 'danger';
+  icon?: LucideIcon;
+  variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
+  size?: 'sm' | 'lg';
+  spinning?: boolean;
 }) {
+  const sizeClass = size ? ` btn-${size}` : '';
   return (
-    <button className={`button button-${variant}`} {...props}>
-      {Icon ? <Icon size={15} aria-hidden="true" /> : null}
+    <button className={`btn btn-${variant}${sizeClass}${className ? ` ${className}` : ''}`} {...props}>
+      {Icon ? <Icon className={spinning ? 'spin' : ''} size={15} aria-hidden="true" /> : null}
       <span>{children}</span>
     </button>
   );
@@ -2764,11 +3551,17 @@ function IconButton({
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   label: string;
-  icon?: typeof RefreshCw;
+  icon?: LucideIcon;
   tone?: 'default' | 'danger';
 }) {
   return (
-    <button className={`icon-button icon-button-${tone}`} type="button" title={label} aria-label={label} {...props}>
+    <button
+      className={`btn ${tone === 'danger' ? 'btn-danger' : 'btn-secondary'} btn-icon`}
+      type="button"
+      title={label}
+      aria-label={label}
+      {...props}
+    >
       {Icon ? <Icon size={16} aria-hidden="true" /> : <span>x</span>}
     </button>
   );
@@ -2778,8 +3571,95 @@ function StatusPill({ value }: { value: string }) {
   return <span className={`status-pill ${statusClass(value)}`}>{value || 'unknown'}</span>;
 }
 
-function EmptyState({ text }: { text: string }) {
-  return <div className="rounded-lg border border-dashed border-line bg-soft px-4 py-8 text-center text-sm text-muted">{text}</div>;
+function EmptyState({
+  text,
+  title,
+  message,
+  action,
+  icon: Icon = PackageOpen,
+}: {
+  text?: string;
+  title?: string;
+  message?: string;
+  action?: ReactNode;
+  icon?: LucideIcon;
+}) {
+  return (
+    <div className="empty-state">
+      <div className="empty-icon-wrap">
+        <Icon size={30} aria-hidden="true" />
+      </div>
+      <h3>{title || text || 'Nothing here yet'}</h3>
+      {message ? <p>{message}</p> : text && title ? <p>{text}</p> : null}
+      {action}
+    </div>
+  );
+}
+
+function SkeletonCard({ height = 120 }: { height?: number }) {
+  return <div className="skeleton" style={{ height, borderRadius: 'var(--radius)' }} />;
+}
+
+function SkeletonKpiStrip() {
+  return (
+    <div className="dashboard-bento">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <div key={index} className="bento-kpi">
+          <SkeletonCard height={116} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SkeletonDashboard() {
+  return (
+    <div className="grid gap-4">
+      <SkeletonCard height={76} />
+      <SkeletonKpiStrip />
+      <div className="dashboard-bento">
+        <div className="bento-wide">
+          <SkeletonCard height={340} />
+        </div>
+        <div className="bento-narrow">
+          <SkeletonCard height={340} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AnalyticsSkeleton() {
+  return (
+    <div className="grid gap-4">
+      <SkeletonCard height={76} />
+      <div className="analytics-kpi-grid">
+        {Array.from({ length: 6 }).map((_, index) => (
+          <SkeletonCard key={index} height={116} />
+        ))}
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[1.35fr_0.65fr]">
+        <SkeletonCard height={360} />
+        <SkeletonCard height={360} />
+      </div>
+    </div>
+  );
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function normalizePositiveInteger(value: string) {
+  const normalized = Math.max(1, Math.round(Number(value)));
+  return String(Number.isFinite(normalized) ? normalized : 1);
+}
+
+function healthState(value?: string) {
+  const text = String(value || '').toLowerCase();
+  if (text === 'up' || text === 'ready' || text === 'ok') return 'up';
+  if (text === 'slow' || text === 'degraded' || text === 'warn' || text === 'warning') return 'warn';
+  return 'down';
 }
 
 function storedTheme(): Theme {
@@ -2829,8 +3709,13 @@ function panelPasswordLabel(client: Client) {
   return 'not configured';
 }
 
+function fmt(n: number | null | undefined, opts?: Intl.NumberFormatOptions): string {
+  if (n == null) return '-';
+  return new Intl.NumberFormat('en-US', opts).format(n);
+}
+
 function number(value: unknown) {
-  return new Intl.NumberFormat().format(Number(value || 0));
+  return fmt(Number(value || 0));
 }
 
 function percent(value: unknown) {
