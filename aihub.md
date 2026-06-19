@@ -290,7 +290,44 @@ fi
 echo "Continue only if all compose checks above say OK."
 ```
 
-### 7. Build App Image
+### 7. Pre-Build Docker Space Cleanup
+
+Run this before every AI Hub build on the current server. It clears Docker build cache only; it does not touch containers, images, networks, or volumes.
+
+#### 7.1 Inspect Disk Usage
+
+```bash
+cd /var/www/AI_salesman_plugin
+
+echo "== host disk usage =="
+df -h /
+echo "== docker disk usage =="
+sudo docker system df
+```
+
+#### 7.2 Clear Docker Build Cache
+
+```bash
+cd /var/www/AI_salesman_plugin
+
+echo "== clear docker build cache =="
+sudo docker builder prune -af
+sudo docker system df
+```
+
+#### 7.3 Optional Stronger Cleanup
+
+Run this only if disk usage is still tight after clearing build cache. It removes unused Docker images, stopped containers, and unused networks. It does not remove named volumes.
+
+```bash
+cd /var/www/AI_salesman_plugin
+
+echo "== remove unused docker objects =="
+sudo docker system prune -af
+sudo docker system df
+```
+
+### 8. Build App Image
 
 ```bash
 cd /var/www/AI_salesman_plugin
@@ -299,7 +336,7 @@ echo "== build app image =="
 sudo docker compose build --no-cache app
 ```
 
-### 8. Restart AI Hub Services
+### 9. Restart AI Hub Services
 
 ```bash
 cd /var/www/AI_salesman_plugin
@@ -309,7 +346,7 @@ sudo docker compose up -d --force-recreate db app
 sudo docker compose ps
 ```
 
-### 9. Local Smoke
+### 10. Local Smoke
 
 This checks the local container route and verifies CRM admin API auth works with `CRM_ADMIN_TOKEN`.
 
@@ -353,7 +390,7 @@ If local `127.0.0.1:5176` works but public `/aihub/` fails, apply `/var/www/Verc
 
 ## Docker Space Recovery
 
-Use this only when Docker build or restart fails because disk space is exhausted. Run one chunk at a time and read the output.
+Use this if the normal pre-build cleanup above is not enough and Docker build or restart still fails because disk space is exhausted. Run one chunk at a time and read the output.
 
 ### 1. Inspect Docker Disk Usage
 
