@@ -30,7 +30,9 @@ Public routing is owned by the shared Nginx config in `/var/www/Vercel_website/a
 
 ## Deploy
 
-Paste this on the server. It is safe to rerun.
+Run one step at a time on the server. Do not paste the whole deploy as one giant block.
+
+### 1. Pull Latest Code
 
 ```bash
 set -e
@@ -42,6 +44,16 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   git stash push -m "pre-aihub-deploy-$(date +%Y%m%d-%H%M%S)"
 fi
 git pull --ff-only
+git status --short
+```
+
+### 2. Create `.env` If Missing
+
+If this creates `.env`, stop after this step, fill the secrets, then continue with step 3.
+
+```bash
+set -e
+cd /var/www/AI_salesman_plugin
 
 echo "== ensure .env exists =="
 if [ ! -f .env ]; then
@@ -83,9 +95,26 @@ CRM_ADMIN_TOKEN=replace-with-long-random-admin-token-min-12-chars
 CLIENT_PANEL_DEFAULT_PASSWORD=replace-with-strong-client-panel-password
 CLIENT_PANEL_TOKEN_SECRET=replace-with-long-random-client-panel-signing-secret
 EOF
-  echo "Created /var/www/AI_salesman_plugin/.env. Fill the secrets, then rerun this deploy block."
-  exit 1
+  echo "Created /var/www/AI_salesman_plugin/.env."
+  echo "Fill OPENAI_API_KEY, GROQ_API_KEY, CRM_ADMIN_TOKEN, CLIENT_PANEL_DEFAULT_PASSWORD, and CLIENT_PANEL_TOKEN_SECRET before continuing."
+else
+  echo ".env already exists."
 fi
+```
+
+Generate strong secret values with:
+
+```bash
+openssl rand -base64 32
+```
+
+### 3. Validate Security Environment
+
+This must pass before build/restart.
+
+```bash
+set -e
+cd /var/www/AI_salesman_plugin
 
 echo "== validate required security env =="
 missing=0
@@ -115,10 +144,20 @@ if [ -z "$CORS_VALUE" ] || [ "$CORS_VALUE" = "*" ]; then
 fi
 
 if [ "$missing" -ne 0 ]; then
-  echo "Generate strong values, update .env, then rerun this deploy block."
+  echo "Generate strong values, update .env, then rerun this validation step."
   echo "Example token generator: openssl rand -base64 32"
   exit 1
 fi
+echo "Security env OK."
+```
+
+### 4. Compose Sanity Check
+
+This verifies AI Hub is still only `app` and `db`, with no Docker Nginx.
+
+```bash
+set -e
+cd /var/www/AI_salesman_plugin
 
 echo "== compose sanity =="
 grep -q '127.0.0.1:5176:8585' docker-compose.yml
@@ -131,11 +170,37 @@ if [ "$SERVICES" != "app db " ]; then
   echo "ERROR: expected compose services 'app db', got: $SERVICES"
   exit 1
 fi
+echo "Compose sanity OK."
+```
 
-echo "== build and restart =="
+### 5. Build App Image
+
+```bash
+set -e
+cd /var/www/AI_salesman_plugin
+
+echo "== build app image =="
 sudo docker compose build --no-cache app
+```
+
+### 6. Restart AI Hub Services
+
+```bash
+set -e
+cd /var/www/AI_salesman_plugin
+
+echo "== restart db and app =="
 sudo docker compose up -d --force-recreate db app
 sudo docker compose ps
+```
+
+### 7. Local Smoke
+
+This checks the local container route and verifies CRM admin API auth works with `CRM_ADMIN_TOKEN`.
+
+```bash
+set -e
+cd /var/www/AI_salesman_plugin
 
 echo "== local smoke =="
 curl -fsS http://127.0.0.1:5176/health >/dev/null
