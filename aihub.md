@@ -34,6 +34,41 @@ Public routing is owned by the shared Nginx config in `/var/www/Vercel_website/a
 
 Run one step at a time on the server. Do not paste the whole deploy as one giant block.
 
+## SSH Session Safety
+
+Long Docker builds can make SSH feel frozen or can drop the connection if the server is under CPU, RAM, or disk pressure. Run deployment inside `tmux` so the command keeps running even if your SSH session disconnects.
+
+### Start Or Reattach Deploy Session
+
+Run this before deploy steps:
+
+```bash
+tmux new -A -s aihub-deploy
+```
+
+If the connection drops, reconnect to the server and run the same command again:
+
+```bash
+tmux new -A -s aihub-deploy
+```
+
+### Optional SSH Keepalive
+
+From your local machine, connect with keepalive enabled:
+
+```bash
+ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 ev@143.198.5.97
+```
+
+### Why A Session May Close
+
+- `set -e` stops the current shell when a command fails.
+- Docker build/restart can spike CPU, memory, and disk I/O.
+- A long command with little output can be treated as idle by SSH or a network hop.
+- Pasting a large multi-line block makes it harder to see which line failed.
+
+Keep using the numbered chunks below. For build and restart steps, stay inside `tmux`.
+
 ### 1. Fix Permissions
 
 This restores the ownership and executable bits used by the stable server deploy.
