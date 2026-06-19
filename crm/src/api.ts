@@ -3,6 +3,7 @@ import type {
   CatalogProduct,
   CapabilitiesSummary,
   Client,
+  ClientPanelPasswordPayload,
   ConversationsResponse,
   CrawlReport,
   CreateClientPayload,
@@ -125,6 +126,15 @@ export const crmApi = {
     request<{ client: Client }>(`/clients/${encodeURIComponent(siteId)}/token-limits`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
+    }),
+  updateClientPanelPassword: (siteId: string, payload: ClientPanelPasswordPayload) =>
+    request<{ client: Client; generated_password: string }>(`/clients/${encodeURIComponent(siteId)}/panel-password`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  revokeClientPanelPassword: (siteId: string) =>
+    request<{ client: Client; status: string }>(`/clients/${encodeURIComponent(siteId)}/panel-password`, {
+      method: 'DELETE',
     }),
   crawlClient: (siteId: string) =>
     request<{ status: string; message: string }>(`/clients/${encodeURIComponent(siteId)}/crawl`, {

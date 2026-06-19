@@ -79,6 +79,8 @@ export interface Client {
   last_crawl_status?: string;
   last_crawl_message?: string;
   last_crawl_at?: string | null;
+  panel_password_configured?: boolean;
+  panel_password_status?: 'configured' | 'revoked' | 'not_configured' | string;
   script_tag: string;
   catalog: CatalogSummary;
   usage: UsageSummary;
@@ -245,6 +247,11 @@ export interface CreateClientPayload {
 export interface TokenLimitsPayload {
   token_limit: number;
   session_token_limit: number;
+}
+
+export interface ClientPanelPasswordPayload {
+  password?: string;
+  auto_generate?: boolean;
 }
 
 export interface CapabilityItem {

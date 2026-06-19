@@ -9,10 +9,12 @@ import {
   Code2,
   Copy,
   Database,
+  EllipsisVertical,
   Eye,
   FileText,
   Gauge,
   HeartPulse,
+  KeyRound,
   LayoutDashboard,
   MessageSquare,
   Moon,
@@ -231,6 +233,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [passwordDialogClient, setPasswordDialogClient] = useState<Client | null>(null);
 
   useEffect(() => {
     document.body.dataset.theme = theme;
@@ -305,6 +308,7 @@ export function App() {
     setConversations(null);
     setAnalytics(null);
     setSelectedClient(null);
+    setPasswordDialogClient(null);
     setAuthRequired(true);
     setLoadError('');
     setView(DEFAULT_VIEW);
@@ -376,12 +380,18 @@ export function App() {
     }
   }
 
+  function syncClient(client: Client) {
+    setSelectedClient((current) => (current?.site_id === client.site_id ? client : current));
+    setPasswordDialogClient((current) => (current?.site_id === client.site_id ? client : current));
+  }
+
   async function removeClient(siteId: string) {
     if (!window.confirm(`Remove ${siteId}? Tenant data is kept.`)) return;
     setBusy(true);
     try {
       await crmApi.removeClient(siteId);
       setSelectedClient(null);
+      setPasswordDialogClient((current) => (current?.site_id === siteId ? null : current));
       setOverview(await crmApi.overview());
       setView('clients');
       setToast('Client removed.');
@@ -399,7 +409,7 @@ export function App() {
       setOverview(await crmApi.overview());
       if (selectedClient?.site_id === siteId) {
         const response = await crmApi.client(siteId);
-        setSelectedClient(response.client);
+        syncClient(response.client);
       }
       setToast(enabled ? 'Client enabled.' : 'Client disabled.');
     } catch (error) {
@@ -416,11 +426,45 @@ export function App() {
         token_limit: tokenLimit,
         session_token_limit: sessionTokenLimit,
       });
-      setSelectedClient(response.client);
+      syncClient(response.client);
       setOverview(await crmApi.overview());
       setToast('Token limits saved.');
     } catch (error) {
       showError(error, 'Token limit update failed.');
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateClientPanelPassword(siteId: string, password: string, autoGenerate: boolean) {
+    setBusy(true);
+    try {
+      const response = await crmApi.updateClientPanelPassword(siteId, {
+        password: autoGenerate ? undefined : password,
+        auto_generate: autoGenerate,
+      });
+      syncClient(response.client);
+      setOverview(await crmApi.overview());
+      setToast(autoGenerate ? 'Panel password generated.' : 'Panel password updated.');
+      return response.generated_password || '';
+    } catch (error) {
+      showError(error, 'Client panel password update failed.');
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revokeClientPanelPassword(siteId: string) {
+    setBusy(true);
+    try {
+      const response = await crmApi.revokeClientPanelPassword(siteId);
+      syncClient(response.client);
+      setOverview(await crmApi.overview());
+      setToast('Panel password revoked.');
+    } catch (error) {
+      showError(error, 'Client panel password revoke failed.');
       throw error;
     } finally {
       setBusy(false);
@@ -530,6 +574,7 @@ export function App() {
                 onRemoveClient={removeClient}
                 onToggleClient={toggleClient}
                 onUpdateTokenLimits={updateClientTokenLimits}
+                onOpenPasswordDialog={setPasswordDialogClient}
                 onSaveSettings={saveSettings}
                 onGenerateSummary={generateSummary}
               />
@@ -538,6 +583,13 @@ export function App() {
         </main>
       </div>
       <AddClientDialog open={dialogOpen} busy={busy} onClose={() => setDialogOpen(false)} onCreate={createClient} />
+      <ClientPanelPasswordDialog
+        client={passwordDialogClient}
+        busy={busy}
+        onClose={() => setPasswordDialogClient(null)}
+        onUpdatePassword={updateClientPanelPassword}
+        onRevokePassword={revokeClientPanelPassword}
+      />
       <div className={`toast ${toast ? 'toast-visible' : ''}`}>{toast}</div>
     </div>
   );
@@ -706,6 +758,7 @@ function ViewRenderer(props: {
   onRemoveClient: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
   onUpdateTokenLimits: (siteId: string, tokenLimit: number, sessionTokenLimit: number) => Promise<void>;
+  onOpenPasswordDialog: (client: Client) => void;
   onSaveSettings: (values: Record<string, string>) => Promise<SettingsResponse>;
   onGenerateSummary: () => void;
 }) {
@@ -826,12 +879,14 @@ function ClientsView({
   onRemoveClient,
   onToggleClient,
   onTriggerCrawl,
+  onOpenPasswordDialog,
 }: {
   clients: Client[];
   onOpenClient: (siteId: string) => void;
   onRemoveClient: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
   onTriggerCrawl: (siteId: string) => void;
+  onOpenPasswordDialog: (client: Client) => void;
 }) {
   return (
     <Panel title="Clients">
@@ -876,11 +931,11 @@ function ClientsView({
                     icon={CheckCircle2}
                     onClick={() => onToggleClient(client.site_id, client.status !== 'live')}
                   />
-                  <IconButton
-                    label="Remove client"
-                    icon={Trash2}
-                    tone="danger"
-                    onClick={() => onRemoveClient(client.site_id)}
+                  <ClientActionMenu
+                    client={client}
+                    onOpenClient={onOpenClient}
+                    onOpenPasswordDialog={onOpenPasswordDialog}
+                    onRemoveClient={onRemoveClient}
                   />
                 </div>
               </td>
@@ -892,6 +947,40 @@ function ClientsView({
   );
 }
 
+function ClientActionMenu({
+  client,
+  onOpenClient,
+  onOpenPasswordDialog,
+  onRemoveClient,
+}: {
+  client: Client;
+  onOpenClient: (siteId: string) => void;
+  onOpenPasswordDialog: (client: Client) => void;
+  onRemoveClient: (siteId: string) => void;
+}) {
+  return (
+    <details className="row-action-menu">
+      <summary title="Client actions" aria-label={`Actions for ${client.name}`}>
+        <EllipsisVertical size={16} aria-hidden="true" />
+      </summary>
+      <div className="row-action-menu-panel">
+        <button type="button" onClick={() => onOpenClient(client.site_id)}>
+          <Eye size={15} aria-hidden="true" />
+          <span>Open client</span>
+        </button>
+        <button type="button" onClick={() => onOpenPasswordDialog(client)}>
+          <KeyRound size={15} aria-hidden="true" />
+          <span>Panel password</span>
+        </button>
+        <button className="danger" type="button" onClick={() => onRemoveClient(client.site_id)}>
+          <Trash2 size={15} aria-hidden="true" />
+          <span>Remove client</span>
+        </button>
+      </div>
+    </details>
+  );
+}
+
 function ClientDetailView({
   client,
   recentActivity,
@@ -900,6 +989,7 @@ function ClientDetailView({
   onRemoveClient,
   onToggleClient,
   onUpdateTokenLimits,
+  onOpenPasswordDialog,
   onViewChange,
 }: {
   client: Client;
@@ -909,6 +999,7 @@ function ClientDetailView({
   onRemoveClient: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
   onUpdateTokenLimits: (siteId: string, tokenLimit: number, sessionTokenLimit: number) => Promise<void>;
+  onOpenPasswordDialog: (client: Client) => void;
   onViewChange: (view: View) => void;
 }) {
   const [activeTab, setActiveTab] = useState<ClientWorkspaceTab>('overview');
@@ -1003,6 +1094,9 @@ function ClientDetailView({
           <Button variant="secondary" icon={Play} onClick={() => onTriggerCrawl(client.site_id)}>
             Crawl now
           </Button>
+          <Button variant="secondary" icon={KeyRound} onClick={() => onOpenPasswordDialog(client)}>
+            Panel password
+          </Button>
           <Button variant="secondary" onClick={() => onToggleClient(client.site_id, client.status !== 'live')}>
             {client.status === 'live' ? 'Disable widget' : 'Enable widget'}
           </Button>
@@ -1060,6 +1154,7 @@ function ClientDetailView({
           onRemoveClient={onRemoveClient}
           onToggleClient={onToggleClient}
           onUpdateTokenLimits={onUpdateTokenLimits}
+          onOpenPasswordDialog={onOpenPasswordDialog}
           onViewChange={onViewChange}
         />
       ) : null}
@@ -1547,6 +1642,7 @@ function ClientControlsTab({
   onRemoveClient,
   onToggleClient,
   onUpdateTokenLimits,
+  onOpenPasswordDialog,
   onViewChange,
 }: {
   client: Client;
@@ -1557,6 +1653,7 @@ function ClientControlsTab({
   onRemoveClient: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
   onUpdateTokenLimits: (siteId: string, tokenLimit: number, sessionTokenLimit: number) => Promise<void>;
+  onOpenPasswordDialog: (client: Client) => void;
   onViewChange: (view: View) => void;
 }) {
   return (
@@ -1578,6 +1675,9 @@ function ClientControlsTab({
           <Button variant="secondary" icon={Eye} onClick={() => onToggleClient(client.site_id, client.status !== 'live')}>
             {client.status === 'live' ? 'Disable widget' : 'Enable widget'}
           </Button>
+          <Button variant="secondary" icon={KeyRound} onClick={() => onOpenPasswordDialog(client)}>
+            Panel password
+          </Button>
           <Button variant="danger" icon={Trash2} onClick={() => onRemoveClient(client.site_id)}>
             Remove client
           </Button>
@@ -1588,6 +1688,7 @@ function ClientControlsTab({
         <Panel title="Runtime limits and install">
           <KeyValue label="Client token limit" value={client.token_limit} />
           <KeyValue label="Session token limit" value={client.session_token_limit} />
+          <KeyValue label="Panel password" value={panelPasswordLabel(client)} />
           <KeyValue label="Widget status" value={client.status} />
           <KeyValue label="Crawler status" value={client.last_crawl_status || 'not_started'} />
           <pre className="code-block install-script mt-4">{client.script_tag}</pre>
@@ -2190,6 +2291,146 @@ function AddClientDialog({
   );
 }
 
+function ClientPanelPasswordDialog({
+  client,
+  busy,
+  onClose,
+  onUpdatePassword,
+  onRevokePassword,
+}: {
+  client: Client | null;
+  busy: boolean;
+  onClose: () => void;
+  onUpdatePassword: (siteId: string, password: string, autoGenerate: boolean) => Promise<string>;
+  onRevokePassword: (siteId: string) => Promise<void>;
+}) {
+  const [password, setPassword] = useState('');
+  const [generatedPassword, setGeneratedPassword] = useState('');
+  const [message, setMessage] = useState('');
+  const [working, setWorking] = useState(false);
+
+  useEffect(() => {
+    setPassword('');
+    setGeneratedPassword('');
+    setMessage('');
+  }, [client?.site_id]);
+
+  if (!client) return null;
+  const activeClient = client;
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextPassword = password.trim();
+    if (nextPassword.length < 12) {
+      setMessage('Password must be at least 12 characters.');
+      return;
+    }
+    setWorking(true);
+    setGeneratedPassword('');
+    setMessage('');
+    try {
+      await onUpdatePassword(activeClient.site_id, nextPassword, false);
+      setPassword('');
+      setMessage('Password updated.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Password update failed.');
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function generatePassword() {
+    setWorking(true);
+    setMessage('');
+    try {
+      const nextPassword = await onUpdatePassword(activeClient.site_id, '', true);
+      setGeneratedPassword(nextPassword);
+      setPassword('');
+      setMessage('Generated password is active. Copy it now.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Password generation failed.');
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function revokePassword() {
+    setWorking(true);
+    setGeneratedPassword('');
+    setMessage('');
+    try {
+      await onRevokePassword(activeClient.site_id);
+      setPassword('');
+      setMessage('Client panel login is revoked.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Password revoke failed.');
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function copyGeneratedPassword() {
+    if (!generatedPassword) return;
+    await navigator.clipboard.writeText(generatedPassword);
+    setMessage('Generated password copied.');
+  }
+
+  const disabled = busy || working;
+  const messageTone: SettingNoticeTone =
+    message.toLowerCase().includes('failed') || message.toLowerCase().includes('must') ? 'error' : 'info';
+
+  return (
+    <div className="fixed inset-0 z-40 grid place-items-center bg-black/45 p-4">
+      <form className="grid w-full max-w-xl gap-4 rounded-lg border border-line bg-panel p-5 shadow-xl" onSubmit={submit}>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-xs font-semibold text-muted">Client panel password</div>
+            <h2 className="mt-1 text-lg font-semibold">{client.name}</h2>
+            <p className="mt-1 text-sm text-muted">
+              {client.site_id} - {panelPasswordLabel(client)}
+            </p>
+          </div>
+          <IconButton label="Close" onClick={onClose} />
+        </div>
+        <Field
+          label="New password"
+          type="password"
+          minLength={12}
+          value={password}
+          onChange={(event) => setPassword(event.currentTarget.value)}
+          placeholder="Minimum 12 characters"
+          autoComplete="new-password"
+        />
+        {generatedPassword ? (
+          <div className="generated-password-box">
+            <div>
+              <span className="text-xs font-semibold uppercase text-muted">Generated password</span>
+              <code>{generatedPassword}</code>
+            </div>
+            <Button type="button" variant="secondary" icon={Copy} onClick={copyGeneratedPassword}>
+              Copy
+            </Button>
+          </div>
+        ) : null}
+        {message ? <NoticeBanner tone={messageTone} message={message} /> : null}
+        <div className="flex flex-wrap justify-between gap-2">
+          <Button type="button" variant="danger" icon={Trash2} disabled={disabled} onClick={revokePassword}>
+            Revoke password
+          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="secondary" disabled={disabled} icon={RefreshCw} onClick={generatePassword}>
+              Generate and set
+            </Button>
+            <Button type="submit" disabled={disabled}>
+              Set password
+            </Button>
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function ActiveClientsPanel({
   clients,
   onOpenClient,
@@ -2579,6 +2820,13 @@ function statusClass(value: string) {
   if (['crawling', 'running', 'slow', 'pending vector', 'needs work'].includes(text)) return 'warn';
   if (['disabled', 'offline', 'down', 'error', 'hub degraded', 'failed'].includes(text)) return 'bad';
   return 'neutral';
+}
+
+function panelPasswordLabel(client: Client) {
+  const status = String(client.panel_password_status || '').toLowerCase();
+  if (status === 'revoked') return 'revoked';
+  if (client.panel_password_configured || status === 'configured') return 'configured';
+  return 'not configured';
 }
 
 function number(value: unknown) {

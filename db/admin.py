@@ -50,6 +50,9 @@ DEFAULT_SESSION_TOKEN_LIMIT = 1000
 MAX_CLIENT_TOKEN_LIMIT = 1_000_000_000
 MAX_SESSION_TOKEN_LIMIT = 1_000_000
 DEFAULT_CLIENT_PANEL_PASSWORD = os.getenv("CLIENT_PANEL_DEFAULT_PASSWORD", "client123")
+PANEL_PASSWORD_DISABLED = "disabled"
+MIN_CLIENT_PANEL_PASSWORD_LENGTH = 12
+GENERATED_PANEL_PASSWORD_BYTES = 24
 PANEL_PASSWORD_ITERATIONS = 210_000
 PANEL_PASSWORD_SALT_BYTES = 16
 TOKEN_CHAR_RATIO = 4
@@ -453,10 +456,61 @@ def verify_client_panel_password(site_id: str, password: str) -> dict[str, Any]:
     if not client:
         raise LookupError(f"Client {clean_site_id} was not found.")
     password_hash = client.get("panel_password_hash") or ""
+    if password_hash == PANEL_PASSWORD_DISABLED:
+        raise PermissionError("Client panel password is disabled.")
     if not password_hash:
         password_hash = _set_default_panel_password(clean_site_id)
     if not _verify_panel_password(password, password_hash):
         raise PermissionError("Invalid client panel credentials.")
+    return get_client_detail(clean_site_id)
+
+
+def generate_client_panel_password() -> str:
+    """Generate a strong one-time client-panel password for CRM operators."""
+    return secrets.token_urlsafe(GENERATED_PANEL_PASSWORD_BYTES)
+
+
+def update_client_panel_password(site_id: str, password: str) -> dict[str, Any]:
+    """Set a new client-panel password using salted PBKDF2-SHA256 storage."""
+    clean_site_id = _safe_site_id(site_id)
+    clean_password = str(password or "")
+    if len(clean_password) < MIN_CLIENT_PANEL_PASSWORD_LENGTH:
+        raise ValueError(f"Client panel password must be at least {MIN_CLIENT_PANEL_PASSWORD_LENGTH} characters.")
+    password_hash = _hash_panel_password(clean_password)
+    init_admin_schema()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE hub_clients
+            SET panel_password_hash = %s,
+                updated_at = now()
+            WHERE site_id = %s AND status <> %s
+            """,
+            (password_hash, clean_site_id, CLIENT_STATUS_DELETED),
+        )
+        conn.commit()
+    if cursor.rowcount <= 0:
+        raise LookupError(f"Client {clean_site_id} was not found.")
+    return get_client_detail(clean_site_id)
+
+
+def revoke_client_panel_password(site_id: str) -> dict[str, Any]:
+    """Disable client-panel password login until a new password is set."""
+    clean_site_id = _safe_site_id(site_id)
+    init_admin_schema()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE hub_clients
+            SET panel_password_hash = %s,
+                updated_at = now()
+            WHERE site_id = %s AND status <> %s
+            """,
+            (PANEL_PASSWORD_DISABLED, clean_site_id, CLIENT_STATUS_DELETED),
+        )
+        conn.commit()
+    if cursor.rowcount <= 0:
+        raise LookupError(f"Client {clean_site_id} was not found.")
     return get_client_detail(clean_site_id)
 
 
@@ -825,6 +879,7 @@ def script_tag_for_site(site_id: str) -> str:
 
 def _client_summary(client: dict[str, Any]) -> dict[str, Any]:
     site_id = client["site_id"]
+    panel_password_hash = client.get("panel_password_hash") or ""
     public_client = {key: value for key, value in client.items() if key != "panel_password_hash"}
     return {
         **public_client,
@@ -832,6 +887,8 @@ def _client_summary(client: dict[str, Any]) -> dict[str, Any]:
         "catalog": _safe_catalog_summary(site_id),
         "usage": _usage_summary(site_id),
         "quota": quota_status(site_id),
+        "panel_password_configured": _panel_password_configured(panel_password_hash),
+        "panel_password_status": _panel_password_status(panel_password_hash),
     }
 
 
@@ -1486,6 +1543,8 @@ def _first_text(*values: str) -> str:
 
 
 def _set_default_panel_password(site_id: str) -> str:
+    if len(DEFAULT_CLIENT_PANEL_PASSWORD) < MIN_CLIENT_PANEL_PASSWORD_LENGTH:
+        raise PermissionError("Client panel default password is not configured securely.")
     password_hash = _hash_panel_password(DEFAULT_CLIENT_PANEL_PASSWORD)
     with _connect() as conn:
         conn.execute(
@@ -1526,6 +1585,18 @@ def _verify_panel_password(password: str, password_hash: str) -> bool:
     expected = _unb64(digest_text)
     actual = hashlib.pbkdf2_hmac("sha256", str(password or "").encode("utf-8"), salt, int(iterations))
     return hmac.compare_digest(actual, expected)
+
+
+def _panel_password_configured(password_hash: str) -> bool:
+    return bool(password_hash and password_hash != PANEL_PASSWORD_DISABLED)
+
+
+def _panel_password_status(password_hash: str) -> str:
+    if password_hash == PANEL_PASSWORD_DISABLED:
+        return "revoked"
+    if password_hash:
+        return "configured"
+    return "not_configured"
 
 
 def _b64(value: bytes) -> str:

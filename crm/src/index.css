@@ -245,6 +245,66 @@ code {
   color: var(--red);
 }
 
+.row-action-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.row-action-menu summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  list-style: none;
+}
+
+.row-action-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.row-action-menu-panel {
+  position: absolute;
+  top: 42px;
+  right: 0;
+  z-index: 30;
+  display: grid;
+  min-width: 210px;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 6px;
+}
+
+.row-action-menu-panel button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  padding: 0 8px;
+  text-align: left;
+}
+
+.row-action-menu-panel button:hover {
+  background: var(--soft);
+}
+
+.row-action-menu-panel button.danger {
+  color: var(--red);
+}
+
 .button:hover,
 .icon-button:hover {
   border-color: var(--accent);
@@ -510,6 +570,24 @@ code {
   border-color: color-mix(in srgb, var(--blue) 34%, var(--line));
   background: var(--blue-soft);
   color: var(--blue);
+}
+
+.generated-password-box {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 12px;
+}
+
+.generated-password-box code {
+  display: block;
+  margin-top: 6px;
+  overflow-x: auto;
+  white-space: nowrap;
 }
 
 .install-script {

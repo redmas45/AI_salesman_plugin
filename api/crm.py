@@ -46,6 +46,11 @@ class ClientTokenLimitsRequest(BaseModel):
     session_token_limit: int = Field(..., ge=1, le=admin_db.MAX_SESSION_TOKEN_LIMIT)
 
 
+class ClientPanelPasswordRequest(BaseModel):
+    password: str | None = Field(default=None, min_length=admin_db.MIN_CLIENT_PANEL_PASSWORD_LENGTH, max_length=160)
+    auto_generate: bool = False
+
+
 class SettingsUpdateRequest(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
 
@@ -185,6 +190,40 @@ async def crm_client_token_limits(site_id: str, req: ClientTokenLimitsRequest) -
     except Exception as exc:
         logger.error("CRM token limit update failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to update token limits.") from exc
+
+
+@router.patch("/clients/{site_id}/panel-password")
+async def crm_client_panel_password(site_id: str, req: ClientPanelPasswordRequest) -> dict[str, Any]:
+    """Set or auto-generate the client-panel login password for one tenant."""
+    password = admin_db.generate_client_panel_password() if req.auto_generate else str(req.password or "")
+    if not password:
+        raise HTTPException(status_code=400, detail="Password is required unless auto_generate is true.")
+    try:
+        client = admin_db.update_client_panel_password(site_id, password)
+        return {
+            "client": client,
+            "generated_password": password if req.auto_generate else "",
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM client panel password update failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to update client panel password.") from exc
+
+
+@router.delete("/clients/{site_id}/panel-password")
+async def crm_revoke_client_panel_password(site_id: str) -> dict[str, Any]:
+    """Revoke client-panel password login until a new password is set."""
+    try:
+        client = admin_db.revoke_client_panel_password(site_id)
+        return {"client": client, "status": "ok"}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM client panel password revoke failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to revoke client panel password.") from exc
 
 
 @router.post("/clients/{site_id}/crawl")
