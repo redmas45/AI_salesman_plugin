@@ -9,6 +9,7 @@ AI Hub public:   http://143.198.5.97/aihub/
 AI Hub CRM:      http://143.198.5.97/aihub/crm/
 Client Panel:    http://143.198.5.97/client-panel/ai_kart
 Project:         /var/www/AI_salesman_plugin
+Shared venv:     /Data/www/aikartvenv
 ```
 
 Public routing is owned by the shared Nginx config in `/var/www/Vercel_website/aikart.md`:
@@ -23,16 +24,34 @@ Public routing is owned by the shared Nginx config in `/var/www/Vercel_website/a
 ## Rules
 
 - AI Hub runs only Docker Compose `db` and `app`.
+- The shared host Python venv is `/Data/www/aikartvenv`. AI Hub runtime still runs inside Docker; the host venv is only for server-side helper commands.
 - Public access comes through AI-KART's system Nginx, not Docker Nginx.
 - `.env`, local data, caches, docs, and deploy backups are ignored runtime files.
-- The deploy command below stashes tracked server edits before pulling. It does not stash ignored runtime files.
+- The pull step below stashes tracked server edits before pulling. It does not stash ignored runtime files.
 - Do not run `git stash pop` as part of deployment. Stashes are only backups of server-local tracked edits.
 
 ## Deploy
 
 Run one step at a time on the server. Do not paste the whole deploy as one giant block.
 
-### 1. Pull Latest Code
+### 1. Fix Permissions
+
+This restores the ownership and executable bits used by the stable server deploy.
+
+```bash
+set -e
+cd /var/www/AI_salesman_plugin
+
+echo "== fix project permissions =="
+sudo chown -R "$(whoami):$(whoami)" /var/www/AI_salesman_plugin
+chmod +x /var/www/AI_salesman_plugin/docker/entrypoint.sh
+mkdir -p /var/www/AI_salesman_plugin/data
+mkdir -p /var/www/AI_salesman_plugin/deploy/certs
+sudo chown -R "$(whoami):$(whoami)" /var/www/AI_salesman_plugin/data /var/www/AI_salesman_plugin/deploy/certs
+echo "Project permissions OK."
+```
+
+### 2. Pull Latest Code
 
 ```bash
 set -e
@@ -47,9 +66,32 @@ git pull --ff-only
 git status --short
 ```
 
-### 2. Create `.env` If Missing
+### 3. Shared Host Python Venv
 
-If this creates `.env`, stop after this step, fill the secrets, then continue with step 3.
+This is the same shared helper venv setup used by the stable server deploy. AI Hub runtime still runs inside Docker.
+
+```bash
+set -e
+cd /var/www/AI_salesman_plugin
+
+echo "== shared host python venv =="
+sudo mkdir -p /Data/www
+sudo chown "$(whoami):$(whoami)" /Data/www
+if [ ! -x /Data/www/aikartvenv/bin/python ]; then
+  python3 -m venv /Data/www/aikartvenv
+fi
+if [ -e /Data/www/aikartvenv ] && [ "$(stat -c '%u' /Data/www/aikartvenv)" != "$(id -u)" ]; then
+  sudo chown -R "$(whoami):$(whoami)" /Data/www/aikartvenv
+fi
+. /Data/www/aikartvenv/bin/activate
+which python
+python -m pip install --upgrade pip
+echo "Shared helper venv OK."
+```
+
+### 4. Create `.env` If Missing
+
+If this creates `.env`, stop after this step, fill the secrets, then continue with step 5.
 
 ```bash
 set -e
@@ -108,7 +150,7 @@ Generate strong secret values with:
 openssl rand -base64 32
 ```
 
-### 3. Validate Security Environment
+### 5. Validate Security Environment
 
 This must pass before build/restart.
 
@@ -151,7 +193,7 @@ fi
 echo "Security env OK."
 ```
 
-### 4. Compose Sanity Check
+### 6. Compose Sanity Check
 
 This verifies AI Hub is still only `app` and `db`, with no Docker Nginx.
 
@@ -173,7 +215,7 @@ fi
 echo "Compose sanity OK."
 ```
 
-### 5. Build App Image
+### 7. Build App Image
 
 ```bash
 set -e
@@ -183,7 +225,7 @@ echo "== build app image =="
 sudo docker compose build --no-cache app
 ```
 
-### 6. Restart AI Hub Services
+### 8. Restart AI Hub Services
 
 ```bash
 set -e
@@ -194,7 +236,7 @@ sudo docker compose up -d --force-recreate db app
 sudo docker compose ps
 ```
 
-### 7. Local Smoke
+### 9. Local Smoke
 
 This checks the local container route and verifies CRM admin API auth works with `CRM_ADMIN_TOKEN`.
 
@@ -223,6 +265,47 @@ echo "AI Hub public route OK."
 
 If local `127.0.0.1:5176` works but public `/aihub/` fails, apply `/var/www/Vercel_website/aikart.md`.
 
+## Docker Space Recovery
+
+Use this only when Docker build or restart fails because disk space is exhausted. Run one chunk at a time and read the output.
+
+### 1. Inspect Docker Disk Usage
+
+```bash
+cd /var/www/AI_salesman_plugin
+sudo docker system df
+```
+
+### 2. Clear Docker Build Cache
+
+This is usually the safest first cleanup when builds fail for space.
+
+```bash
+cd /var/www/AI_salesman_plugin
+sudo docker builder prune -af
+sudo docker system df
+```
+
+### 3. Remove Unused Images, Containers, And Networks
+
+This removes unused Docker objects. It does not remove named volumes.
+
+```bash
+cd /var/www/AI_salesman_plugin
+sudo docker system prune -af
+sudo docker system df
+```
+
+### 4. Do Not Remove Volumes During Normal Deploy
+
+Do not run this during normal deployment:
+
+```bash
+sudo docker system prune --volumes
+```
+
+Docker volumes can contain database data. Only use volume cleanup when the database has been backed up and the volumes are intentionally disposable.
+
 ## Crawl AI-KART
 
 Run this after AI-KART is public and the `ai_kart` client exists in CRM.
@@ -239,7 +322,7 @@ curl -fsS -X POST http://127.0.0.1:5176/v1/shop \
 
 ## Git Recovery
 
-The deploy command already handles the old `docker-compose.yml` and `docker/entrypoint.sh` pull blockers by stashing tracked server edits before `git pull --ff-only`.
+The pull step already handles the old `docker-compose.yml` and `docker/entrypoint.sh` pull blockers by stashing tracked server edits before `git pull --ff-only`.
 
 Useful inspection commands:
 
