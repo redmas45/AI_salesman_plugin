@@ -34,6 +34,8 @@ Public routing is owned by the shared Nginx config in `/var/www/Vercel_website/a
 
 Run one step at a time on the server. Do not paste the whole deploy as one giant block.
 
+The snippets below are written for an interactive SSH shell. They should print errors without closing your SSH session. Do not add `set -e` or `exit` while running them manually.
+
 ## SSH Session Safety
 
 Long Docker builds can make SSH feel frozen or can drop the connection if the server is under CPU, RAM, or disk pressure. Run deployment inside `tmux` so the command keeps running even if your SSH session disconnects.
@@ -62,7 +64,8 @@ ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 ev@143.198.5.97
 
 ### Why A Session May Close
 
-- `set -e` stops the current shell when a command fails.
+- `exit` closes the current SSH shell. Do not paste deploy checks that contain `exit`.
+- `set -e` can make a manual deploy harder to debug because one failed check may stop the shell or tmux pane.
 - Docker build/restart can spike CPU, memory, and disk I/O.
 - A long command with little output can be treated as idle by SSH or a network hop.
 - Pasting a large multi-line block makes it harder to see which line failed.
@@ -74,7 +77,6 @@ Keep using the numbered chunks below. For build and restart steps, stay inside `
 This restores the ownership and executable bits used by the stable server deploy.
 
 ```bash
-set -e
 cd /var/www/AI_salesman_plugin
 
 echo "== fix project permissions =="
@@ -89,7 +91,6 @@ echo "Project permissions OK."
 ### 2. Pull Latest Code
 
 ```bash
-set -e
 cd /var/www/AI_salesman_plugin
 
 echo "== safe git pull =="
@@ -106,7 +107,6 @@ git status --short
 This is the same shared helper venv setup used by the stable server deploy. AI Hub runtime still runs inside Docker.
 
 ```bash
-set -e
 cd /var/www/AI_salesman_plugin
 
 echo "== shared host python venv =="
@@ -129,7 +129,6 @@ echo "Shared helper venv OK."
 If this creates `.env`, stop after this step, fill the secrets, then continue with step 5.
 
 ```bash
-set -e
 cd /var/www/AI_salesman_plugin
 
 echo "== ensure .env exists =="
@@ -187,45 +186,81 @@ openssl rand -base64 32
 
 ### 5. Validate Security Environment
 
-This must pass before build/restart.
+Run these checks one by one. If a check prints `ERROR`, fix `.env`, rerun that one check, and continue only after every check prints `OK`.
+
+#### 5.1 Check Current Folder
 
 ```bash
-set -e
 cd /var/www/AI_salesman_plugin
+pwd
+```
 
-echo "== validate required security env =="
-missing=0
-require_secret() {
-  key="$1"
-  min_len="$2"
-  value="$(grep -E "^${key}=" .env | tail -n 1 | cut -d= -f2- | tr -d "\"'")"
-  if [ -z "$value" ] || echo "$value" | grep -Eq '^(choose_|replace-|your_|change-this|client123)'; then
-    echo "ERROR: $key must be set to a real secret in /var/www/AI_salesman_plugin/.env"
-    missing=1
-    return
-  fi
-  if [ "${#value}" -lt "$min_len" ]; then
-    echo "ERROR: $key must be at least $min_len characters."
-    missing=1
-  fi
-}
+#### 5.2 Check `CORS_ORIGINS`
 
-require_secret CRM_ADMIN_TOKEN 12
-require_secret CLIENT_PANEL_DEFAULT_PASSWORD 12
-require_secret CLIENT_PANEL_TOKEN_SECRET 16
+For the current public-IP deployment, this should be `http://143.198.5.97`.
 
+```bash
 CORS_VALUE="$(grep -E '^CORS_ORIGINS=' .env | tail -n 1 | cut -d= -f2- | tr -d "\"'")"
-if [ -z "$CORS_VALUE" ] || [ "$CORS_VALUE" = "*" ]; then
-  echo "ERROR: CORS_ORIGINS must be explicit, for example: CORS_ORIGINS=http://143.198.5.97"
-  missing=1
+if [ "$CORS_VALUE" = "http://143.198.5.97" ]; then
+  echo "CORS_ORIGINS OK."
+else
+  echo "ERROR: set CORS_ORIGINS=http://143.198.5.97 in /var/www/AI_salesman_plugin/.env"
+  echo "Current CORS_ORIGINS=${CORS_VALUE:-missing}"
 fi
+```
 
-if [ "$missing" -ne 0 ]; then
-  echo "Generate strong values, update .env, then rerun this validation step."
-  echo "Example token generator: openssl rand -base64 32"
-  exit 1
+To fix only this value:
+
+```bash
+grep -q '^CORS_ORIGINS=' .env \
+  && sed -i 's|^CORS_ORIGINS=.*|CORS_ORIGINS=http://143.198.5.97|' .env \
+  || echo 'CORS_ORIGINS=http://143.198.5.97' >> .env
+grep -E '^CORS_ORIGINS=' .env
+```
+
+#### 5.3 Check `CRM_ADMIN_TOKEN`
+
+```bash
+CRM_ADMIN_TOKEN_VALUE="$(grep -E '^CRM_ADMIN_TOKEN=' .env | tail -n 1 | cut -d= -f2- | tr -d "\"'")"
+if [ -z "$CRM_ADMIN_TOKEN_VALUE" ] || echo "$CRM_ADMIN_TOKEN_VALUE" | grep -Eq '^(choose_|replace-|your_|change-this|client123)'; then
+  echo "ERROR: CRM_ADMIN_TOKEN must be a real secret."
+elif [ "${#CRM_ADMIN_TOKEN_VALUE}" -lt 12 ]; then
+  echo "ERROR: CRM_ADMIN_TOKEN must be at least 12 characters."
+else
+  echo "CRM_ADMIN_TOKEN OK."
 fi
-echo "Security env OK."
+```
+
+#### 5.4 Check `CLIENT_PANEL_DEFAULT_PASSWORD`
+
+```bash
+CLIENT_PANEL_DEFAULT_PASSWORD_VALUE="$(grep -E '^CLIENT_PANEL_DEFAULT_PASSWORD=' .env | tail -n 1 | cut -d= -f2- | tr -d "\"'")"
+if [ -z "$CLIENT_PANEL_DEFAULT_PASSWORD_VALUE" ] || echo "$CLIENT_PANEL_DEFAULT_PASSWORD_VALUE" | grep -Eq '^(choose_|replace-|your_|change-this|client123)'; then
+  echo "ERROR: CLIENT_PANEL_DEFAULT_PASSWORD must be a real password."
+elif [ "${#CLIENT_PANEL_DEFAULT_PASSWORD_VALUE}" -lt 12 ]; then
+  echo "ERROR: CLIENT_PANEL_DEFAULT_PASSWORD must be at least 12 characters."
+else
+  echo "CLIENT_PANEL_DEFAULT_PASSWORD OK."
+fi
+```
+
+#### 5.5 Check `CLIENT_PANEL_TOKEN_SECRET`
+
+```bash
+CLIENT_PANEL_TOKEN_SECRET_VALUE="$(grep -E '^CLIENT_PANEL_TOKEN_SECRET=' .env | tail -n 1 | cut -d= -f2- | tr -d "\"'")"
+if [ -z "$CLIENT_PANEL_TOKEN_SECRET_VALUE" ] || echo "$CLIENT_PANEL_TOKEN_SECRET_VALUE" | grep -Eq '^(choose_|replace-|your_|change-this|client123)'; then
+  echo "ERROR: CLIENT_PANEL_TOKEN_SECRET must be a real signing secret."
+elif [ "${#CLIENT_PANEL_TOKEN_SECRET_VALUE}" -lt 16 ]; then
+  echo "ERROR: CLIENT_PANEL_TOKEN_SECRET must be at least 16 characters."
+else
+  echo "CLIENT_PANEL_TOKEN_SECRET OK."
+fi
+```
+
+Generate strong values when needed:
+
+```bash
+openssl rand -base64 32
 ```
 
 ### 6. Compose Sanity Check
@@ -233,27 +268,31 @@ echo "Security env OK."
 This verifies AI Hub is still only `app` and `db`, with no Docker Nginx.
 
 ```bash
-set -e
 cd /var/www/AI_salesman_plugin
 
 echo "== compose sanity =="
-grep -q '127.0.0.1:5176:8585' docker-compose.yml
+if grep -q '127.0.0.1:5176:8585' docker-compose.yml; then
+  echo "Port mapping OK."
+else
+  echo "ERROR: docker-compose.yml must expose app as 127.0.0.1:5176:8585."
+fi
 if grep -q '^  nginx:' docker-compose.yml; then
   echo "ERROR: docker-compose.yml must not contain a Docker nginx service."
-  exit 1
+else
+  echo "No Docker nginx service OK."
 fi
 SERVICES="$(sudo docker compose config --services | sort | tr '\n' ' ')"
 if [ "$SERVICES" != "app db " ]; then
   echo "ERROR: expected compose services 'app db', got: $SERVICES"
-  exit 1
+else
+  echo "Compose services OK."
 fi
-echo "Compose sanity OK."
+echo "Continue only if all compose checks above say OK."
 ```
 
 ### 7. Build App Image
 
 ```bash
-set -e
 cd /var/www/AI_salesman_plugin
 
 echo "== build app image =="
@@ -263,7 +302,6 @@ sudo docker compose build --no-cache app
 ### 8. Restart AI Hub Services
 
 ```bash
-set -e
 cd /var/www/AI_salesman_plugin
 
 echo "== restart db and app =="
@@ -276,16 +314,25 @@ sudo docker compose ps
 This checks the local container route and verifies CRM admin API auth works with `CRM_ADMIN_TOKEN`.
 
 ```bash
-set -e
 cd /var/www/AI_salesman_plugin
 
 echo "== local smoke =="
-curl -fsS http://127.0.0.1:5176/health >/dev/null
-curl -fsS http://127.0.0.1:5176/crm/ | grep -E 'assets/index-.*\.js' >/dev/null
+curl -fsS http://127.0.0.1:5176/health >/dev/null \
+  && echo "Health OK." \
+  || echo "ERROR: local health failed."
+curl -fsS http://127.0.0.1:5176/crm/ | grep -E 'assets/index-.*\.js' >/dev/null \
+  && echo "CRM assets OK." \
+  || echo "ERROR: CRM assets failed."
 CRM_ADMIN_TOKEN_VALUE="$(grep -E '^CRM_ADMIN_TOKEN=' .env | tail -n 1 | cut -d= -f2- | tr -d "\"'")"
-curl -fsS http://127.0.0.1:5176/v1/admin/overview \
-  -H "x-crm-admin-token: ${CRM_ADMIN_TOKEN_VALUE}" >/dev/null
-echo "AI Hub local deploy OK."
+if [ -z "$CRM_ADMIN_TOKEN_VALUE" ]; then
+  echo "ERROR: CRM_ADMIN_TOKEN missing in .env."
+else
+  curl -fsS http://127.0.0.1:5176/v1/admin/overview \
+    -H "x-crm-admin-token: ${CRM_ADMIN_TOKEN_VALUE}" >/dev/null \
+    && echo "CRM admin auth OK." \
+    || echo "ERROR: CRM admin auth failed. Check CRM_ADMIN_TOKEN in .env and restart app after env changes."
+fi
+echo "Continue only if all local smoke checks above say OK."
 ```
 
 ## Public Smoke
@@ -293,9 +340,13 @@ echo "AI Hub local deploy OK."
 Run after AI-KART's shared Nginx route has been applied.
 
 ```bash
-curl -fsS http://143.198.5.97/aihub/health >/dev/null
-curl -fsS http://143.198.5.97/aihub/crm/ | grep -E 'assets/index-.*\.js' >/dev/null
-echo "AI Hub public route OK."
+curl -fsS http://143.198.5.97/aihub/health >/dev/null \
+  && echo "Public health OK." \
+  || echo "ERROR: public health failed."
+curl -fsS http://143.198.5.97/aihub/crm/ | grep -E 'assets/index-.*\.js' >/dev/null \
+  && echo "Public CRM assets OK." \
+  || echo "ERROR: public CRM assets failed."
+echo "Continue only if all public smoke checks above say OK."
 ```
 
 If local `127.0.0.1:5176` works but public `/aihub/` fails, apply `/var/www/Vercel_website/aikart.md`.
