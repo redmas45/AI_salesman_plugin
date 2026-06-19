@@ -47,6 +47,8 @@ DEFAULT_CLIENT_NAME = "AI-KART"
 DEFAULT_USAGE_LIMIT = 200
 DEFAULT_CLIENT_TOKEN_LIMIT = 5000
 DEFAULT_SESSION_TOKEN_LIMIT = 1000
+MAX_CLIENT_TOKEN_LIMIT = 1_000_000_000
+MAX_SESSION_TOKEN_LIMIT = 1_000_000
 DEFAULT_CLIENT_PANEL_PASSWORD = os.getenv("CLIENT_PANEL_DEFAULT_PASSWORD", "client123")
 PANEL_PASSWORD_ITERATIONS = 210_000
 PANEL_PASSWORD_SALT_BYTES = 16
@@ -461,7 +463,7 @@ def verify_client_panel_password(site_id: str, password: str) -> dict[str, Any]:
 def update_client_session_token_limit(site_id: str, limit: int) -> dict[str, Any]:
     """Allow a client panel to change the per-shopper/session token limit."""
     clean_site_id = _safe_site_id(site_id)
-    clean_limit = max(1, min(int(limit), 1_000_000))
+    clean_limit = max(1, min(int(limit), MAX_SESSION_TOKEN_LIMIT))
     init_admin_schema()
     with _connect() as conn:
         cursor = conn.execute(
@@ -472,6 +474,32 @@ def update_client_session_token_limit(site_id: str, limit: int) -> dict[str, Any
             WHERE site_id = %s AND status <> %s
             """,
             (clean_limit, clean_site_id, CLIENT_STATUS_DELETED),
+        )
+        conn.commit()
+    if cursor.rowcount <= 0:
+        raise LookupError(f"Client {clean_site_id} was not found.")
+    return get_client_detail(clean_site_id)
+
+
+def update_client_token_limits(site_id: str, token_limit: int, session_token_limit: int) -> dict[str, Any]:
+    """Allow CRM admins to change the client and per-session token limits."""
+    clean_site_id = _safe_site_id(site_id)
+    clean_token_limit = max(1, min(int(token_limit), MAX_CLIENT_TOKEN_LIMIT))
+    clean_session_limit = max(1, min(int(session_token_limit), MAX_SESSION_TOKEN_LIMIT))
+    if clean_session_limit > clean_token_limit:
+        raise ValueError("Session token limit cannot be greater than the client token limit.")
+
+    init_admin_schema()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE hub_clients
+            SET token_limit = %s,
+                session_token_limit = %s,
+                updated_at = now()
+            WHERE site_id = %s AND status <> %s
+            """,
+            (clean_token_limit, clean_session_limit, clean_site_id, CLIENT_STATUS_DELETED),
         )
         conn.commit()
     if cursor.rowcount <= 0:

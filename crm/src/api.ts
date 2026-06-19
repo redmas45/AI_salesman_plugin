@@ -9,9 +9,12 @@ import type {
   Overview,
   ReadinessReport,
   SettingsResponse,
+  TokenLimitsPayload,
 } from './types';
 
 const TOKEN_STORAGE_KEY = 'aiHubCrmAdminToken';
+const TOKEN_CREATED_AT_KEY = 'aiHubCrmAdminTokenCreatedAt';
+const ADMIN_TOKEN_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 export class UnauthorizedError extends Error {
   constructor(message = 'CRM admin token is required.') {
@@ -21,15 +24,30 @@ export class UnauthorizedError extends Error {
 }
 
 export function getStoredAdminToken() {
-  return localStorage.getItem(TOKEN_STORAGE_KEY) ?? '';
+  localStorage.removeItem(TOKEN_STORAGE_KEY);
+  localStorage.removeItem(TOKEN_CREATED_AT_KEY);
+
+  const token = sessionStorage.getItem(TOKEN_STORAGE_KEY) ?? '';
+  const createdAt = Number(sessionStorage.getItem(TOKEN_CREATED_AT_KEY) || 0);
+  if (!token || !createdAt || Date.now() - createdAt > ADMIN_TOKEN_MAX_AGE_MS) {
+    clearStoredAdminToken();
+    return '';
+  }
+  return token;
 }
 
 export function setStoredAdminToken(token: string) {
-  localStorage.setItem(TOKEN_STORAGE_KEY, token.trim());
+  localStorage.removeItem(TOKEN_STORAGE_KEY);
+  localStorage.removeItem(TOKEN_CREATED_AT_KEY);
+  sessionStorage.setItem(TOKEN_STORAGE_KEY, token.trim());
+  sessionStorage.setItem(TOKEN_CREATED_AT_KEY, String(Date.now()));
 }
 
 export function clearStoredAdminToken() {
   localStorage.removeItem(TOKEN_STORAGE_KEY);
+  localStorage.removeItem(TOKEN_CREATED_AT_KEY);
+  sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  sessionStorage.removeItem(TOKEN_CREATED_AT_KEY);
 }
 
 function appPrefix() {
@@ -55,7 +73,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   headers.set('Accept', 'application/json');
   if (options.body) headers.set('Content-Type', 'application/json');
 
-  const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+  const token = getStoredAdminToken();
   if (token) headers.set('x-crm-admin-token', token);
 
   const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
@@ -102,6 +120,11 @@ export const crmApi = {
     request<{ client: Client }>(`/clients/${encodeURIComponent(siteId)}/status`, {
       method: 'PATCH',
       body: JSON.stringify({ enabled }),
+    }),
+  updateClientTokenLimits: (siteId: string, payload: TokenLimitsPayload) =>
+    request<{ client: Client }>(`/clients/${encodeURIComponent(siteId)}/token-limits`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
     }),
   crawlClient: (siteId: string) =>
     request<{ status: string; message: string }>(`/clients/${encodeURIComponent(siteId)}/crawl`, {

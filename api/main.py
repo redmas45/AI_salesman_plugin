@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Optional
+from urllib.parse import urlparse
 from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status, WebSocket, WebSocketDisconnect
@@ -39,7 +40,7 @@ import config
 from agent import orchestrator
 from api import client_panel as client_panel_api
 from api import crm as crm_api
-from api.middleware import RequestTracingMiddleware
+from api.middleware import RateLimitMiddleware, RequestTracingMiddleware, SecurityHeadersMiddleware
 from api.turn_logging import print_turn_summary, turn_timer
 from api.ws_shop import ws_shop_handler
 from db import admin as admin_db
@@ -222,15 +223,55 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow all origins for demo; restrict in production
+# Build an explicit CORS allowlist; wildcard CORS is not used for credentialed routes.
+def _origin_from_url(value: str) -> str:
+    raw = str(value or "").strip().strip("\"'")
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _allowed_cors_origins() -> list[str]:
+    configured = [origin.strip().strip("\"'") for origin in config.CORS_ORIGINS if origin.strip()]
+    if configured and configured != ["*"]:
+        return list(dict.fromkeys(configured))
+
+    candidates = [
+        config.PUBLIC_STOREFRONT_ORIGIN,
+        config.CLIENT_STORE_URL,
+        config.CURRENT_URL,
+        config.HUB_PUBLIC_URL,
+        config.PUBLIC_API_URL,
+        config.VOICE_ORB_API_URL,
+    ]
+    if config.DEPLOYMENT_MODE in {"local", "dev", "development"}:
+        candidates.extend(
+            [
+                "http://127.0.0.1:5173",
+                "http://127.0.0.1:5175",
+                "http://127.0.0.1:5176",
+                "http://localhost:5173",
+                "http://localhost:5175",
+                "http://localhost:5176",
+            ]
+        )
+
+    return list(dict.fromkeys(origin for origin in (_origin_from_url(value) for value in candidates) if origin))
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.CORS_ORIGINS if config.CORS_ORIGINS != ["*"] else ["*"],
+    allow_origins=_allowed_cors_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "x-crm-admin-token"],
 )
 
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestTracingMiddleware)
 app.include_router(crm_api.router)
 app.include_router(client_panel_api.router)

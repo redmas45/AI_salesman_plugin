@@ -298,6 +298,18 @@ export function App() {
     await loadInitial();
   }
 
+  function logoutAdmin() {
+    clearStoredAdminToken();
+    setOverview(null);
+    setSettings(null);
+    setConversations(null);
+    setAnalytics(null);
+    setSelectedClient(null);
+    setAuthRequired(true);
+    setLoadError('');
+    setView(DEFAULT_VIEW);
+  }
+
   async function refreshCurrentView() {
     setBusy(true);
     try {
@@ -397,6 +409,24 @@ export function App() {
     }
   }
 
+  async function updateClientTokenLimits(siteId: string, tokenLimit: number, sessionTokenLimit: number) {
+    setBusy(true);
+    try {
+      const response = await crmApi.updateClientTokenLimits(siteId, {
+        token_limit: tokenLimit,
+        session_token_limit: sessionTokenLimit,
+      });
+      setSelectedClient(response.client);
+      setOverview(await crmApi.overview());
+      setToast('Token limits saved.');
+    } catch (error) {
+      showError(error, 'Token limit update failed.');
+      throw error;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function triggerCrawl(siteId: string) {
     setBusy(true);
     try {
@@ -472,6 +502,8 @@ export function App() {
             onRefresh={refreshCurrentView}
             onAddClient={() => setDialogOpen(true)}
             onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            onLogout={logoutAdmin}
+            authenticated={!authRequired && Boolean(overview)}
           />
           <section className="grid gap-4 px-4 py-4 sm:px-6 lg:px-8">
             {authRequired ? (
@@ -497,6 +529,7 @@ export function App() {
                 onTriggerCrawl={triggerCrawl}
                 onRemoveClient={removeClient}
                 onToggleClient={toggleClient}
+                onUpdateTokenLimits={updateClientTokenLimits}
                 onSaveSettings={saveSettings}
                 onGenerateSummary={generateSummary}
               />
@@ -610,17 +643,21 @@ function Topbar({
   health,
   theme,
   busy,
+  authenticated,
   onRefresh,
   onAddClient,
   onToggleTheme,
+  onLogout,
 }: {
   title: string;
   health: HealthSnapshot;
   theme: Theme;
   busy: boolean;
+  authenticated: boolean;
   onRefresh: () => void;
   onAddClient: () => void;
   onToggleTheme: () => void;
+  onLogout: () => void;
 }) {
   const healthy = Object.values(health).every((value) => value === 'up' || value === 'ready');
   return (
@@ -636,10 +673,17 @@ function Topbar({
           icon={theme === 'dark' ? Sun : Moon}
           onClick={onToggleTheme}
         />
-        <IconButton label="Refresh" icon={RefreshCw} onClick={onRefresh} disabled={busy} />
-        <Button onClick={onAddClient} icon={Plus}>
-          Add client
-        </Button>
+        {authenticated ? <IconButton label="Refresh" icon={RefreshCw} onClick={onRefresh} disabled={busy} /> : null}
+        {authenticated ? (
+          <Button onClick={onAddClient} icon={Plus}>
+            Add client
+          </Button>
+        ) : null}
+        {authenticated ? (
+          <Button variant="secondary" onClick={onLogout}>
+            Logout
+          </Button>
+        ) : null}
       </div>
     </header>
   );
@@ -661,6 +705,7 @@ function ViewRenderer(props: {
   onTriggerCrawl: (siteId: string) => void;
   onRemoveClient: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
+  onUpdateTokenLimits: (siteId: string, tokenLimit: number, sessionTokenLimit: number) => Promise<void>;
   onSaveSettings: (values: Record<string, string>) => Promise<SettingsResponse>;
   onGenerateSummary: () => void;
 }) {
@@ -854,6 +899,7 @@ function ClientDetailView({
   onTriggerCrawl,
   onRemoveClient,
   onToggleClient,
+  onUpdateTokenLimits,
   onViewChange,
 }: {
   client: Client;
@@ -862,6 +908,7 @@ function ClientDetailView({
   onTriggerCrawl: (siteId: string) => void;
   onRemoveClient: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
+  onUpdateTokenLimits: (siteId: string, tokenLimit: number, sessionTokenLimit: number) => Promise<void>;
   onViewChange: (view: View) => void;
 }) {
   const [activeTab, setActiveTab] = useState<ClientWorkspaceTab>('overview');
@@ -1012,6 +1059,7 @@ function ClientDetailView({
           onRunScan={handleRunScan}
           onRemoveClient={onRemoveClient}
           onToggleClient={onToggleClient}
+          onUpdateTokenLimits={onUpdateTokenLimits}
           onViewChange={onViewChange}
         />
       ) : null}
@@ -1498,6 +1546,7 @@ function ClientControlsTab({
   onRunScan,
   onRemoveClient,
   onToggleClient,
+  onUpdateTokenLimits,
   onViewChange,
 }: {
   client: Client;
@@ -1507,6 +1556,7 @@ function ClientControlsTab({
   onRunScan: () => void;
   onRemoveClient: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
+  onUpdateTokenLimits: (siteId: string, tokenLimit: number, sessionTokenLimit: number) => Promise<void>;
   onViewChange: (view: View) => void;
 }) {
   return (
@@ -1533,14 +1583,103 @@ function ClientControlsTab({
           </Button>
         </div>
       </Panel>
-      <Panel title="Runtime limits and install">
-        <KeyValue label="Client token limit" value={client.token_limit} />
-        <KeyValue label="Session token limit" value={client.session_token_limit} />
-        <KeyValue label="Widget status" value={client.status} />
-        <KeyValue label="Crawler status" value={client.last_crawl_status || 'not_started'} />
-        <pre className="code-block install-script mt-4">{client.script_tag}</pre>
-      </Panel>
+      <div className="grid gap-4">
+        <TokenLimitsPanel client={client} onUpdateTokenLimits={onUpdateTokenLimits} />
+        <Panel title="Runtime limits and install">
+          <KeyValue label="Client token limit" value={client.token_limit} />
+          <KeyValue label="Session token limit" value={client.session_token_limit} />
+          <KeyValue label="Widget status" value={client.status} />
+          <KeyValue label="Crawler status" value={client.last_crawl_status || 'not_started'} />
+          <pre className="code-block install-script mt-4">{client.script_tag}</pre>
+        </Panel>
+      </div>
     </div>
+  );
+}
+
+function TokenLimitsPanel({
+  client,
+  onUpdateTokenLimits,
+}: {
+  client: Client;
+  onUpdateTokenLimits: (siteId: string, tokenLimit: number, sessionTokenLimit: number) => Promise<void>;
+}) {
+  const [tokenLimit, setTokenLimit] = useState(String(client.token_limit ?? client.quota.client.limit ?? 5000));
+  const [sessionTokenLimit, setSessionTokenLimit] = useState(
+    String(client.session_token_limit ?? client.quota.session.limit ?? 1000),
+  );
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    setTokenLimit(String(client.token_limit ?? client.quota.client.limit ?? 5000));
+    setSessionTokenLimit(String(client.session_token_limit ?? client.quota.session.limit ?? 1000));
+    setMessage('');
+  }, [client.site_id, client.token_limit, client.session_token_limit, client.quota.client.limit, client.quota.session.limit]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextTokenLimit = Number(tokenLimit);
+    const nextSessionTokenLimit = Number(sessionTokenLimit);
+    if (!Number.isInteger(nextTokenLimit) || nextTokenLimit < 1) {
+      setMessage('Client token limit must be a positive whole number.');
+      return;
+    }
+    if (!Number.isInteger(nextSessionTokenLimit) || nextSessionTokenLimit < 1) {
+      setMessage('Session token limit must be a positive whole number.');
+      return;
+    }
+    if (nextSessionTokenLimit > nextTokenLimit) {
+      setMessage('Session token limit cannot be greater than the client token limit.');
+      return;
+    }
+
+    setSaving(true);
+    setMessage('');
+    try {
+      await onUpdateTokenLimits(client.site_id, nextTokenLimit, nextSessionTokenLimit);
+      setMessage('Saved.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Token limit update failed.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Panel title="Token limits">
+      <form className="grid gap-3" onSubmit={submit}>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field
+            label="Client total token limit"
+            type="number"
+            min={1}
+            step={1}
+            value={tokenLimit}
+            onChange={(event) => setTokenLimit(event.currentTarget.value)}
+          />
+          <Field
+            label="Per shopper/session limit"
+            type="number"
+            min={1}
+            step={1}
+            value={sessionTokenLimit}
+            onChange={(event) => setSessionTokenLimit(event.currentTarget.value)}
+          />
+        </div>
+        <div className="grid gap-2 md:grid-cols-3">
+          <KeyValue label="Used" value={client.quota.client.used} />
+          <KeyValue label="Remaining" value={client.quota.client.remaining} />
+          <KeyValue label="Session remaining" value={client.quota.session.remaining} />
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button type="submit" disabled={saving}>
+            {saving ? 'Saving...' : 'Save token limits'}
+          </Button>
+          {message ? <span className="text-sm text-muted">{message}</span> : null}
+        </div>
+      </form>
+    </Panel>
   );
 }
 

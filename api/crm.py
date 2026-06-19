@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import hmac
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
@@ -21,6 +22,7 @@ MAX_SITE_ID_LENGTH = 80
 MAX_URL_LENGTH = 500
 MAX_ADAPTER_NAME_LENGTH = 160
 MAX_PLAN_LENGTH = 80
+MIN_ADMIN_TOKEN_LENGTH = 12
 
 
 class ClientCreateRequest(BaseModel):
@@ -39,6 +41,11 @@ class ClientStatusRequest(BaseModel):
     enabled: bool
 
 
+class ClientTokenLimitsRequest(BaseModel):
+    token_limit: int = Field(..., ge=1, le=admin_db.MAX_CLIENT_TOKEN_LIMIT)
+    session_token_limit: int = Field(..., ge=1, le=admin_db.MAX_SESSION_TOKEN_LIMIT)
+
+
 class SettingsUpdateRequest(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
 
@@ -49,13 +56,21 @@ class AnalyticsSummaryRequest(BaseModel):
 
 
 def require_admin_token(request: Request) -> None:
-    """Require an admin token only when CRM_ADMIN_TOKEN is configured."""
+    """Require a configured admin token for every CRM admin API request."""
     expected_token = os.getenv("CRM_ADMIN_TOKEN", "").strip()
     if not expected_token:
-        return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CRM admin token is not configured.",
+        )
+    if len(expected_token) < MIN_ADMIN_TOKEN_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="CRM admin token is configured but too short.",
+        )
 
     provided_token = request.headers.get(ADMIN_TOKEN_HEADER, "").strip()
-    if provided_token == expected_token:
+    if hmac.compare_digest(provided_token, expected_token):
         return
 
     raise HTTPException(
@@ -146,6 +161,30 @@ async def crm_client_status(site_id: str, req: ClientStatusRequest) -> dict[str,
     except Exception as exc:
         logger.error("CRM status update failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to update client status.") from exc
+
+
+@router.patch("/clients/{site_id}/token-limits")
+async def crm_client_token_limits(site_id: str, req: ClientTokenLimitsRequest) -> dict[str, Any]:
+    """Update total client and per-session token limits for one tenant."""
+    if req.session_token_limit > req.token_limit:
+        raise HTTPException(
+            status_code=400,
+            detail="Session token limit cannot be greater than the client token limit.",
+        )
+    try:
+        client = admin_db.update_client_token_limits(
+            site_id,
+            token_limit=req.token_limit,
+            session_token_limit=req.session_token_limit,
+        )
+        return {"client": client}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM token limit update failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to update token limits.") from exc
 
 
 @router.post("/clients/{site_id}/crawl")

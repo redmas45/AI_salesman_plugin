@@ -50,6 +50,10 @@ HOST: str = os.getenv("HOST", "0.0.0.0")
 PORT: int = int(os.getenv("PORT", "8001"))
 PUBLIC_API_URL: str = os.getenv("PUBLIC_API_URL", f"http://127.0.0.1:{PORT}").strip()
 CORS_ORIGINS: list[str] = [item.strip() for item in os.getenv("CORS_ORIGINS", "*").split(",")]
+HUB_PUBLIC_URL: str = os.getenv("HUB_PUBLIC_URL", PUBLIC_API_URL).strip()
+PUBLIC_STOREFRONT_ORIGIN: str = os.getenv("PUBLIC_STOREFRONT_ORIGIN", "").strip()
+CLIENT_STORE_URL: str = os.getenv("CLIENT_STORE_URL", "").strip()
+DEPLOYMENT_MODE: str = os.getenv("DEPLOYMENT_MODE", "local").strip().lower()
 
 DEFAULT_SITE_ID: str = os.getenv(
     "AI_DEFAULT_SITE_ID",

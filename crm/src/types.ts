@@ -242,6 +242,11 @@ export interface CreateClientPayload {
   adapter_name: string;
 }
 
+export interface TokenLimitsPayload {
+  token_limit: number;
+  session_token_limit: number;
+}
+
 export interface CapabilityItem {
   name: string;
   supported: boolean;

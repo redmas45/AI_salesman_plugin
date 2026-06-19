@@ -28,6 +28,7 @@ services:
       DATABASE_URL: postgresql://shopbot:shopbot_password@db:5432/shopping_db
       PUBLIC_API_URL: ${HUB_PUBLIC_URL:-${PUBLIC_API_URL:-http://143.198.5.97/aihub}}
       PUBLIC_STOREFRONT_ORIGIN: ${PUBLIC_STOREFRONT_ORIGIN:-http://143.198.5.97}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://143.198.5.97}
       CURRENT_SITE_ID: ${CURRENT_SITE_ID:-ai_kart}
       DEFAULT_SITE_ID: ${DEFAULT_SITE_ID:-ai_kart}
       AI_DEFAULT_SITE_ID: ${AI_DEFAULT_SITE_ID:-ai_kart}
@@ -42,6 +43,8 @@ services:
       TTS_PROVIDER: ${TTS_PROVIDER:-groq}
       LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
       CRM_ADMIN_TOKEN: ${CRM_ADMIN_TOKEN:-}
+      CLIENT_PANEL_DEFAULT_PASSWORD: ${CLIENT_PANEL_DEFAULT_PASSWORD:-}
+      CLIENT_PANEL_TOKEN_SECRET: ${CLIENT_PANEL_TOKEN_SECRET:-}
     ports:
       - "127.0.0.1:5176:8585"
     volumes:

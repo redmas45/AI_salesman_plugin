@@ -19,6 +19,7 @@ from db import admin as admin_db
 router = APIRouter(prefix="/v1/client-panel", tags=["Client Panel"])
 
 TOKEN_TTL_SECONDS = 60 * 60 * 12
+MIN_TOKEN_SECRET_LENGTH = 16
 
 
 class ClientPanelLoginRequest(BaseModel):
@@ -114,7 +115,12 @@ def _bearer_token(authorization: str) -> str:
 
 
 def _sign(body: str) -> str:
-    secret = os.getenv("CLIENT_PANEL_TOKEN_SECRET") or os.getenv("CRM_ADMIN_TOKEN") or config.OPENAI_API_KEY or "client-panel-dev-secret"
+    secret = os.getenv("CLIENT_PANEL_TOKEN_SECRET", "").strip()
+    if len(secret) < MIN_TOKEN_SECRET_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Client panel token secret is not configured securely.",
+        )
     digest = hmac.new(secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).digest()
     return _b64(digest)
 

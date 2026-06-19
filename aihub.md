@@ -50,6 +50,7 @@ HUB_PUBLIC_URL=http://143.198.5.97/aihub
 PUBLIC_API_URL=http://143.198.5.97/aihub
 VOICE_ORB_API_URL=http://143.198.5.97/aihub
 PUBLIC_STOREFRONT_ORIGIN=http://143.198.5.97
+CORS_ORIGINS=http://143.198.5.97
 
 CURRENT_SITE_ID=ai_kart
 DEFAULT_SITE_ID=ai_kart
@@ -78,11 +79,44 @@ LLM_EXTRACTOR_ENABLED=false
 
 OPENAI_API_KEY=your_openai_key
 GROQ_API_KEY=your_groq_key
-CRM_ADMIN_TOKEN=choose_strong_admin_token
-CLIENT_PANEL_DEFAULT_PASSWORD=choose_client_panel_password
-CLIENT_PANEL_TOKEN_SECRET=choose_client_panel_token_secret
+CRM_ADMIN_TOKEN=replace-with-long-random-admin-token-min-12-chars
+CLIENT_PANEL_DEFAULT_PASSWORD=replace-with-strong-client-panel-password
+CLIENT_PANEL_TOKEN_SECRET=replace-with-long-random-client-panel-signing-secret
 EOF
   echo "Created /var/www/AI_salesman_plugin/.env. Fill the secrets, then rerun this deploy block."
+  exit 1
+fi
+
+echo "== validate required security env =="
+missing=0
+require_secret() {
+  key="$1"
+  min_len="$2"
+  value="$(grep -E "^${key}=" .env | tail -n 1 | cut -d= -f2- | tr -d "\"'")"
+  if [ -z "$value" ] || echo "$value" | grep -Eq '^(choose_|replace-|your_|change-this|client123)'; then
+    echo "ERROR: $key must be set to a real secret in /var/www/AI_salesman_plugin/.env"
+    missing=1
+    return
+  fi
+  if [ "${#value}" -lt "$min_len" ]; then
+    echo "ERROR: $key must be at least $min_len characters."
+    missing=1
+  fi
+}
+
+require_secret CRM_ADMIN_TOKEN 12
+require_secret CLIENT_PANEL_DEFAULT_PASSWORD 12
+require_secret CLIENT_PANEL_TOKEN_SECRET 16
+
+CORS_VALUE="$(grep -E '^CORS_ORIGINS=' .env | tail -n 1 | cut -d= -f2- | tr -d "\"'")"
+if [ -z "$CORS_VALUE" ] || [ "$CORS_VALUE" = "*" ]; then
+  echo "ERROR: CORS_ORIGINS must be explicit, for example: CORS_ORIGINS=http://143.198.5.97"
+  missing=1
+fi
+
+if [ "$missing" -ne 0 ]; then
+  echo "Generate strong values, update .env, then rerun this deploy block."
+  echo "Example token generator: openssl rand -base64 32"
   exit 1
 fi
 
@@ -106,6 +140,9 @@ sudo docker compose ps
 echo "== local smoke =="
 curl -fsS http://127.0.0.1:5176/health >/dev/null
 curl -fsS http://127.0.0.1:5176/crm/ | grep -E 'assets/index-.*\.js' >/dev/null
+CRM_ADMIN_TOKEN_VALUE="$(grep -E '^CRM_ADMIN_TOKEN=' .env | tail -n 1 | cut -d= -f2- | tr -d "\"'")"
+curl -fsS http://127.0.0.1:5176/v1/admin/overview \
+  -H "x-crm-admin-token: ${CRM_ADMIN_TOKEN_VALUE}" >/dev/null
 echo "AI Hub local deploy OK."
 ```
 
