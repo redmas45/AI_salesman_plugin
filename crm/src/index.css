@@ -134,6 +134,7 @@ body {
   margin: 0;
   min-height: 100dvh;
   background: var(--page);
+  overflow-x: hidden;
 }
 
 button,
@@ -442,41 +443,6 @@ code {
   background: var(--red);
 }
 
-.distribution-row {
-  display: grid;
-  grid-template-columns: minmax(80px, 1fr) minmax(80px, 2fr) 42px;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-}
-
-.distribution-row span {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.distribution-row div {
-  height: 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--soft);
-}
-
-.distribution-row i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--accent);
-}
-
-.distribution-row b {
-  color: var(--muted);
-  font-size: 11px;
-  text-align: right;
-}
 
 .client-detail {
   display: grid;
@@ -1026,23 +992,7 @@ button:focus-visible {
   font-weight: 700;
 }
 
-.toast {
-  position: fixed;
-  right: 18px;
-  bottom: 18px;
-  z-index: 50;
-  max-width: min(420px, calc(100vw - 36px));
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-  color: var(--ink);
-  box-shadow: var(--shadow);
-  opacity: 0;
-  padding: 12px 14px;
-  pointer-events: none;
-  transform: translateY(20px);
-  transition: opacity 150ms ease, transform 150ms ease;
-}
+
 
 .overflow-wrap-anywhere {
   overflow-wrap: anywhere;
@@ -2679,9 +2629,9 @@ a:active,
   min-width: 240px;
   max-width: min(400px, calc(100vw - 40px));
   padding: 13px 16px;
-  background: var(--ink);
-  color: #fff;
-  border: 0;
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow-lg);
   font-size: 13px;
@@ -2690,6 +2640,14 @@ a:active,
   opacity: 0;
   transform: translateY(16px) scale(0.97);
   transition: opacity 200ms var(--ease), transform 200ms var(--ease);
+}
+
+.install-script {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.client-card-url {
+  word-break: break-all;
 }
 
 .toast.visible {

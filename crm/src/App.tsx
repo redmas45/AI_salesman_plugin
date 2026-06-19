@@ -1668,6 +1668,7 @@ function ClientOverviewTab({
 }
 
 function CapabilitySnapshot({ capabilities }: { capabilities: CapabilitiesSummary | null }) {
+  const [filter, setFilter] = useState<'supported' | 'unsupported'>('supported');
   if (!capabilities) return <EmptyState text="No readiness scan is available yet." />;
   const confidence = percent(capabilities.platform_confidence);
   return (
@@ -1679,10 +1680,24 @@ function CapabilitySnapshot({ capabilities }: { capabilities: CapabilitiesSummar
       </div>
       <Meter label="Platform confidence" value={confidence} tone="accent" />
       <div className="grid gap-3 sm:grid-cols-2">
-        <MiniMetric label="Supported checks" value={capabilities.supported.length} />
-        <MiniMetric label="Needs attention" value={capabilities.unsupported.length} />
+        <button
+          className={`card interactive text-left p-3 ${filter === 'supported' ? 'ring-2 ring-accent' : ''}`}
+          onClick={() => setFilter('supported')}
+          type="button"
+        >
+          <span className="text-xs text-muted">Supported checks</span>
+          <strong className="mt-1 block text-xl">{capabilities.supported.length}</strong>
+        </button>
+        <button
+          className={`card interactive text-left p-3 ${filter === 'unsupported' ? 'ring-2 ring-accent' : ''}`}
+          onClick={() => setFilter('unsupported')}
+          type="button"
+        >
+          <span className="text-xs text-muted">Needs attention</span>
+          <strong className="mt-1 block text-xl">{capabilities.unsupported.length}</strong>
+        </button>
       </div>
-      <ActionChipGrid actions={capabilities.allowed_actions} />
+      <ActionChipGrid actions={filter === 'supported' ? capabilities.supported : capabilities.unsupported} />
     </div>
   );
 }
@@ -1737,7 +1752,7 @@ function ClientReadinessTab({
           <EmptyState text="Run the readiness scanner to generate a readable capability report." />
         )}
       </Panel>
-      <div className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
+      <div className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr] items-start">
         <Panel title="Supported customer actions">
           <ActionChipGrid actions={capabilities?.allowed_actions ?? []} />
         </Panel>
@@ -2258,10 +2273,19 @@ function TokenLimitsPanel({
             onBlur={() => setSessionTokenLimit(normalizePositiveInteger(sessionTokenLimit))}
           />
         </div>
-        <div className="grid gap-2 md:grid-cols-3">
-          <KeyValue label="Used" value={client.quota.client.used} />
-          <KeyValue label="Remaining" value={client.quota.client.remaining} />
-          <KeyValue label="Session remaining" value={client.quota.session.remaining} />
+        <div className="grid gap-4 sm:grid-cols-3 py-2">
+          <div className="flex flex-col gap-1 border-b border-line pb-2 sm:border-0 sm:pb-0">
+            <span className="text-xs text-muted">Used</span>
+            <strong className="text-lg text-ink">{client.quota.client.used}</strong>
+          </div>
+          <div className="flex flex-col gap-1 border-b border-line pb-2 sm:border-0 sm:pb-0">
+            <span className="text-xs text-muted">Remaining</span>
+            <strong className="text-lg text-ink">{client.quota.client.remaining}</strong>
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-xs text-muted">Session remaining</span>
+            <strong className="text-lg text-ink">{client.quota.session.remaining}</strong>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <Button type="submit" disabled={saving}>
@@ -2607,6 +2631,8 @@ function AnalyticsView({
   onRangeChange: (range: string) => void;
   onGenerateSummary: () => void;
 }) {
+  const [activeTab, setActiveTab] = useState<'overview' | 'quality' | 'details'>('overview');
+
   if (!analytics) return <AnalyticsSkeleton />;
 
   return (
@@ -2625,27 +2651,57 @@ function AnalyticsView({
           </Button>
         </div>
       </section>
-      <AnalyticsMetricGrid analytics={analytics} range={range} />
-      <div className="grid gap-4 2xl:grid-cols-[1.35fr_0.65fr]">
-        <AnalyticsTrendChart rows={analytics.series} peakDay={analytics.peak_day} />
-        <OperationsPanel analytics={analytics} />
-      </div>
-      <SummaryCard text={analytics.summary} source={analytics.summary_source} />
-      <div className="grid gap-4 xl:grid-cols-3">
-        <RankPanel title="Catalog-backed demand" rows={analytics.top_products} />
-        <RankPanel title="Intent mix" rows={analytics.top_intents} />
-        <RankPanel title="Client/site mix" rows={analytics.site_mix ?? []} />
-      </div>
-      <div className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
-        <Panel title="Transport and response health">
-          <div className="grid gap-4 md:grid-cols-3">
-            <DistributionRows title="Transport" rows={analytics.transport_mix ?? []} />
-            <DistributionRows title="Status" rows={analytics.status_mix ?? []} />
-            <DistributionRows title="Latency" rows={analytics.latency_buckets ?? []} />
+
+      <nav className="client-tabs" aria-label="Analytics sections">
+        <button className={`client-tab-btn ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => setActiveTab('overview')} type="button">
+          <Activity size={15} aria-hidden="true" />
+          <span>Overview</span>
+        </button>
+        <button className={`client-tab-btn ${activeTab === 'quality' ? 'active' : ''}`} onClick={() => setActiveTab('quality')} type="button">
+          <Gauge size={15} aria-hidden="true" />
+          <span>Quality & Health</span>
+        </button>
+        <button className={`client-tab-btn ${activeTab === 'details' ? 'active' : ''}`} onClick={() => setActiveTab('details')} type="button">
+          <BarChart3 size={15} aria-hidden="true" />
+          <span>Details</span>
+        </button>
+      </nav>
+
+      {activeTab === 'overview' && (
+        <div className="tab-content fade-in">
+          <AnalyticsMetricGrid analytics={analytics} range={range} />
+          <div className="grid gap-4 2xl:grid-cols-[1.35fr_0.65fr]">
+            <AnalyticsTrendChart rows={analytics.series} peakDay={analytics.peak_day} />
+            <OperationsPanel analytics={analytics} />
           </div>
-        </Panel>
-        <RecentActivityPanel items={analytics.recent_events ?? []} />
-      </div>
+          <SummaryCard text={analytics.summary} source={analytics.summary_source} />
+        </div>
+      )}
+
+      {activeTab === 'quality' && (
+        <div className="tab-content fade-in">
+          <div className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
+            <Panel title="Transport and response health">
+              <div className="grid gap-4 md:grid-cols-3">
+                <DistributionRows title="Transport" rows={analytics.transport_mix ?? []} />
+                <DistributionRows title="Status" rows={analytics.status_mix ?? []} />
+                <DistributionRows title="Latency" rows={analytics.latency_buckets ?? []} />
+              </div>
+            </Panel>
+            <RecentActivityPanel items={analytics.recent_events ?? []} />
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'details' && (
+        <div className="tab-content fade-in">
+          <div className="grid gap-4 xl:grid-cols-3">
+            <RankPanel title="Catalog-backed demand" rows={analytics.top_products} />
+            <RankPanel title="Intent mix" rows={analytics.top_intents} />
+            <RankPanel title="Client/site mix" rows={analytics.site_mix ?? []} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2730,12 +2786,12 @@ function DistributionRows({ title, rows }: { title: string; rows: RankRow[] }) {
       <h3 className="text-xs font-semibold uppercase text-muted">{title}</h3>
       {rows.length ? (
         rows.map((row) => (
-          <div key={`${title}-${row.label}`} className="distribution-row">
-            <span>{row.label}</span>
-            <div>
-              <i style={{ width: `${Math.max(7, (row.count / max) * 100)}%` }} />
+          <div key={`${title}-${row.label}`} className="flex items-center gap-3 text-xs">
+            <span className="flex-[1] min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-ink">{row.label}</span>
+            <div className="flex-[1.5] h-[8px] rounded-full bg-soft overflow-hidden">
+              <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.max(2, (row.count / max) * 100)}%` }} />
             </div>
-            <b>{number(row.count)}</b>
+            <b className="w-[42px] text-right text-[11px] text-muted">{number(row.count)}</b>
           </div>
         ))
       ) : (
@@ -3048,16 +3104,20 @@ function ClientPanelPasswordDialog({
     }
   }
 
-  async function generatePassword() {
+  async function generateAndSetPassword() {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
+    let nextPassword = '';
+    for (let i = 0; i < 16; i++) {
+      nextPassword += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setGeneratedPassword(nextPassword);
+    setPassword(nextPassword);
     setWorking(true);
-    setMessage('');
     try {
-      const nextPassword = await onUpdatePassword(activeClient.site_id, '', true);
-      setGeneratedPassword(nextPassword);
-      setPassword('');
-      setMessage('Generated password is active. Copy it now.');
+      await onUpdatePassword(activeClient.site_id, nextPassword, false);
+      setMessage('Password generated and updated automatically.');
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Password generation failed.');
+      setMessage(error instanceof Error ? error.message : 'Password update failed.');
     } finally {
       setWorking(false);
     }
@@ -3129,7 +3189,7 @@ function ClientPanelPasswordDialog({
             Revoke password
           </Button>
           <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="secondary" disabled={disabled} icon={RefreshCw} onClick={generatePassword}>
+            <Button type="button" variant="secondary" disabled={disabled} icon={RefreshCw} onClick={generateAndSetPassword}>
               Generate and set
             </Button>
             <Button type="submit" disabled={disabled}>
