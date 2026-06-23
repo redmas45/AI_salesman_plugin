@@ -16,8 +16,6 @@ import functools
 import io
 import json
 import logging
-import os
-import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -29,7 +27,6 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, Response, Uploa
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 import psycopg
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -41,20 +38,17 @@ from agent import orchestrator
 from api import client_panel as client_panel_api
 from api import crm as crm_api
 from api.middleware import RateLimitMiddleware, RequestTracingMiddleware, SecurityHeadersMiddleware
+from api.routes import clients as clients_router
+from api.routes import analytics as analytics_router
+from api.routes import settings as settings_router
 from api.turn_logging import print_turn_summary, turn_timer
 from api.ws_shop import ws_shop_handler
 from db import admin as admin_db
-
-
-class ClientLogRequest(BaseModel):
-    event: str
-    payload: dict[str, Any] = Field(default_factory=dict)
 
 from api.models import (
     AddToCartRequest,
     CartItemResponse,
     CheckoutRequest,
-    HealthResponse,
     ProductResponse,
     ShopResponse,
     VariantResponse,
@@ -84,17 +78,11 @@ from db.database import (
 logger = logging.getLogger(__name__)
 CLIENT_DISABLED_MESSAGE = "AI assistant is disabled for this client."
 TOKEN_QUOTA_EXCEEDED_MESSAGE = "AI assistant token quota is exhausted for this client or session."
-DISABLED_WIDGET_DOM_ID = "shopbot-widget"
-DISABLED_WIDGET_BOOT_FLAG = "__shopbotBooted"
-DISABLED_WIDGET_FRAME_FLAG = "__shopbotFrameLoaded"
-DISABLED_WIDGET_REGISTRY = "__shopbotDisabledSites"
 
 DEFAULT_AUDIO_FILENAME = "audio.wav"
 CRAWLER_SOURCE_NAME = "custom_url_crawler"
 CRAWLER_POLL_INTERVAL_SECONDS = 120
 MAX_CONVERSATION_HISTORY_TURNS = 12
-MAX_LOG_FIELD_CHARS = 80
-MAX_LOG_VALUE_CHARS = 300
 HTTP_UNPROCESSABLE_INPUT = status.HTTP_422_UNPROCESSABLE_CONTENT
 CHECKOUT_EMPTY_VALUES = {"", "N/A", "Not Provided"}
 CHECKOUT_DEFAULT_VALUE = "Not Provided"
@@ -275,6 +263,9 @@ app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestTracingMiddleware)
 app.include_router(crm_api.router)
 app.include_router(client_panel_api.router)
+app.include_router(clients_router.router)
+app.include_router(analytics_router.router)
+app.include_router(settings_router.router)
 
 
 @app.get("/crm", include_in_schema=False)
@@ -292,79 +283,7 @@ if CRM_STATIC_DIR.exists():
     )
 
 
-@app.get("/v1/widget/status", tags=["Plugin"])
-async def widget_status(
-    site_id: str = config.DEFAULT_SITE_ID,
-    site: Optional[str] = None,
-    shop: Optional[str] = None,
-) -> dict[str, Any]:
-    """Return the public widget availability state for one tenant."""
-    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    return {
-        "site_id": safe_site,
-        "enabled": admin_db.is_client_widget_enabled(safe_site),
-    }
-
 # Endpoints
-
-@app.get("/health", response_model=HealthResponse, tags=["Utility"])
-async def health() -> HealthResponse:
-    """Check API and model configuration health."""
-    return HealthResponse(
-        status="ok",
-        models={
-            "stt": f"{config.STT_PROVIDER}:{config.GROQ_STT_MODEL if config.STT_PROVIDER == 'groq' else config.STT_MODEL}",
-            "llm": config.LLM_MODEL,
-            "tts": (
-                f"groq:{config.GROQ_TTS_MODEL} / {config.GROQ_TTS_VOICE}"
-                if config.TTS_PROVIDER == "groq"
-                else f"openai:{config.TTS_MODEL} / {config.TTS_VOICE}"
-            ),
-            "embedding": config.EMBEDDING_MODEL,
-        },
-    )
-
-@app.post("/v1/catalog/crawler/run", tags=["Utility"])
-async def trigger_crawler() -> dict[str, str]:
-    """Manually trigger the crawler."""
-    from agent.ingestion import sync_web_crawl
-    
-    target_url = config.CURRENT_URL
-    site_id = config.CURRENT_SITE_ID or config.DEFAULT_SITE_ID
-    if not target_url:
-        return {"status": "error", "message": "No CURRENT_URL configured."}
-
-    logger.info("Manual crawler trigger requested for %s...", target_url)
-
-    def run_sync() -> None:
-        try:
-            sync_web_crawl(
-                target_url,
-                max_pages=config.CRAWL_MAX_PAGES,
-                max_depth=config.CRAWL_MAX_DEPTH,
-                site_id=site_id,
-                reconcile_missing=True,
-                source_name=CRAWLER_SOURCE_NAME,
-            )
-        except (RuntimeError, OSError, ValueError) as exc:
-            logger.error("Manual crawl failed: %s", exc)
-
-    loop = asyncio.get_running_loop()
-    executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
-    loop.run_in_executor(executor, run_sync)
-    
-    return {"status": "ok", "message": "Crawler started in background."}
-
-@app.post("/v1/client-log", tags=["Utility"])
-async def client_log(req: ClientLogRequest) -> dict[str, str]:
-    """Receive browser-side diagnostics from the injected widget."""
-    safe_event = str(req.event)[:MAX_LOG_FIELD_CHARS]
-    safe_payload = {
-        str(key)[:MAX_LOG_FIELD_CHARS]: str(value)[:MAX_LOG_VALUE_CHARS]
-        for key, value in (req.payload or {}).items()
-    }
-    logger.info("CLIENT | %s | %s", safe_event, safe_payload)
-    return {"status": "ok"}
 
 
 async def _build_shopping_turn_payload(
@@ -1182,7 +1101,6 @@ async def api_checkout_cart(req: CheckoutRequest) -> Response:
         raise HTTPException(status_code=500, detail="Failed to process checkout.") from exc
 
 
-
 def vectorize_site_catalog(site_id: str) -> None:
     logger.info("Background Vectorization started for site %s...", site_id)
     try:
@@ -1215,245 +1133,6 @@ def vectorize_site_catalog(site_id: str) -> None:
         logger.error("Background Vectorization failed for site %s: %s", site_id, exc)
 
 
-
-
-def _safe_site_id(raw: str) -> str:
-    return re.sub(r"[^a-z0-9_-]", "_", (raw or "").strip().lower())[:80] or "site_1"
-
-
-def _safe_script_base_url(raw: str) -> str:
-    if not raw:
-        return ""
-    raw = raw.strip().strip("\"'")
-    if raw.lower().startswith("http://") or raw.lower().startswith("https://"):
-        return raw.rstrip("/")
-    return ""
-
-
-def _public_widget_base_url() -> str:
-    return (
-        _safe_script_base_url(os.environ.get("PUBLIC_API_URL", ""))
-        or _safe_script_base_url(config.PUBLIC_API_URL)
-        or _safe_script_base_url(config.VOICE_ORB_API_URL or "")
-    )
-
-
-def _load_widget_script(*, site: str, api_base_url: str) -> str:
-    plugin_path = Path(__file__).parent.parent / "plugin" / "shopbot.js"
-    if not plugin_path.exists():
-        raise HTTPException(status_code=404, detail="Plugin script not found.")
-
-    with open(plugin_path, "r", encoding="utf-8") as f:
-        js_code = f.read()
-
-    js_code = js_code.replace('"__AI_PUBLIC_API_URL__"', json.dumps(api_base_url))
-    js_code = js_code.replace('"__AI_DEFAULT_SITE_ID__"', json.dumps(site))
-    return js_code
-
-
-def _disabled_widget_script(*, site: str) -> str:
-    return f"""
-(function () {{
-  var siteId = {json.dumps(site)};
-  var widget = document.getElementById({json.dumps(DISABLED_WIDGET_DOM_ID)});
-  if (widget) widget.remove();
-  window[{json.dumps(DISABLED_WIDGET_BOOT_FLAG)}] = false;
-  window[{json.dumps(DISABLED_WIDGET_FRAME_FLAG)}] = false;
-  window[{json.dumps(DISABLED_WIDGET_REGISTRY)}] = window[{json.dumps(DISABLED_WIDGET_REGISTRY)}] || {{}};
-  window[{json.dumps(DISABLED_WIDGET_REGISTRY)}][siteId] = true;
-  console.info("[ShopBot] " + {json.dumps(CLIENT_DISABLED_MESSAGE)} + " Site: " + siteId);
-}})();
-"""
-
-
-def _render_embed_bootstrap(*, site: str, api_base_url: str) -> str:
-    return f"""
-(function () {{
-  if (window.__shopbotFrameLoaded) return;
-  window.__shopbotFrameLoaded = true;
-
-  var currentScript = document.currentScript;
-  var scriptUrl = currentScript && currentScript.src ? new URL(currentScript.src, window.location.href) : null;
-  var siteId = {json.dumps(site)};
-  var apiBaseUrl = {json.dumps(api_base_url)};
-  var parentOrigin = window.location.origin;
-  var frameUrl = new URL(apiBaseUrl + "/shopbot-frame");
-  frameUrl.searchParams.set("site", siteId);
-  frameUrl.searchParams.set("parent_origin", parentOrigin);
-
-  var frame = document.createElement("iframe");
-  frame.src = frameUrl.toString();
-  frame.title = "ShopBot Voice Orb";
-  frame.setAttribute("allow", "microphone");
-  frame.setAttribute("aria-label", "ShopBot Voice Orb");
-  frame.style.position = "fixed";
-  frame.style.left = "50%";
-  frame.style.bottom = "12px";
-  frame.style.transform = "translateX(-50%)";
-  frame.style.width = "360px";
-  frame.style.height = "180px";
-  frame.style.maxWidth = "calc(100vw - 24px)";
-  frame.style.maxHeight = "calc(100vh - 24px)";
-  frame.style.border = "0";
-  frame.style.background = "transparent";
-  frame.style.zIndex = "2147483647";
-  frame.style.overflow = "hidden";
-  frame.style.colorScheme = "light";
-
-  function clamp(value, fallback, maxCss) {{
-    var numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
-    return Math.min(numeric, maxCss);
-  }}
-
-  window.addEventListener("message", function (event) {{
-    if (event.origin !== new URL(apiBaseUrl).origin) return;
-    var data = event.data || {{}};
-    if (data.source !== "shopbot-frame") return;
-
-    if (data.type === "shopbot:frame-size") {{
-      var width = clamp(data.width, 360, Math.max(320, window.innerWidth - 24));
-      var height = clamp(data.height, 180, Math.max(180, window.innerHeight - 24));
-      frame.style.width = width + "px";
-      frame.style.height = height + "px";
-      return;
-    }}
-
-    if (data.type === "shopbot:navigate" && data.path) {{
-      try {{
-        var targetUrl = new URL(data.path, window.location.href);
-        if (targetUrl.origin === window.location.origin) {{
-          window.location.href = targetUrl.pathname + targetUrl.search + targetUrl.hash;
-        }}
-      }} catch (_err) {{}}
-    }}
-  }});
-
-  function mountFrame(retries) {{
-    if (document.body) {{
-      document.body.appendChild(frame);
-      return;
-    }}
-    if (retries > 100) {{
-      return;
-    }}
-    setTimeout(function () {{ mountFrame(retries + 1); }}, 50);
-  }}
-
-  mountFrame(0);
-}})();
-"""
-
-
-@app.get("/shopbot-frame", tags=["Plugin"])
-async def serve_plugin_frame(
-    site: Optional[str] = None,
-    site_id: Optional[str] = None,
-    shop: Optional[str] = None,
-    parent_origin: Optional[str] = None,
-) -> Response:
-    """Serve a standalone orb frame for external website modes."""
-    from fastapi.responses import Response
-
-    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    script_path = f"{_public_widget_base_url()}/shopbot-widget.js?site={safe_site}"
-    if parent_origin:
-        script_path += f"&parent_origin={parent_origin}"
-
-    if not admin_db.is_client_widget_enabled(safe_site):
-        return Response(
-            content="<!doctype html><html><body></body></html>",
-            media_type="text/html",
-            headers={"Cache-Control": "no-store, max-age=0"},
-        )
-
-    html_doc = f"""<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ShopBot</title>
-    <style>
-      html, body {{
-        margin: 0;
-        padding: 0;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-        background: transparent;
-      }}
-      body {{
-        position: relative;
-      }}
-    </style>
-  </head>
-  <body>
-    <script src="{script_path}"></script>
-  </body>
-</html>"""
-
-    return Response(
-        content=html_doc,
-        media_type="text/html",
-        headers={"Cache-Control": "no-store, max-age=0"},
-    )
-
-
-@app.get("/shopbot-widget.js", tags=["Plugin"])
-async def serve_plugin_widget(
-    site: Optional[str] = None,
-    site_id: Optional[str] = None,
-    shop: Optional[str] = None,
-) -> Response:
-    """Serve the full widget app for direct use or inside the external embed frame."""
-    from fastapi.responses import Response
-
-    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    safe_api = _public_widget_base_url()
-    js_code = (
-        _load_widget_script(site=safe_site, api_base_url=safe_api)
-        if admin_db.is_client_widget_enabled(safe_site)
-        else _disabled_widget_script(site=safe_site)
-    )
-
-    return Response(
-        content=js_code,
-        media_type="application/javascript",
-        headers={"Cache-Control": "no-store, max-age=0"},
-    )
-
-
-@app.get("/shopbot.js", tags=["Plugin"])
-async def serve_plugin(
-    site: Optional[str] = None,
-    site_id: Optional[str] = None,
-    shop: Optional[str] = None,
-) -> Response:
-    """Serve the public widget loader — inlined directly (no iframe).
-
-    The iframe-based bootstrap (_render_embed_bootstrap) fails with free-tier
-    ngrok because the interstitial "Visit Site" page blocks iframe loading.
-    Serving the full widget JS directly avoids this issue entirely.
-    """
-    from fastapi.responses import Response
-
-    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    safe_api = _public_widget_base_url()
-    js_code = (
-        _load_widget_script(site=safe_site, api_base_url=safe_api)
-        if admin_db.is_client_widget_enabled(safe_site)
-        else _disabled_widget_script(site=safe_site)
-    )
-
-    return Response(
-        content=js_code,
-        media_type="application/javascript",
-        headers={"Cache-Control": "no-store, max-age=0"},
-    )
-
-
-# Entry point
-
 if __name__ == "__main__":
     import uvicorn
 
@@ -1464,4 +1143,3 @@ if __name__ == "__main__":
         reload=True,
         log_level="info",
     )
-
