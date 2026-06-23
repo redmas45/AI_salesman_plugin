@@ -1,14 +1,14 @@
 # AI Salesman Plugin - Project Overview
 
-Date: 2026-06-18
+Date: 2026-06-23
 
-Current fallback/deployment milestone: **L8** (`L 8` Git sync comment).
+Current fallback/deployment milestone: **L8.5** (`L 8.5` Git sync comment).
 
-## L8 Checkpoint
+## L8.5 Checkpoint
 
-L8 is the current public deployment baseline.
+L8.5 is the current pushed baseline. It keeps the L8 public deployment topology and adds the code-organization refactor for the Hub backend, CRM frontend, and admin database helpers.
 
-What L8 locks in:
+What L8.5 locks in:
 
 - AI Hub runs as Docker `db` + `app` only.
 - Public routing is shared system Nginx: AI-KART at `/`, Hub at `/aihub/`, Client Panel at `/client-panel/<client_id>`.
@@ -19,6 +19,20 @@ What L8 locks in:
 - Client Panel uses tabs for Overview, Demand, Conversations, Catalog, and Token policy.
 - AI-KART runtime SQLite DB is no longer tracked; dummy products are source-controlled through `backend/products.seed.json`.
 - `docs/` is local-only and ignored.
+- `api/main.py` is kept as the FastAPI shell while utility/plugin endpoints are split into `api/routes/`.
+- `crm/src/App.tsx` is kept as the CRM state orchestrator while UI primitives, shared components, utilities, and views are split into dedicated files.
+- `db/admin.py` is kept as a compatibility facade while schema, settings, quota, analytics, and client operations are split into focused DB modules.
+
+L8.5 local verification:
+
+```text
+pytest -q                                 -> 91 passed
+python -m compileall api db agent tests   -> passed
+cd crm; npm run lint                      -> passed
+cd crm; npm run build                     -> passed
+FastAPI duplicate route check             -> 0 duplicate routes
+Local HTTP smoke checks on 127.0.0.1:8765 -> passed
+```
 
 ## Deployment Git Contract
 
@@ -70,7 +84,7 @@ The active deployment mode is `public-ip`. AI Hub runs through Docker Compose an
    - Purpose: floating Voice Orb, audio capture, UI actions, product overlays, navigation, cart hooks, checkout handoff, platform/site adapters.
 
 2. **FastAPI Hub backend**
-   - Location: `api/main.py`, `api/*`
+   - Location: `api/main.py`, `api/routes/*`, `api/*`
    - Purpose: voice turn APIs, admin APIs, client-panel APIs, widget serving, CRM serving, health checks.
 
 3. **AI orchestration**
@@ -82,7 +96,7 @@ The active deployment mode is `public-ip`. AI Hub runs through Docker Compose an
    - Purpose: API-first crawling, priority URL planning, Crawl4AI fallback, product extraction, variants, vectorization, reports.
 
 5. **CRM**
-   - Location: `crm/src/*`
+   - Location: `crm/src/App.tsx`, `crm/src/components/*`, `crm/src/views/*`, `crm/src/utils/*`
    - Purpose: Hub admin UI for clients, catalog, usage, conversations, analytics, adapters, settings, health, readiness, crawl reports.
 
 6. **Client Panel**
@@ -188,6 +202,7 @@ Known reality:
 
 Recent improvements:
 
+- L8.5 split the CRM frontend into reusable UI primitives, shared layout/actions/dialogs, utility helpers, and page views.
 - Light/dark theme readability fixed.
 - Clients can be removed.
 - Settings includes model, temperature, voice, embedding, RAG, crawler, CRM, and Client Panel keys.
@@ -226,8 +241,10 @@ Deploy order:
 
 ## Verification Checklist
 
-- `python -m pytest` passes in AI Hub.
+- `pytest -q` passes in AI Hub.
 - `npm run lint` and `npm run build` pass in `crm`.
+- `python -m compileall api db agent tests` passes.
+- FastAPI duplicate route inspection returns `0`.
 - `docker compose config` passes and shows `127.0.0.1:5176:8585`.
 - `http://127.0.0.1:5176/health` returns `200`.
 - `http://143.198.5.97/aihub/health` returns `200` after shared Nginx reload.

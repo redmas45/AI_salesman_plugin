@@ -6,11 +6,11 @@ The client website receives one script tag. The Hub owns the AI layer, catalog i
 
 ## Current Baseline
 
-Current deployment checkpoint: **L8**
+Current deployment checkpoint: **L8.5**
 
-Date: 2026-06-18
+Date: 2026-06-23
 
-L8 is the current public path-routed deployment baseline:
+L8.5 is the current pushed code-structure baseline. It keeps the L8 public path-routed deployment model and adds the large-file modularization refactor:
 
 - AI Hub runs through Docker Compose with only `db` and `app`.
 - Public routing is handled by the shared system Nginx config from AI-KART.
@@ -19,6 +19,9 @@ L8 is the current public path-routed deployment baseline:
 - The active tenant is `ai_kart`.
 - `docs/` is local-only and ignored.
 - AI-KART runtime SQLite data is not owned by this repo.
+- `api/main.py` remains the FastAPI app shell; extracted utility/plugin routes live in `api/routes/`.
+- `crm/src/App.tsx` is now the CRM state orchestrator; extracted UI, shared components, utilities, and page views live under `crm/src/components/`, `crm/src/utils/`, and `crm/src/views/`.
+- `db/admin.py` remains a backward-compatible import facade; extracted schema, settings, quota, analytics, and client operations live in focused `db/*.py` modules.
 
 ## Public Topology
 
@@ -67,13 +70,34 @@ AI Hub does not own:
 
 ```text
 agent/       AI orchestration, prompts, RAG, crawler, STT/TTS, adapters
-api/         FastAPI routes, CRM APIs, Client Panel APIs, widget serving
-crm/         React/Vite CRM frontend served by the Hub
-db/          Database schema, tenant catalog access, seed helpers
+api/         FastAPI app shell, route modules, CRM APIs, Client Panel APIs, widget serving
+crm/         React/Vite CRM frontend served by the Hub; components, views, and utilities are split under src/
+db/          Admin facade, schema/settings/quota/analytics/client modules, tenant catalog access, seed helpers
 plugin/      Hosted browser widget source and built shopbot.js
 tests/       Backend, ingestion, guardrail, API, and widget contract tests
 data/        Local development data and source product fixtures
 docker/      Container entrypoint
+```
+
+## L8.5 Code Organization
+
+L8.5 was pushed with Git sync comment `L 8.5`.
+
+Main refactor result:
+
+- `crm/src/App.tsx`: reduced from 3,800 lines to 563 lines.
+- `db/admin.py`: reduced from 1,751 lines to 179 lines.
+- `api/main.py`: reduced from 1,467 lines to 1,145 lines.
+- Extracted CRM files: `crm/src/components/`, `crm/src/views/`, `crm/src/utils/`.
+- Extracted DB files: `db/schema.py`, `db/settings_manager.py`, `db/quota.py`, `db/analytics_math.py`, `db/clients.py`.
+- Extracted API route files: `api/routes/clients.py`, `api/routes/analytics.py`, `api/routes/settings.py`.
+
+Compatibility rule:
+
+```text
+Existing imports from db.admin should keep working.
+Public API paths must stay unchanged.
+CRM CSS class names stay global through crm/src/index.css.
 ```
 
 ## One-Line Client Script
@@ -296,6 +320,17 @@ Backend:
 
 ```powershell
 python -m pytest
+```
+
+Latest L8.5 local verification:
+
+```text
+pytest -q                                 -> 91 passed
+python -m compileall api db agent tests   -> passed
+cd crm; npm run lint                      -> passed
+cd crm; npm run build                     -> passed
+FastAPI duplicate route check             -> 0 duplicate routes
+Local HTTP smoke checks on 127.0.0.1:8765 -> passed
 ```
 
 Focused examples:
