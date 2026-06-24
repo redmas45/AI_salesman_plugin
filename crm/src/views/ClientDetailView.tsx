@@ -42,7 +42,7 @@ import { panelPasswordLabel, money, number, percent, shortTime, labelize } from 
 
 type ClientWorkspaceTab = 'overview' | 'readiness' | 'catalog' | 'crawl' | 'activity' | 'controls';
 
-const CATALOG_PAGE_LIMIT = 160;
+const CATALOG_PAGE_LIMIT = 1000;
 const CATALOG_PAGE_SIZE = 12;
 
 const CLIENT_WORKSPACE_TABS: Array<{ id: ClientWorkspaceTab; label: string; icon: LucideIcon }> = [

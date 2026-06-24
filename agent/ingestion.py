@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from time import monotonic
 from typing import Any
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urldefrag, urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -70,6 +70,8 @@ CATALOG_ENDPOINT_PATHS = (
 SHOPIFY_CATALOG_PAGE_LIMIT = 250
 SHOPIFY_CATALOG_MAX_PAGES = 20
 WOO_CATALOG_MAX_PAGES = 20
+GENERIC_API_CATALOG_PAGE_SIZE = 96
+GENERIC_API_CATALOG_MAX_PAGES = 100
 HIGH_VALUE_URL_KEYWORDS = (
     "product",
     "products",
@@ -934,7 +936,7 @@ def _catalog_endpoints_for(seed_url: str) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
-def _normalize_catalog_payload(payload: Any, api_url: str) -> list[dict[str, Any]]:
+def _normalize_catalog_payload(payload: Any, api_url: str, *, merge_same_name: bool = True) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
         raw_products = _first(
             payload.get("products"),
@@ -947,7 +949,7 @@ def _normalize_catalog_payload(payload: Any, api_url: str) -> list[dict[str, Any
         raw_products = payload
 
     if not isinstance(raw_products, list):
-        return _dedupe_products(_extract_products_from_json_tree(payload, api_url))
+        return _dedupe_products(_extract_products_from_json_tree(payload, api_url), merge_same_name=merge_same_name)
 
     products = []
     for raw in raw_products:
@@ -970,7 +972,7 @@ def _normalize_catalog_payload(payload: Any, api_url: str) -> list[dict[str, Any
         if normalized:
             products.append(normalized)
 
-    return _dedupe_products(products)
+    return _dedupe_products(products, merge_same_name=merge_same_name)
 
 
 async def _fetch_api_catalog_products(seed_url: str, timeout: int) -> list[dict[str, Any]]:
@@ -992,7 +994,9 @@ async def _fetch_catalog_endpoint_pages(
 ) -> list[dict[str, Any]]:
     """Fetch one catalog endpoint, including standard Shopify/Woo pagination."""
     products: list[dict[str, Any]] = []
-    for page_url in _catalog_page_urls(api_url):
+    seen_product_ids: set[int] = set()
+    page_urls = _catalog_page_urls(api_url)
+    for page_url in page_urls:
         try:
             response = await client.get(page_url, headers={"Accept": "application/json"})
             if response.status_code in {401, 403, 404, 405}:
@@ -1003,15 +1007,30 @@ async def _fetch_catalog_endpoint_pages(
             logger.info("No API catalog available at %s: %s", page_url, exc)
             break
 
-        page_products = _normalize_catalog_payload(payload, page_url)
+        page_products = _normalize_catalog_payload(
+            payload,
+            _catalog_normalization_url(api_url, page_url),
+            merge_same_name=False,
+        )
         if not page_products:
             break
-        products.extend(page_products)
+        new_products = []
+        for product in page_products:
+            product_id = int(product["id"])
+            if product_id in seen_product_ids:
+                continue
+            new_products.append(product)
+            seen_product_ids.add(product_id)
+        if not new_products and products:
+            break
+        products.extend(new_products)
 
-        if len(_catalog_page_urls(api_url)) == 1:
+        if len(page_urls) == 1:
+            break
+        if _catalog_response_reached_last_page(payload):
             break
 
-    return _dedupe_products(products)
+    return _dedupe_products(products, merge_same_name=False)
 
 
 def _catalog_page_urls(api_url: str) -> list[str]:
@@ -1027,7 +1046,45 @@ def _catalog_page_urls(api_url: str) -> list[str]:
             f"{api_url}{separator}page={page}"
             for page in range(1, WOO_CATALOG_MAX_PAGES + 1)
         ]
+    if _is_generic_products_api(api_url):
+        return [
+            _catalog_url_with_params(
+                api_url,
+                {
+                    "page": page,
+                    "per_page": GENERIC_API_CATALOG_PAGE_SIZE,
+                },
+            )
+            for page in range(1, GENERIC_API_CATALOG_MAX_PAGES + 1)
+        ]
     return [api_url]
+
+
+def _is_generic_products_api(api_url: str) -> bool:
+    parsed = urlparse(api_url)
+    return parsed.path.rstrip("/") == "/api/products"
+
+
+def _catalog_url_with_params(api_url: str, params: dict[str, int]) -> str:
+    parsed = urlparse(api_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update({key: str(value) for key, value in params.items()})
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def _catalog_response_reached_last_page(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else payload
+    page = _to_positive_int_id(meta.get("page"))
+    total_pages = _to_positive_int_id(meta.get("total_pages"))
+    return bool(page and total_pages and page >= total_pages)
+
+
+def _catalog_normalization_url(api_url: str, page_url: str) -> str:
+    if _is_generic_products_api(api_url):
+        return api_url
+    return page_url
 
 
 class _HtmlHarvest(HTMLParser):
@@ -1249,7 +1306,15 @@ def _merge_product_candidates(existing: dict[str, Any], incoming: dict[str, Any]
     return merged
 
 
-def _dedupe_products(products: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _dedupe_products(products: list[dict[str, Any]], *, merge_same_name: bool = True) -> list[dict[str, Any]]:
+    if not merge_same_name:
+        unique_by_id: dict[int, dict[str, Any]] = {}
+        for item in products:
+            if _looks_like_noise_name(str(item.get("name") or "")):
+                continue
+            unique_by_id[int(item["id"])] = item
+        return list(unique_by_id.values())
+
     merged_by_name: dict[str, dict[str, Any]] = {}
     for item in products:
         if _looks_like_noise_name(str(item.get("name") or "")):

@@ -8,6 +8,31 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from agent import ingestion
 
 
+class _CatalogResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+class _CatalogClient:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.urls = []
+
+    async def get(self, url, headers=None):
+        self.urls.append(url)
+        if not self.payloads:
+            return _CatalogResponse({"data": [], "meta": {"page": len(self.urls), "total_pages": len(self.urls)}})
+        return _CatalogResponse(self.payloads.pop(0))
+
+
 def test_sanitize_site_id_normalizes_urlish_input():
     assert ingestion.sanitize_site_id("ai_kart") == "ai_kart"
     assert ingestion.sanitize_site_id("https://vercelclonedwebsite.vercel.app/") == "https_vercelclonedwebsite_vercel_app"
@@ -58,6 +83,137 @@ def test_catalog_endpoints_include_common_platform_routes():
     assert "https://shop.example.test/collections/all/products.json" in endpoints
     assert "https://shop.example.test/wp-json/wc/store/products?per_page=100" in endpoints
     assert len(endpoints) == len(set(endpoints))
+
+
+def test_generic_api_products_endpoint_uses_aikart_pagination_params():
+    urls = ingestion._catalog_page_urls("https://shop.example.test/api/products")
+
+    assert urls[0] == "https://shop.example.test/api/products?page=1&per_page=96"
+    assert urls[1] == "https://shop.example.test/api/products?page=2&per_page=96"
+    assert len(urls) == ingestion.GENERIC_API_CATALOG_MAX_PAGES
+
+
+@pytest.mark.asyncio
+async def test_fetch_catalog_endpoint_pages_follows_fastapi_meta_total_pages():
+    client = _CatalogClient(
+        [
+            {
+                "data": [
+                    {
+                        "id": "p1",
+                        "name": "Product One",
+                        "description": "One",
+                        "category": "Products",
+                        "price": 10,
+                        "in_stock": True,
+                    }
+                ],
+                "meta": {"page": 1, "per_page": 96, "total": 2, "total_pages": 2},
+            },
+            {
+                "data": [
+                    {
+                        "id": "p2",
+                        "name": "Product Two",
+                        "description": "Two",
+                        "category": "Products",
+                        "price": 20,
+                        "in_stock": True,
+                    }
+                ],
+                "meta": {"page": 2, "per_page": 96, "total": 2, "total_pages": 2},
+            },
+            {
+                "data": [
+                    {
+                        "id": "p3",
+                        "name": "Product Three",
+                        "description": "Three",
+                        "category": "Products",
+                        "price": 30,
+                        "in_stock": True,
+                    }
+                ],
+                "meta": {"page": 3, "per_page": 96, "total": 3, "total_pages": 3},
+            },
+        ]
+    )
+
+    products = await ingestion._fetch_catalog_endpoint_pages(
+        client,
+        "https://shop.example.test/api/products",
+    )
+
+    assert [product["name"] for product in products] == ["Product One", "Product Two"]
+    assert len(client.urls) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_catalog_endpoint_pages_stops_when_generic_api_repeats_first_page():
+    repeated = {
+        "data": [
+            {
+                "id": "p1",
+                "name": "Product One",
+                "description": "One",
+                "category": "Products",
+                "price": 10,
+                "in_stock": True,
+            }
+        ]
+    }
+    client = _CatalogClient([repeated, repeated, repeated])
+
+    products = await ingestion._fetch_catalog_endpoint_pages(
+        client,
+        "https://shop.example.test/api/products",
+    )
+
+    assert [product["name"] for product in products] == ["Product One"]
+    assert len(client.urls) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_catalog_endpoint_pages_keeps_distinct_generic_products_with_same_name():
+    client = _CatalogClient(
+        [
+            {
+                "data": [
+                    {
+                        "id": "p1",
+                        "name": "NOVA Plain T-Shirt",
+                        "description": "First color",
+                        "category": "shirts",
+                        "brand": "NOVA",
+                        "price": 20,
+                        "in_stock": True,
+                    }
+                ],
+                "meta": {"page": 1, "per_page": 96, "total": 2, "total_pages": 2},
+            },
+            {
+                "data": [
+                    {
+                        "id": "p2",
+                        "name": "NOVA Plain T-Shirt",
+                        "description": "Second color",
+                        "category": "shirts",
+                        "brand": "NOVA",
+                        "price": 20,
+                        "in_stock": True,
+                    }
+                ],
+                "meta": {"page": 2, "per_page": 96, "total": 2, "total_pages": 2},
+            },
+        ]
+    )
+
+    products = await ingestion._fetch_catalog_endpoint_pages(
+        client,
+        "https://shop.example.test/api/products",
+    )
+
+    assert len(products) == 2
 
 
 def test_shopify_products_json_normalization():
