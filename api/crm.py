@@ -11,7 +11,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from pydantic import BaseModel, Field
 
 import config
+from agent.adapter_discovery import render_adapter_code
 from agent.ingestion import sync_web_crawl
+from api.routes.clients import _public_runtime_config, _public_widget_base_url
 from db import admin as admin_db
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,7 @@ MAX_SITE_ID_LENGTH = 80
 MAX_URL_LENGTH = 500
 MAX_ADAPTER_NAME_LENGTH = 160
 MAX_PLAN_LENGTH = 80
+MAX_VERTICAL_KEY_LENGTH = 80
 MIN_ADMIN_TOKEN_LENGTH = 12
 
 
@@ -31,10 +34,26 @@ class ClientCreateRequest(BaseModel):
     site_id: str | None = Field(default=None, max_length=MAX_SITE_ID_LENGTH)
     deploy_mode: str = Field(default=admin_db.DEFAULT_DEPLOY_MODE, max_length=40)
     plan: str = Field(default=admin_db.DEFAULT_PLAN, max_length=MAX_PLAN_LENGTH)
+    vertical_key: str = Field(
+        default=admin_db.DEFAULT_CLIENT_VERTICAL_KEY,
+        max_length=MAX_VERTICAL_KEY_LENGTH,
+    )
     adapter_name: str = Field(
         default=admin_db.DEFAULT_ADAPTER_NAME,
         max_length=MAX_ADAPTER_NAME_LENGTH,
     )
+
+
+class ClientVerticalRequest(BaseModel):
+    vertical_key: str = Field(..., min_length=1, max_length=MAX_VERTICAL_KEY_LENGTH)
+
+
+class PromptProfileSaveRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=160)
+    system_prompt: str = Field(..., min_length=1, max_length=12000)
+    developer_rules: str = Field(default="", max_length=12000)
+    publish: bool = False
+    changelog: str = Field(default="", max_length=500)
 
 
 class ClientStatusRequest(BaseModel):
@@ -111,6 +130,24 @@ async def crm_clients() -> dict[str, list[dict[str, Any]]]:
         raise HTTPException(status_code=500, detail="Failed to load CRM clients.") from exc
 
 
+@router.get("/verticals")
+async def crm_verticals() -> dict[str, Any]:
+    """Return built-in vertical definitions for client setup."""
+    return {
+        "default_vertical_key": admin_db.DEFAULT_CLIENT_VERTICAL_KEY,
+        "verticals": admin_db.list_verticals(),
+    }
+
+
+@router.get("/verticals/{vertical_key}")
+async def crm_vertical_detail(vertical_key: str) -> dict[str, Any]:
+    """Return one built-in vertical definition."""
+    try:
+        return {"vertical": admin_db.get_vertical_detail(vertical_key)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/clients", status_code=status.HTTP_201_CREATED)
 async def crm_create_client(req: ClientCreateRequest) -> dict[str, Any]:
     """Create a client tenant and return its embed script."""
@@ -122,6 +159,7 @@ async def crm_create_client(req: ClientCreateRequest) -> dict[str, Any]:
             deploy_mode=req.deploy_mode,
             plan=req.plan,
             adapter_name=req.adapter_name,
+            vertical_key=req.vertical_key,
         )
         return {"client": client}
     except ValueError as exc:
@@ -141,6 +179,97 @@ async def crm_client_detail(site_id: str) -> dict[str, Any]:
     except Exception as exc:
         logger.error("CRM client detail failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to load client.") from exc
+
+
+@router.get("/clients/{site_id}/knowledge")
+async def crm_client_knowledge(site_id: str, limit: int = 50) -> dict[str, Any]:
+    """Return generic knowledge rows for one client."""
+    try:
+        from db.knowledge import knowledge_preview, knowledge_stats
+
+        safe_limit = max(1, min(int(limit), 500))
+        return {
+            "stats": knowledge_stats(site_id),
+            "items": knowledge_preview(site_id, safe_limit),
+        }
+    except Exception as exc:
+        logger.error("CRM knowledge lookup failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to load knowledge items.") from exc
+
+
+@router.get("/clients/{site_id}/adapter")
+async def crm_client_adapter(site_id: str) -> dict[str, Any]:
+    """Return generated adapter runtime config and readable code for one client."""
+    try:
+        runtime_config = _public_runtime_config(site=site_id, api_base_url=_public_widget_base_url())
+        return {
+            "runtime_config": runtime_config,
+            "adapter_code": render_adapter_code(runtime_config),
+        }
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM adapter lookup failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to load adapter config.") from exc
+
+
+@router.get("/clients/{site_id}/prompt-profile")
+async def crm_client_prompt_profile(site_id: str) -> dict[str, Any]:
+    """Return the prompt profile and versions for one client."""
+    try:
+        return admin_db.get_client_prompt_profile(site_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM prompt profile lookup failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to load prompt profile.") from exc
+
+
+@router.post("/clients/{site_id}/prompt-profile")
+async def crm_save_client_prompt_profile(site_id: str, req: PromptProfileSaveRequest) -> dict[str, Any]:
+    """Save a draft or published prompt version for one client."""
+    try:
+        return admin_db.save_client_prompt_profile(
+            site_id,
+            name=req.name,
+            system_prompt=req.system_prompt,
+            developer_rules=req.developer_rules,
+            publish=req.publish,
+            changelog=req.changelog,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM prompt profile save failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to save prompt profile.") from exc
+
+
+@router.post("/prompt-versions/{version_id}/publish")
+async def crm_publish_prompt_version(version_id: str) -> dict[str, Any]:
+    """Publish an existing prompt version."""
+    try:
+        return admin_db.publish_prompt_version(version_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM prompt publish failed for %s: %s", version_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to publish prompt version.") from exc
+
+
+@router.patch("/clients/{site_id}/vertical")
+async def crm_client_vertical(site_id: str, req: ClientVerticalRequest) -> dict[str, Any]:
+    """Update the vertical metadata used by a client workspace."""
+    try:
+        return {"client": admin_db.update_client_vertical(site_id, req.vertical_key)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM vertical update failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to update client vertical.") from exc
 
 
 @router.delete("/clients/{site_id}")

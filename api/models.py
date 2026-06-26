@@ -2,10 +2,11 @@
 Pydantic models for API request/response validation.
 """
 
-from typing import Any, Literal, Optional, Union
+from typing import Any, Optional, Union
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from agent.actions.registry import is_supported_action, normalize_action_name
 
 DEFAULT_SITE_ID = "site_1"
 MAX_SITE_ID_LENGTH = 80
@@ -48,28 +49,16 @@ OPEN_PARAMETER_ACTIONS = {
 
 
 class UIAction(BaseModel):
-    action: Literal[
-        ACTION_SHOW_PRODUCTS,
-        ACTION_SHOW_COMPARISON,
-        ACTION_FILTER_PRODUCTS,
-        ACTION_NAVIGATE_TO,
-        ACTION_SORT_PRODUCTS,
-        ACTION_ADD_TO_CART,
-        ACTION_REMOVE_FROM_CART,
-        ACTION_SHOW_PRODUCT_DETAIL,
-        ACTION_CLEAR_FILTERS,
-        ACTION_CLEAR_CART,
-        ACTION_CHECKOUT,
-        ACTION_UPDATE_CART_QUANTITY,
-        ACTION_CLEAR_HISTORY,
-        ACTION_UPDATE_PREFERENCES,
-    ] = Field(..., description="UI action type")
+    action: str = Field(..., description="UI action type")
     params: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_params(self) -> Self:
         params = self.params
-        action = self.action
+        action = normalize_action_name(self.action)
+        if not is_supported_action(action):
+            raise ValueError(f"Unsupported UI action: {self.action}")
+        self.action = action
 
         if action in PRODUCT_LIST_ACTIONS:
             product_ids = params.get(PRODUCT_IDS_PARAM)
@@ -186,4 +175,3 @@ class VariantResponse(BaseModel):
     @classmethod
     def serialize_ids_as_string(cls, value: Any) -> str:
         return str(value)
-

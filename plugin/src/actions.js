@@ -1,5 +1,6 @@
 import { showProductOverlay } from "./productOverlay";
 import { resolveProductDetailUrl } from "./productResolver";
+import { executeWithAIHubAdapter, hasAIHubAdapter } from "./adapterBridge";
 import {
   ACTION_PARAMS,
   ACTIONS,
@@ -48,6 +49,16 @@ async function postJson(path, payload) {
     credentials: "same-origin",
   });
   return response.ok;
+}
+
+class AIHubAdapterActionAdapter {
+  canHandle() {
+    return hasAIHubAdapter();
+  }
+
+  async handle(action) {
+    return executeWithAIHubAdapter(action);
+  }
 }
 
 class ProductOverlayAdapter {
@@ -360,6 +371,7 @@ class ActionExecutor {
 }
 
 const executor = new ActionExecutor([
+  new AIHubAdapterActionAdapter(),
   new ProductOverlayAdapter(),
   new ProductDetailNavigationAdapter(),
   new ShopBotConfigAdapter(),

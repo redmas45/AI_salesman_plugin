@@ -1363,6 +1363,30 @@ input::placeholder {
   opacity: 0.7;
 }
 
+.textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 12px;
+  resize: vertical;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.5;
+  outline: none;
+  transition: border-color var(--duration) var(--ease), box-shadow var(--duration) var(--ease);
+}
+
+.textarea-lg {
+  min-height: 260px;
+}
+
+.textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 .select-wrapper {
   position: relative;
 }
@@ -2125,6 +2149,80 @@ a:active,
   padding-bottom: 40px;
 }
 
+.prompt-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.38fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.prompt-editor-form,
+.prompt-side,
+.prompt-version-list,
+.prompt-safety-list {
+  display: grid;
+  gap: 14px;
+}
+
+.prompt-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.prompt-status-grid div {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  background: var(--soft);
+}
+
+.prompt-status-grid span,
+.prompt-version-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.prompt-status-grid strong {
+  display: block;
+  margin-top: 4px;
+}
+
+.prompt-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.prompt-safety-line {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.prompt-safety-line svg {
+  color: var(--green);
+}
+
+.prompt-version-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--soft);
+}
+
+.prompt-version-row p {
+  margin: 6px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .client-summary-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
@@ -2869,6 +2967,7 @@ a:active,
 
   .control-card-grid,
   .client-summary-layout,
+  .prompt-layout,
   .activity-insight-grid {
     grid-template-columns: 1fr;
   }

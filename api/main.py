@@ -796,6 +796,23 @@ async def catalog_status(site_id: str = config.DEFAULT_SITE_ID) -> dict[str, Any
         raise HTTPException(status_code=500, detail="Failed to fetch catalog status.")
 
 
+@app.get("/v1/knowledge", tags=["Knowledge"])
+async def list_knowledge(site_id: str = config.DEFAULT_SITE_ID, limit: int = 50) -> dict[str, Any]:
+    """Return generic knowledge rows for a tenant."""
+    try:
+        from db.knowledge import knowledge_preview, knowledge_stats
+
+        safe_limit = max(1, min(int(limit), 500))
+        return {
+            "site_id": site_id,
+            "stats": knowledge_stats(site_id),
+            "items": knowledge_preview(site_id, limit=safe_limit),
+        }
+    except psycopg.Error as exc:
+        logger.error("GET /v1/knowledge failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to fetch knowledge items.") from exc
+
+
 @app.get("/v1/cart", response_model=list[CartItemResponse], tags=["Cart"])
 async def get_cart(site_id: str = config.DEFAULT_SITE_ID) -> list[CartItemResponse]:
     """Return all items currently in the shopping cart."""
@@ -1106,29 +1123,34 @@ def vectorize_site_catalog(site_id: str) -> None:
     try:
         from db.database import get_db
         from agent.rag import _embed, _product_to_text
+        from db.knowledge import sync_products_to_knowledge
+        from agent.retrieval.generic_rag import vectorize_missing_knowledge
         
         with get_db(site_id) as conn:
             rows = conn.execute(
                 "SELECT p.*, c.name AS category_name FROM products p JOIN categories c ON p.category_id = c.id WHERE p.embedding IS NULL"
             ).fetchall()
-            
+
             if not rows:
                 logger.info("No products need vectorization for site %s", site_id)
-                return
-                
-            logger.info("Vectorizing %d products for site %s...", len(rows), site_id)
-            texts = []
-            for row in rows:
-                texts.append(_product_to_text(dict(row)))
-                
-            embeddings = _embed(texts)
-            
-            for i, row in enumerate(rows):
-                conn.execute(
-                    "UPDATE products SET embedding = %s WHERE id = %s",
-                    (embeddings[i], row["id"])
-                )
-            logger.info("Vectorization complete for site %s.", site_id)
+            else:
+                logger.info("Vectorizing %d products for site %s...", len(rows), site_id)
+                texts = []
+                for row in rows:
+                    texts.append(_product_to_text(dict(row)))
+
+                embeddings = _embed(texts)
+
+                for i, row in enumerate(rows):
+                    conn.execute(
+                        "UPDATE products SET embedding = %s WHERE id = %s",
+                        (embeddings[i], row["id"])
+                    )
+                logger.info("Vectorization complete for site %s.", site_id)
+
+        sync_products_to_knowledge(site_id, "manual_vectorize")
+        knowledge_count = vectorize_missing_knowledge(site_id)
+        logger.info("Knowledge vectorization complete for site %s: %d rows.", site_id, knowledge_count)
     except (psycopg.Error, RuntimeError) as exc:
         logger.error("Background Vectorization failed for site %s: %s", site_id, exc)
 

@@ -1,5 +1,6 @@
 import type {
   AnalyticsResponse,
+  AdapterConfigResponse,
   CatalogProduct,
   CapabilitiesSummary,
   Client,
@@ -7,10 +8,14 @@ import type {
   ConversationsResponse,
   CrawlReport,
   CreateClientPayload,
+  KnowledgeResponse,
   Overview,
+  PromptProfileResponse,
+  PromptProfileSavePayload,
   ReadinessReport,
   SettingsResponse,
   TokenLimitsPayload,
+  VerticalsResponse,
 } from './types';
 
 const TOKEN_STORAGE_KEY = 'aiHubCrmAdminToken';
@@ -109,6 +114,7 @@ export const crmApi = {
       method: 'POST',
       body: JSON.stringify({ range, site_id: siteId }),
     }),
+  verticals: () => request<VerticalsResponse>('/verticals'),
   client: (siteId: string) => request<{ client: Client }>(`/clients/${encodeURIComponent(siteId)}`),
   createClient: (payload: CreateClientPayload) =>
     request<{ client: Client }>('/clients', {
@@ -121,6 +127,11 @@ export const crmApi = {
     request<{ client: Client }>(`/clients/${encodeURIComponent(siteId)}/status`, {
       method: 'PATCH',
       body: JSON.stringify({ enabled }),
+    }),
+  updateClientVertical: (siteId: string, verticalKey: string) =>
+    request<{ client: Client }>(`/clients/${encodeURIComponent(siteId)}/vertical`, {
+      method: 'PATCH',
+      body: JSON.stringify({ vertical_key: verticalKey }),
     }),
   updateClientTokenLimits: (siteId: string, payload: TokenLimitsPayload) =>
     request<{ client: Client }>(`/clients/${encodeURIComponent(siteId)}/token-limits`, {
@@ -150,6 +161,23 @@ export const crmApi = {
     request<CapabilitiesSummary>(`/capabilities/${encodeURIComponent(siteId)}`),
   getCrawlReport: (siteId: string) =>
     request<{ report: CrawlReport }>(`/crawl-report/${encodeURIComponent(siteId)}`),
+  getClientKnowledge: (siteId: string, limit = 50) =>
+    request<KnowledgeResponse>(
+      `/clients/${encodeURIComponent(siteId)}/knowledge?limit=${encodeURIComponent(String(limit))}`,
+    ),
+  getClientAdapter: (siteId: string) =>
+    request<AdapterConfigResponse>(`/clients/${encodeURIComponent(siteId)}/adapter`),
+  getPromptProfile: (siteId: string) =>
+    request<PromptProfileResponse>(`/clients/${encodeURIComponent(siteId)}/prompt-profile`),
+  savePromptProfile: (siteId: string, payload: PromptProfileSavePayload) =>
+    request<PromptProfileResponse>(`/clients/${encodeURIComponent(siteId)}/prompt-profile`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  publishPromptVersion: (versionId: string) =>
+    request<{ version_id: string; status: string }>(`/prompt-versions/${encodeURIComponent(versionId)}/publish`, {
+      method: 'POST',
+    }),
   catalogProducts: (siteId: string, limit = 120) =>
     publicRequest<CatalogProduct[]>(
       `/products?site_id=${encodeURIComponent(siteId)}&limit=${encodeURIComponent(String(limit))}`,

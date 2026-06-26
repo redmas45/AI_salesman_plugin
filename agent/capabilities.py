@@ -12,6 +12,8 @@ import logging
 from typing import Any
 
 import config
+from agent.actions.registry import get_action, list_action_names
+from agent.verticals.registry import get_vertical
 from db import admin as admin_db
 
 logger = logging.getLogger(__name__)
@@ -21,8 +23,13 @@ ALWAYS_ALLOWED_ACTIONS: frozenset[str] = frozenset({
     "SHOW_PRODUCTS",
     "SHOW_COMPARISON",
     "FILTER_PRODUCTS",
+    "SHOW_ENTITIES",
+    "COMPARE_ENTITIES",
+    "FILTER_ENTITIES",
+    "OPEN_ENTITY_DETAIL",
     "NAVIGATE_TO",
     "SORT_PRODUCTS",
+    "SORT_ENTITIES",
     "SHOW_PRODUCT_DETAIL",
     "CLEAR_FILTERS",
     "CLEAR_HISTORY",
@@ -45,6 +52,10 @@ CHECKOUT_ACTIONS: frozenset[str] = frozenset({
 
 def get_allowed_actions(site_id: str) -> set[str]:
     """Return the set of UI action types this site supports."""
+    vertical_key = _client_vertical_key(site_id)
+    if vertical_key != "ecommerce":
+        return _allowed_vertical_actions(site_id)
+
     report = admin_db.get_readiness_report(site_id)
     if not report:
         # No scan yet — allow everything for backward compatibility
@@ -65,7 +76,41 @@ def get_allowed_actions(site_id: str) -> set[str]:
     if checkout_cap.get("supported", False):
         allowed |= CHECKOUT_ACTIONS
 
+    return {action for action in allowed if get_action(action)}
+
+
+def _client_vertical_key(site_id: str) -> str:
+    try:
+        client = admin_db._client_row(site_id)
+    except Exception as exc:
+        logger.warning("Capability lookup could not load client %s: %s", site_id, exc)
+        client = None
+    return str((client or {}).get("vertical_key") or "ecommerce")
+
+
+def _allowed_vertical_actions(site_id: str) -> set[str]:
+    vertical = _client_vertical(site_id)
+    allowed = {action for action in vertical.action_types if get_action(action)}
+    allowed.update(action for action in ALWAYS_ALLOWED_ACTIONS if get_action(action))
+    allowed.update({"CLEAR_HISTORY", "UPDATE_PREFERENCES"})
+
+    report = admin_db.get_readiness_report(site_id)
+    if not report:
+        return allowed or list_action_names()
+
+    capabilities = {cap["name"]: cap for cap in report.get("capabilities", [])}
+    if not capabilities.get("cart", {}).get("supported", False):
+        allowed -= CART_ACTIONS
+    if not capabilities.get("checkout", {}).get("supported", False):
+        allowed -= CHECKOUT_ACTIONS
     return allowed
+
+
+def _client_vertical(site_id: str):
+    try:
+        return get_vertical(_client_vertical_key(site_id))
+    except ValueError:
+        return get_vertical("generic")
 
 
 def filter_actions(site_id: str, actions: list[dict[str, Any]]) -> list[dict[str, Any]]:

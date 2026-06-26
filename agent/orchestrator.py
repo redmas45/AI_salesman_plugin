@@ -40,6 +40,7 @@ from db.database import (
     update_user_preferences,
     get_db,
 )
+from db.clients import get_client_vertical_key
 
 logger = logging.getLogger(__name__)
 
@@ -145,10 +146,11 @@ def run(
     if _is_simple_greeting(safe_transcript):
         return _greeting_response(transcript, skip_tts, timings, t0)
 
-    if _is_inventory_stats_query(safe_transcript):
+    ecommerce_runtime = _is_ecommerce_site(site_id)
+    if ecommerce_runtime and _is_inventory_stats_query(safe_transcript):
         return _inventory_stats_response(site_id, transcript, skip_tts, timings, t0)
 
-    inventory_type = _extract_inventory_type_query(safe_transcript)
+    inventory_type = _extract_inventory_type_query(safe_transcript) if ecommerce_runtime else None
     if inventory_type:
         return _inventory_type_count_response(
             site_id, transcript, inventory_type, skip_tts, timings, t0
@@ -297,12 +299,13 @@ def run_stream(
         yield from _stream_final_result(result)
         return
 
-    if _is_inventory_stats_query(safe_transcript):
+    ecommerce_runtime = _is_ecommerce_site(site_id)
+    if ecommerce_runtime and _is_inventory_stats_query(safe_transcript):
         result = _inventory_stats_response(site_id, transcript, skip_tts, timings, t0)
         yield from _stream_final_result(result)
         return
 
-    inventory_type = _extract_inventory_type_query(safe_transcript)
+    inventory_type = _extract_inventory_type_query(safe_transcript) if ecommerce_runtime else None
     if inventory_type:
         result = _inventory_type_count_response(
             site_id, transcript, inventory_type, skip_tts, timings, t0
@@ -444,6 +447,9 @@ def _retrieve_context(
     if profile.get("preferences"):
         rag_query = f"{safe_transcript} (User preferences: {profile['preferences']})"
 
+    if not _is_ecommerce_site(site_id):
+        return _retrieve_generic_context(site_id, rag_query, profile)
+
     try:
         price_constraints = rag.extract_price_constraints(rag_query)
         retrieved_products = rag.retrieve(
@@ -459,6 +465,29 @@ def _retrieve_context(
     except PIPELINE_RECOVERABLE_ERRORS as exc:
         logger.error("PIPELINE | RAG failed: %s", exc)
         return RetrievalContext(profile, {}, [])
+
+
+def _retrieve_generic_context(
+    site_id: str,
+    rag_query: str,
+    profile: dict[str, Any],
+) -> RetrievalContext:
+    try:
+        from agent.retrieval.generic_rag import retrieve_knowledge
+
+        items = retrieve_knowledge(rag_query, site_id=site_id)
+        return RetrievalContext(profile, {}, items)
+    except PIPELINE_RECOVERABLE_ERRORS as exc:
+        logger.error("PIPELINE | Generic RAG failed: %s", exc)
+        return RetrievalContext(profile, {}, [])
+
+
+def _is_ecommerce_site(site_id: str) -> bool:
+    try:
+        return get_client_vertical_key(site_id) == "ecommerce"
+    except PIPELINE_RECOVERABLE_ERRORS as exc:
+        logger.warning("PIPELINE | vertical lookup failed for %s: %s", site_id, exc)
+        return True
 
 
 def _merge_history_products(
@@ -534,14 +563,16 @@ def _validate_agent_response(
             site_id,
             [product["id"] for product in retrieved_products],
         )
-        _override_hallucinated_product_search(validated, original_actions)
+        if _is_ecommerce_site(site_id):
+            _override_hallucinated_product_search(validated, original_actions)
     except OutputGuardrailError as exc:
         logger.error("PIPELINE | Output guardrail blocked response: %s", exc)
         validated = _blocked_response(blocked_text)
 
-    _promote_comparison_action(validated, safe_transcript)
-    _ensure_named_comparison_response(validated, safe_transcript, retrieved_products)
-    _prevent_false_empty_inventory_claim(validated, safe_transcript, site_id)
+    if _is_ecommerce_site(site_id):
+        _promote_comparison_action(validated, safe_transcript)
+        _ensure_named_comparison_response(validated, safe_transcript, retrieved_products)
+        _prevent_false_empty_inventory_claim(validated, safe_transcript, site_id)
     return validated
 
 

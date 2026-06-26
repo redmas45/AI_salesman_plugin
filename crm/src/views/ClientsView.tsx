@@ -8,6 +8,7 @@ import { StatusPill } from '../components/ui/Badge';
 import { ClientActionMenu } from '../components/shared/ActionMenu';
 import { CrawlButton } from '../components/shared/ClientActions';
 import { number, shortTime } from '../utils/format';
+import { getCrmVertical } from '../verticals/registry';
 
 export interface ClientsViewProps {
   clients: Client[];
@@ -74,8 +75,9 @@ export function ClientsView({
               <tr>
                 <th>Client</th>
                 <th>Site ID</th>
+                <th>Vertical</th>
                 <th>Status</th>
-                <th>Products</th>
+                <th>Indexed</th>
                 <th>Turns</th>
                 <th>Tokens</th>
                 <th>Crawler</th>
@@ -94,6 +96,7 @@ export function ClientsView({
                   <td>
                     <code>{client.site_id}</code>
                   </td>
+                  <td>{client.vertical_label || getCrmVertical(client.vertical_key).label}</td>
                   <td>
                     <StatusPill value={client.status} />
                   </td>
@@ -150,6 +153,7 @@ function ClientCard({
   onToggleClient: (siteId: string, enabled: boolean) => void;
   onTriggerCrawl: (siteId: string) => void;
 }) {
+  const vertical = getCrmVertical(client.vertical_key);
   return (
     <article className="client-card" style={style} role="button" tabIndex={0} onClick={() => onOpenClient(client.site_id)} onKeyDown={(event) => {
       if (event.key === 'Enter' || event.key === ' ') onOpenClient(client.site_id);
@@ -162,7 +166,10 @@ function ClientCard({
         <StatusPill value={client.status} />
       </div>
       <div className="client-card-chips">
-        <span className="badge badge-muted">{number(client.catalog.active_products)} catalog items</span>
+        <span className="badge badge-muted">{client.vertical_label || vertical.label}</span>
+        <span className="badge badge-muted">
+          {number(client.catalog.active_products)} {vertical.entityLabelPlural}
+        </span>
         <StatusPill value={client.last_crawl_status || 'not_started'} />
       </div>
       <div className="grid gap-1 text-sm">

@@ -103,6 +103,48 @@ CREATE TABLE IF NOT EXISTS product_variants (
 CREATE INDEX IF NOT EXISTS idx_product_variants_product ON product_variants(product_id);
 CREATE INDEX IF NOT EXISTS idx_product_variants_sku ON product_variants(sku);
 
+CREATE TABLE IF NOT EXISTS knowledge_sources (
+    id              TEXT PRIMARY KEY,
+    source_type     TEXT NOT NULL,
+    source_name     TEXT NOT NULL,
+    source_url      TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'active',
+    metadata_json   TEXT NOT NULL DEFAULT '{}',
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_items (
+    id                  TEXT PRIMARY KEY,
+    external_id         TEXT NOT NULL DEFAULT '',
+    entity_type         TEXT NOT NULL,
+    title               TEXT NOT NULL,
+    subtitle            TEXT NOT NULL DEFAULT '',
+    summary             TEXT NOT NULL DEFAULT '',
+    body                TEXT NOT NULL DEFAULT '',
+    url                 TEXT NOT NULL DEFAULT '',
+    image_url           TEXT NOT NULL DEFAULT '',
+    source_id           TEXT NOT NULL DEFAULT '',
+    attributes_json     TEXT NOT NULL DEFAULT '{}',
+    pricing_json        TEXT NOT NULL DEFAULT '{}',
+    availability_json   TEXT NOT NULL DEFAULT '{}',
+    location_json       TEXT NOT NULL DEFAULT '{}',
+    contact_json        TEXT NOT NULL DEFAULT '{}',
+    policy_json         TEXT NOT NULL DEFAULT '{}',
+    risk_tags_json      TEXT NOT NULL DEFAULT '[]',
+    is_active           INTEGER NOT NULL DEFAULT 1,
+    embedding           vector(384),
+    last_seen_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_type
+    ON knowledge_items(entity_type, is_active);
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_source
+    ON knowledge_items(source_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_embedding
+    ON knowledge_items USING hnsw (embedding vector_cosine_ops);
+
 -- Phase 3: Crawl Report storage
 ALTER TABLE catalog_sync_runs ADD COLUMN IF NOT EXISTS report_json TEXT NOT NULL DEFAULT '';
-

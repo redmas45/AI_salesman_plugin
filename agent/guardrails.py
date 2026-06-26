@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 import config
+from agent.actions.registry import is_supported_action
 from api.models import (
     ACTION_ADD_TO_CART,
     ACTION_CLEAR_CART,
@@ -243,7 +244,7 @@ def validate_output(
             params = {"page": "cart"}
 
         # Action type whitelist
-        if action_type not in config.VALID_UI_ACTIONS:
+        if not is_supported_action(action_type):
             logger.warning(
                 "Guardrail | Unknown UI action type: %r — skipping.", action_type
             )
@@ -256,6 +257,7 @@ def validate_output(
             ACTION_SHOW_PRODUCT_DETAIL,
             ACTION_ADD_TO_CART,
             ACTION_REMOVE_FROM_CART,
+            ACTION_UPDATE_CART_QUANTITY,
         ):
             params = _validate_product_ids(action_type, params, site_id, allowed_product_ids)
             if params is None:

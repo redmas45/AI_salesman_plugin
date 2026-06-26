@@ -72,6 +72,13 @@ export interface Client {
   allowed_origin: string;
   deploy_mode: string;
   plan: string;
+  vertical_key?: string;
+  vertical_label?: string;
+  vertical_config?: Record<string, unknown>;
+  risk_level?: 'low' | 'medium' | 'high' | string;
+  locale?: string;
+  prompt_profile_id?: string;
+  compliance_mode?: string;
   adapter_name: string;
   status: string;
   token_limit?: number;
@@ -241,7 +248,26 @@ export interface CreateClientPayload {
   site_id?: string;
   deploy_mode: string;
   plan: string;
+  vertical_key: string;
   adapter_name: string;
+}
+
+export interface VerticalDefinition {
+  key: string;
+  label: string;
+  risk_level: 'low' | 'medium' | 'high';
+  entity_label_singular: string;
+  entity_label_plural: string;
+  default_plan_label: string;
+  crm_tabs: Array<{ id: string; label: string }>;
+  entity_types: string[];
+  readiness_checks: string[];
+  action_types: string[];
+}
+
+export interface VerticalsResponse {
+  default_vertical_key: string;
+  verticals: VerticalDefinition[];
 }
 
 export interface TokenLimitsPayload {
@@ -296,4 +322,101 @@ export interface CrawlReport {
   duration_ms: number;
   stopped_by_limit: boolean;
   created_at: string;
+}
+
+export interface KnowledgeStats {
+  total_items: number;
+  active_items: number;
+  missing_embeddings: number;
+  entity_types: number;
+}
+
+export interface KnowledgeItem {
+  id: string;
+  external_id?: string;
+  entity_type: string;
+  title: string;
+  subtitle?: string;
+  summary?: string;
+  body?: string;
+  url?: string;
+  image_url?: string;
+  source_id?: string;
+  attributes?: Record<string, unknown>;
+  pricing?: Record<string, unknown>;
+  availability?: Record<string, unknown>;
+  has_embedding?: boolean | number;
+  updated_at?: string;
+}
+
+export interface KnowledgeResponse {
+  stats: KnowledgeStats;
+  items: KnowledgeItem[];
+}
+
+export interface AdapterRuntimeConfig {
+  version: number;
+  site_id: string;
+  enabled: boolean;
+  api_base_url: string;
+  install: Record<string, string>;
+  vertical: Record<string, unknown>;
+  adapter: {
+    name?: string;
+    mode?: string;
+    platform?: string;
+    routes?: Record<string, unknown>;
+    actions?: Record<string, unknown>;
+    selectors?: Record<string, unknown>;
+    selector_confidence?: number;
+    selector_validated?: boolean;
+  };
+}
+
+export interface AdapterConfigResponse {
+  runtime_config: AdapterRuntimeConfig;
+  adapter_code: string;
+}
+
+export interface PromptVersion {
+  id: string;
+  profile_id: string;
+  version: number;
+  status: 'draft' | 'published' | 'archived' | string;
+  system_prompt: string;
+  developer_rules: string;
+  response_schema?: Record<string, unknown>;
+  variables?: Record<string, unknown>;
+  allowed_actions?: string[];
+  changelog?: string;
+  created_by?: string;
+  created_at?: string;
+  published_at?: string | null;
+}
+
+export interface PromptProfile {
+  id: string;
+  site_id: string;
+  name: string;
+  vertical_key: string;
+  status: string;
+  created_by?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PromptProfileResponse {
+  profile: PromptProfile;
+  versions: PromptVersion[];
+  draft_version: PromptVersion | null;
+  published_version: PromptVersion | null;
+  active_version: PromptVersion | null;
+}
+
+export interface PromptProfileSavePayload {
+  name: string;
+  system_prompt: string;
+  developer_rules: string;
+  publish: boolean;
+  changelog?: string;
 }

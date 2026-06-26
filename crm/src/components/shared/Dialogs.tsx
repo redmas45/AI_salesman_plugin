@@ -5,6 +5,7 @@ import { Field } from '../ui/Field';
 import { NoticeBanner } from './NoticeBanner';
 import type { Client, CreateClientPayload } from '../../types';
 import { panelPasswordLabel } from '../../utils/format';
+import { CRM_VERTICALS, DEFAULT_CRM_VERTICAL_KEY } from '../../verticals/registry';
 
 export interface AddClientDialogProps {
   open: boolean;
@@ -42,6 +43,16 @@ export function AddClientDialog({
         <Field label="Client name" name="name" placeholder="AI-KART" required />
         <Field label="Website URL" name="store_url" placeholder="https://client-store.com" required />
         <Field label="Site ID" name="site_id" placeholder="auto generated" />
+        <label className="field">
+          <span>Vertical</span>
+          <select name="vertical_key" defaultValue={DEFAULT_CRM_VERTICAL_KEY}>
+            {CRM_VERTICALS.map((vertical) => (
+              <option key={vertical.key} value={vertical.key}>
+                {vertical.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="field">
             <span>Deploy mode</span>

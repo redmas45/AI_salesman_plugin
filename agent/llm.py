@@ -20,6 +20,8 @@ from tenacity import (
 
 import config
 from agent.prompt import build_system_prompt, format_products_for_prompt
+from agent.prompts.generic import build_generic_system_prompt, format_knowledge_for_prompt
+from db.clients import get_client_vertical_key
 
 logger = logging.getLogger(__name__)
 LLM_RETRY_ERRORS = (OpenAIError, RuntimeError, ValueError, TypeError, KeyError, IndexError)
@@ -120,8 +122,18 @@ def generate_response(
     Returns:
         Parsed dict with keys: response_text, intent, confidence, ui_actions.
     """
-    product_context = format_products_for_prompt(retrieved_products, price_constraints)
-    system_prompt = build_system_prompt(site_id, product_context, cart_context, profile_context)
+    vertical_key = get_client_vertical_key(site_id)
+    if vertical_key == "ecommerce":
+        product_context = format_products_for_prompt(retrieved_products, price_constraints)
+        system_prompt = build_system_prompt(site_id, product_context, cart_context, profile_context)
+    else:
+        knowledge_context = format_knowledge_for_prompt(retrieved_products)
+        system_prompt = build_generic_system_prompt(
+            site_id=site_id,
+            vertical_key=vertical_key,
+            knowledge_context=knowledge_context,
+            profile_context=profile_context,
+        )
 
     logger.info(
         "LLM | model=%s | user=%r | products=%d | history=%d",

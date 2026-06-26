@@ -675,6 +675,15 @@ def build_system_prompt(
     if cap_context:
         sys_prompt += f"\n\n## Website Capabilities Context\n{cap_context}\n"
 
+    try:
+        from db.prompts import prompt_profile_context
+
+        client_prompt = prompt_profile_context(site_id)
+    except Exception:
+        client_prompt = ""
+    if client_prompt:
+        sys_prompt += f"\n\n## Published Client Prompt\n{client_prompt}\n"
+
     return sys_prompt.format(
         product_context=product_context,
         cart_context=cart_context,

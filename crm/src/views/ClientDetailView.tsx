@@ -3,8 +3,6 @@ import {
   ShieldCheck,
   PackageOpen,
   Gauge,
-  Activity,
-  SlidersHorizontal,
   ClipboardCheck,
   Settings,
   KeyRound,
@@ -39,20 +37,24 @@ import { TechnicalDetails } from '../components/shared/TechnicalDetails';
 import { ActivityList } from '../components/shared/ActivityList';
 import { CopyScriptButton, CrawlButton } from '../components/shared/ClientActions';
 import { panelPasswordLabel, money, number, percent, shortTime, labelize } from '../utils/format';
-
-type ClientWorkspaceTab = 'overview' | 'readiness' | 'catalog' | 'crawl' | 'activity' | 'controls';
+import { getCrmVertical } from '../verticals/registry';
+import { tab as verticalTab } from '../verticals/shared';
+import type { ClientWorkspaceTabDefinition, ClientWorkspaceTabId, CrmVerticalDefinition } from '../verticals/types';
+import { AdapterTab } from './client-workspace/AdapterTab';
+import { PromptTab } from './client-workspace/PromptTab';
 
 const CATALOG_PAGE_LIMIT = 1000;
 const CATALOG_PAGE_SIZE = 12;
-
-const CLIENT_WORKSPACE_TABS: Array<{ id: ClientWorkspaceTab; label: string; icon: LucideIcon }> = [
-  { id: 'overview', label: 'Overview', icon: ShieldCheck },
-  { id: 'readiness', label: 'Readiness', icon: ShieldCheck },
-  { id: 'catalog', label: 'Catalog', icon: PackageOpen },
-  { id: 'crawl', label: 'Crawl', icon: Gauge },
-  { id: 'activity', label: 'Activity', icon: Activity },
-  { id: 'controls', label: 'Controls', icon: SlidersHorizontal },
-];
+const CORE_CLIENT_TAB_IDS = new Set<ClientWorkspaceTabId>([
+  'overview',
+  'readiness',
+  'catalog',
+  'crawl',
+  'activity',
+  'adapter',
+  'prompt',
+  'controls',
+]);
 
 const ACTION_LABELS: Record<string, string> = {
   ADD_TO_CART: 'Add to cart',
@@ -110,7 +112,9 @@ export function ClientDetailView({
   onOpenPasswordDialog,
   onViewChange,
 }: ClientDetailViewProps) {
-  const [activeTab, setActiveTab] = useState<ClientWorkspaceTab>('overview');
+  const vertical = getCrmVertical(client.vertical_key);
+  const workspaceTabs = useMemo(() => withAdapterTab(vertical.clientTabs), [vertical.clientTabs]);
+  const [activeTab, setActiveTab] = useState<ClientWorkspaceTabId>('overview');
   const [capabilities, setCapabilities] = useState<CapabilitiesSummary | null>(null);
   const [scanReport, setScanReport] = useState<ReadinessReport | null>(null);
   const [crawlReport, setCrawlReport] = useState<CrawlReport | null>(null);
@@ -120,6 +124,13 @@ export function ClientDetailView({
   const [reportError, setReportError] = useState('');
   const [scanning, setScanning] = useState(false);
   const crawling = crawlingSites.has(client.site_id);
+  const activeTabDefinition = workspaceTabs.find((tab) => tab.id === activeTab) ?? workspaceTabs[0]!;
+
+  useEffect(() => {
+    if (!workspaceTabs.some((tab) => tab.id === activeTab)) {
+      setActiveTab(workspaceTabs[0]?.id ?? 'overview');
+    }
+  }, [activeTab, workspaceTabs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -193,7 +204,10 @@ export function ClientDetailView({
           <div className="mt-3 flex flex-wrap gap-2">
             <StatusPill value={client.status} />
             <StatusPill value={client.last_crawl_status || 'not_started'} />
-            <span className="client-hero-chip">{number(client.catalog.active_products)} products</span>
+            <span className="client-hero-chip">{vertical.label}</span>
+            <span className="client-hero-chip">
+              {number(client.catalog.active_products)} {vertical.entityLabelPlural}
+            </span>
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -211,7 +225,7 @@ export function ClientDetailView({
         </div>
       </section>
       <nav className="client-tabs" aria-label="Client detail sections">
-        {CLIENT_WORKSPACE_TABS.map((tab) => (
+        {workspaceTabs.map((tab) => (
           <ClientTabButton key={tab.id} tab={tab} active={activeTab === tab.id} onClick={() => setActiveTab(tab.id)} />
         ))}
       </nav>
@@ -226,6 +240,7 @@ export function ClientDetailView({
           onRunScan={handleRunScan}
           scanning={scanning}
           crawling={crawling}
+          vertical={vertical}
         />
       ) : null}
       {activeTab === 'readiness' ? (
@@ -234,6 +249,7 @@ export function ClientDetailView({
           scanReport={scanReport}
           scanning={scanning}
           onRunScan={handleRunScan}
+          vertical={vertical}
         />
       ) : null}
       {activeTab === 'catalog' ? (
@@ -245,12 +261,21 @@ export function ClientDetailView({
           totalProducts={client.catalog.active_products}
           crawling={crawling}
           onTriggerCrawl={() => onTriggerCrawl(client.site_id)}
+          vertical={vertical}
         />
       ) : null}
       {activeTab === 'crawl' ? (
-        <ClientCrawlTab client={client} crawlReport={crawlReport} crawling={crawling} onTriggerCrawl={() => onTriggerCrawl(client.site_id)} />
+        <ClientCrawlTab
+          client={client}
+          crawlReport={crawlReport}
+          crawling={crawling}
+          onTriggerCrawl={() => onTriggerCrawl(client.site_id)}
+          vertical={vertical}
+        />
       ) : null}
       {activeTab === 'activity' ? <ClientActivityTab client={client} recentActivity={recentActivity} /> : null}
+      {activeTab === 'adapter' ? <AdapterTab client={client} vertical={vertical} /> : null}
+      {activeTab === 'prompt' ? <PromptTab client={client} vertical={vertical} /> : null}
       {activeTab === 'controls' ? (
         <ClientControlsTab
           client={client}
@@ -266,8 +291,22 @@ export function ClientDetailView({
           onViewChange={onViewChange}
         />
       ) : null}
+      {isExtensionTab(activeTab) ? (
+        <VerticalExtensionTab tab={activeTabDefinition} vertical={vertical} />
+      ) : null}
     </div>
   );
+}
+
+function withAdapterTab(tabs: ClientWorkspaceTabDefinition[]) {
+  if (tabs.some((item) => item.id === 'adapter')) return tabs;
+  const promptIndex = tabs.findIndex((item) => item.id === 'prompt');
+  const insertAt = promptIndex >= 0 ? promptIndex : tabs.length;
+  return [
+    ...tabs.slice(0, insertAt),
+    verticalTab('adapter', 'Adapter'),
+    ...tabs.slice(insertAt),
+  ];
 }
 
 function ClientTabButton({
@@ -275,7 +314,7 @@ function ClientTabButton({
   active,
   onClick,
 }: {
-  tab: (typeof CLIENT_WORKSPACE_TABS)[number];
+  tab: ClientWorkspaceTabDefinition;
   active: boolean;
   onClick: () => void;
 }) {
@@ -297,6 +336,7 @@ function ClientOverviewTab({
   onCopyScript,
   onTriggerCrawl,
   onRunScan,
+  vertical,
 }: {
   client: Client;
   capabilities: CapabilitiesSummary | null;
@@ -306,11 +346,16 @@ function ClientOverviewTab({
   onCopyScript: (client: Client) => Promise<void>;
   onTriggerCrawl: (siteId: string) => void;
   onRunScan: () => void;
+  vertical: CrmVerticalDefinition;
 }) {
   return (
     <div className="tab-content fade-in">
       <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
-        <MetricCard label="Active products" value={client.catalog.active_products} detail={`${number(client.catalog.categories ?? 0)} categories`} />
+        <MetricCard
+          label={`Active ${vertical.entityLabelPlural}`}
+          value={client.catalog.active_products}
+          detail={`${number(client.catalog.categories ?? 0)} groups`}
+        />
         <MetricCard label="Missing vectors" value={client.catalog.missing_embeddings} detail="Needs RAG sync" />
         <MetricCard label="Voice turns" value={client.usage.total_turns} detail={`${number(client.usage.turns_today)} today`} />
         <MetricCard label="Crawl coverage" value={`${percent(crawlReport?.coverage_score ?? 0)}%`} detail={client.last_crawl_status || 'not started'} />
@@ -320,6 +365,8 @@ function ClientOverviewTab({
           <KeyValue label="Site ID" value={client.site_id} />
           <KeyValue label="Origin" value={client.allowed_origin} />
           <KeyValue label="Deploy mode" value={client.deploy_mode} />
+          <KeyValue label="Vertical" value={client.vertical_label || vertical.label} />
+          <KeyValue label="Risk level" value={client.risk_level || vertical.riskLevel} />
           <KeyValue label="Plan" value={client.plan} />
           <KeyValue label="Adapter" value={client.adapter_name} />
           <KeyValue label="Last crawl" value={shortTime(client.last_crawl_at)} />
@@ -339,9 +386,9 @@ function ClientOverviewTab({
         </Panel>
         <Panel title="Next useful checks">
           <div className="action-board">
-            <ActionTile icon={ShieldCheck} title="Run a readiness scan" text="Confirm products, variants, cart, and checkout before a client demo." />
-            <ActionTile icon={PackageOpen} title="Spot-check catalog" text="Review product names, images, stock, and vector state." />
-            <ActionTile icon={Gauge} title="Refresh crawl data" text="Run a crawl after product or layout changes." />
+            <ActionTile icon={ShieldCheck} title="Run a readiness scan" text={`Confirm ${vertical.entityLabelPlural}, sources, and supported actions before a client demo.`} />
+            <ActionTile icon={PackageOpen} title={`Spot-check ${vertical.entityLabelPlural}`} text="Review names, media, source coverage, and vector state." />
+            <ActionTile icon={Gauge} title="Refresh crawl data" text="Run a crawl after source or layout changes." />
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             <Button variant="secondary" disabled={scanning} onClick={onRunScan}>
@@ -407,18 +454,22 @@ function ClientReadinessTab({
   scanReport,
   scanning,
   onRunScan,
+  vertical,
 }: {
   capabilities: CapabilitiesSummary | null;
   scanReport: ReadinessReport | null;
   scanning: boolean;
   onRunScan: () => void;
+  vertical: CrmVerticalDefinition;
 }) {
   return (
     <div className="tab-content fade-in">
       <section className="section-row">
         <div>
           <h2 className="text-base font-semibold">Readiness checks</h2>
-          <p className="mt-1 text-sm text-muted">Plain checks for product extraction, variants, cart, checkout, and allowed actions.</p>
+          <p className="mt-1 text-sm text-muted">
+            Plain checks for {vertical.entityLabelPlural}, source coverage, handoff points, and allowed actions.
+          </p>
         </div>
         <Button variant="secondary" disabled={scanning} icon={ShieldCheck} onClick={onRunScan}>
           {scanning ? 'Scanning...' : 'Run readiness scan'}
@@ -426,7 +477,7 @@ function ClientReadinessTab({
       </section>
       <div className="grid gap-3 md:grid-cols-3">
         <MetricCard label="Platform" value={scanReport?.platform || capabilities?.platform || 'unknown'} detail={`${percent(scanReport?.platform_confidence ?? capabilities?.platform_confidence ?? 0)}% confidence`} />
-        <MetricCard label="Supported checks" value={capabilities?.supported.length ?? 0} detail="Ready for AI actions" />
+        <MetricCard label="Supported checks" value={capabilities?.supported.length ?? 0} detail={`${vertical.label} actions`} />
         <MetricCard label="Unsupported checks" value={capabilities?.unsupported.length ?? 0} detail="Needs adapter or crawl work" />
       </div>
       <Panel title="Capability report">
@@ -487,6 +538,7 @@ function ClientCatalogTab({
   totalProducts,
   crawling,
   onTriggerCrawl,
+  vertical,
 }: {
   products: DisplayProduct[];
   loading: boolean;
@@ -495,6 +547,7 @@ function ClientCatalogTab({
   totalProducts: number;
   crawling: boolean;
   onTriggerCrawl: () => void;
+  vertical: CrmVerticalDefinition;
 }) {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
@@ -520,22 +573,22 @@ function ClientCatalogTab({
     <div className="tab-content fade-in">
       <section className="section-row">
         <div>
-          <h2 className="text-base font-semibold">Catalog review</h2>
+          <h2 className="text-base font-semibold">{activeEntityTitle(vertical)} review</h2>
           <p className="mt-1 text-sm text-muted">
-            Product media, price, stock, categories, and vector status in one focused view.
+            Media, source data, category grouping, and vector status in one focused view.
           </p>
         </div>
         <CrawlButton label="Crawl now" active={crawling} onTriggerCrawl={onTriggerCrawl} />
       </section>
       {error ? <NoticeBanner tone="info" message={`${error} ${fallbackCount ? `Using ${fallbackCount} preview rows.` : ''}`} /> : null}
       <div className="grid gap-3 md:grid-cols-3">
-        <MetricCard label="Loaded products" value={products.length} detail={`${number(totalProducts)} total active`} />
+        <MetricCard label={`Loaded ${vertical.entityLabelPlural}`} value={products.length} detail={`${number(totalProducts)} total active`} />
         <MetricCard label="Visible after filters" value={visibleProducts.length} detail={loading ? 'Refreshing catalog' : `Page ${page} of ${pageCount}`} />
-        <MetricCard label="Categories" value={categories.length} detail="Detected in loaded products" />
+        <MetricCard label="Categories" value={categories.length} detail={`Detected in loaded ${vertical.entityLabelPlural}`} />
       </div>
       <div className="catalog-toolbar">
         <label className="field catalog-search-field">
-          <span>Search products</span>
+          <span>Search {vertical.entityLabelPlural}</span>
           <div className="input-with-icon">
             <Search size={15} aria-hidden="true" />
             <input value={query} placeholder="Name, brand, or description" onChange={(event) => setQuery(event.currentTarget.value)} />
@@ -579,7 +632,7 @@ function ClientCatalogTab({
           ))}
         </div>
       ) : (
-        <EmptyState title="No products match" message="Adjust the search, category, or vector filters to widen this catalog view." />
+        <EmptyState title={`No ${vertical.entityLabelPlural} match`} message="Adjust the search, category, or vector filters to widen this view." />
       )}
     </div>
   );
@@ -650,11 +703,13 @@ function ClientCrawlTab({
   crawlReport,
   crawling,
   onTriggerCrawl,
+  vertical,
 }: {
   client: Client;
   crawlReport: CrawlReport | null;
   crawling: boolean;
   onTriggerCrawl: () => void;
+  vertical: CrmVerticalDefinition;
 }) {
   return (
     <div className="tab-content fade-in">
@@ -665,7 +720,7 @@ function ClientCrawlTab({
         </div>
         <CrawlButton label="Start crawl" active={crawling} onTriggerCrawl={onTriggerCrawl} />
       </section>
-      <CrawlReportSummary report={crawlReport} />
+      <CrawlReportSummary report={crawlReport} vertical={vertical} />
       <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
         <Panel title="Priority crawl details">
           {crawlReport ? (
@@ -692,12 +747,12 @@ function ClientCrawlTab({
   );
 }
 
-function CrawlReportSummary({ report }: { report: CrawlReport | null }) {
+function CrawlReportSummary({ report, vertical }: { report: CrawlReport | null; vertical: CrmVerticalDefinition }) {
   if (!report) return <EmptyState text="Crawl report will appear here after the next priority crawl." />;
   return (
     <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-5">
-      <MetricCard label="Products found" value={report.product_count} detail="Extracted catalog rows" />
-      <MetricCard label="Variants found" value={report.variant_count} detail="Product options" />
+      <MetricCard label={`${activeEntityTitle(vertical)} found`} value={report.product_count} detail="Extracted source rows" />
+      <MetricCard label="Variants found" value={report.variant_count} detail="Entity options" />
       <MetricCard label="Categories found" value={report.category_count} detail="Navigation coverage" />
       <MetricCard label="Duration" value={`${number(report.duration_ms)} ms`} detail={shortTime(report.created_at)} />
       <MetricCard label="Stopped by limit" value={report.stopped_by_limit ? 'Yes' : 'No'} detail={report.source_type || 'crawler'} />
@@ -790,6 +845,42 @@ function ClientActivityTab({ client, recentActivity }: { client: Client; recentA
           </div>
         </section>
       </div>
+    </div>
+  );
+}
+
+function VerticalExtensionTab({
+  tab,
+  vertical,
+}: {
+  tab: ClientWorkspaceTabDefinition;
+  vertical: CrmVerticalDefinition;
+}) {
+  return (
+    <div className="tab-content fade-in">
+      <section className="section-row">
+        <div>
+          <h2 className="text-base font-semibold">{tab.label}</h2>
+          <p className="mt-1 text-sm text-muted">
+            {vertical.label} workspace for {vertical.entityLabelPlural}.
+          </p>
+        </div>
+        <StatusPill value={vertical.riskLevel} />
+      </section>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Panel title="Entity model">
+          <ActionChipGrid actions={vertical.entityTypes} />
+        </Panel>
+        <Panel title="Readiness focus">
+          <ActionChipGrid actions={vertical.readinessChecks} />
+        </Panel>
+      </div>
+      <Panel title={`${tab.label} records`}>
+        <EmptyState
+          title="No records yet"
+          message={`No ${tab.label.toLowerCase()} records are loaded for this client yet.`}
+        />
+      </Panel>
     </div>
   );
 }
@@ -1100,6 +1191,15 @@ function firstText(...values: Array<string | number | null | undefined>) {
     if (text) return text;
   }
   return '';
+}
+
+function isExtensionTab(tab: ClientWorkspaceTabId) {
+  return !CORE_CLIENT_TAB_IDS.has(tab);
+}
+
+function activeEntityTitle(vertical: CrmVerticalDefinition) {
+  const text = vertical.entityLabelPlural || 'items';
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function normalizePositiveInteger(value: string) {

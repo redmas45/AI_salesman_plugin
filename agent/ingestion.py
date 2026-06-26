@@ -1730,6 +1730,7 @@ def _persist_catalog(
         variant_count += upsert_variants(site_id, product_id, variants)
 
     vectorized = _vectorize(site_id)
+    knowledge_vectorized = _sync_catalog_knowledge(site_id, source_name)
     with get_db(site_id) as conn:
         conn.execute(
             """
@@ -1742,28 +1743,42 @@ def _persist_catalog(
                 len(incoming_ids),
                 changed,
                 deactivated,
-                vectorized,
+                vectorized + knowledge_vectorized,
                 json.dumps(crawl_report or {}, ensure_ascii=False),
             ),
         )
     logger.info(
-        "Catalog sync for %s/%s: source=%s changed=%s deactivated=%s vectorized=%s",
+        "Catalog sync for %s/%s: source=%s changed=%s deactivated=%s vectorized=%s knowledge_vectorized=%s",
         site_id,
         source_name,
         len(incoming_ids),
         changed,
         deactivated,
         vectorized,
+        knowledge_vectorized,
     )
     print(
         f"[{start_timestamp}] Catalog sync ({source_name}): {len(incoming_ids)} source products, "
-        f"{changed} changed/new, {deactivated} deactivated, {variant_count} variants, {vectorized} vectorized"
+        f"{changed} changed/new, {deactivated} deactivated, {variant_count} variants, "
+        f"{vectorized} product vectors, {knowledge_vectorized} knowledge vectors"
     )
     if changed_names:
         print(f"  -> Added/Changed: {', '.join(changed_names)}")
     if deactivated_names:
         print(f"  -> Deactivated/Removed: {', '.join(deactivated_names)}")
     return changed
+
+
+def _sync_catalog_knowledge(site_id: str, source_name: str) -> int:
+    try:
+        from db.knowledge import sync_products_to_knowledge
+        from agent.retrieval.generic_rag import vectorize_missing_knowledge
+
+        sync_products_to_knowledge(site_id, source_name)
+        return vectorize_missing_knowledge(site_id)
+    except Exception as exc:
+        logger.warning("Knowledge sync skipped for %s/%s: %s", site_id, source_name, exc)
+        return 0
 
 
 def _count_product_variants(products: list[dict[str, Any]]) -> int:

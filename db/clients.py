@@ -16,6 +16,12 @@ from urllib.parse import urlparse
 import psycopg
 
 import config
+from agent.verticals.registry import (
+    DEFAULT_VERTICAL_KEY as DEFAULT_CLIENT_VERTICAL_KEY,
+    get_vertical,
+    list_verticals as registry_list_verticals,
+)
+from agent.verticals.base import VerticalDefinition
 from db.database import (
     catalog_source_stats,
     catalog_sync_history,
@@ -40,6 +46,8 @@ DEFAULT_PLAN = "Commerce plan"
 DEFAULT_ADAPTER_NAME = "generic_adapter.js"
 DEFAULT_DEPLOY_MODE = "public-ip"
 DEFAULT_CLIENT_NAME = "AI-KART"
+DEFAULT_CLIENT_LOCALE = "en-IN"
+DEFAULT_CLIENT_COMPLIANCE_MODE = "standard"
 DEFAULT_CLIENT_PANEL_PASSWORD = os.getenv("CLIENT_PANEL_DEFAULT_PASSWORD", "client123")
 PANEL_PASSWORD_DISABLED = "disabled"
 MIN_CLIENT_PANEL_PASSWORD_LENGTH = 12
@@ -57,18 +65,29 @@ def ensure_default_client() -> None:
     site_id = _safe_site_id(config.CURRENT_SITE_ID or config.DEFAULT_SITE_ID)
     store_url = _first_text(config.CURRENT_URL, config.PUBLIC_API_URL, "http://143.198.5.97/")
     name = DEFAULT_CLIENT_NAME if site_id == "ai_kart" else site_id.replace("_", " ").title()
+    vertical = get_vertical(DEFAULT_CLIENT_VERTICAL_KEY)
     init_tenant_schema(site_id)
     with _connect() as conn:
         conn.execute(
             """
             INSERT INTO hub_clients
-                (site_id, name, store_url, allowed_origin, deploy_mode, plan, adapter_name, status, panel_password_hash)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (
+                    site_id, name, store_url, allowed_origin, deploy_mode, plan,
+                    adapter_name, status, panel_password_hash, vertical_key,
+                    vertical_config_json, risk_level, locale, prompt_profile_id,
+                    compliance_mode
+                )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (site_id) DO UPDATE SET
                 store_url = EXCLUDED.store_url,
                 allowed_origin = EXCLUDED.allowed_origin,
                 deploy_mode = EXCLUDED.deploy_mode,
                 panel_password_hash = COALESCE(NULLIF(hub_clients.panel_password_hash, ''), EXCLUDED.panel_password_hash),
+                vertical_key = COALESCE(NULLIF(hub_clients.vertical_key, ''), EXCLUDED.vertical_key),
+                vertical_config_json = COALESCE(NULLIF(hub_clients.vertical_config_json, ''), EXCLUDED.vertical_config_json),
+                risk_level = COALESCE(NULLIF(hub_clients.risk_level, ''), EXCLUDED.risk_level),
+                locale = COALESCE(NULLIF(hub_clients.locale, ''), EXCLUDED.locale),
+                compliance_mode = COALESCE(NULLIF(hub_clients.compliance_mode, ''), EXCLUDED.compliance_mode),
                 updated_at = now()
             """,
             (
@@ -81,6 +100,12 @@ def ensure_default_client() -> None:
                 "ai_kart_adapter.js",
                 CLIENT_STATUS_LIVE,
                 _hash_panel_password(DEFAULT_CLIENT_PANEL_PASSWORD),
+                vertical.key,
+                "{}",
+                vertical.risk_level,
+                DEFAULT_CLIENT_LOCALE,
+                "",
+                DEFAULT_CLIENT_COMPLIANCE_MODE,
             ),
         )
         conn.commit()
@@ -94,19 +119,27 @@ def create_client(
     deploy_mode: str = DEFAULT_DEPLOY_MODE,
     plan: str = DEFAULT_PLAN,
     adapter_name: str = DEFAULT_ADAPTER_NAME,
+    vertical_key: str = DEFAULT_CLIENT_VERTICAL_KEY,
 ) -> dict[str, Any]:
     """Create or reactivate a CRM client and its tenant schema."""
     clean_url = _validated_url(store_url)
     clean_site_id = _safe_site_id(site_id or _site_id_from_name(name, clean_url))
     clean_name = _required_text(name, "Client name is required.")
+    vertical = _validated_vertical(vertical_key)
+    clean_plan = _plan_for_vertical(plan, vertical)
     init_admin_schema()
     init_tenant_schema(clean_site_id)
     with _connect() as conn:
         conn.execute(
             """
             INSERT INTO hub_clients
-                (site_id, name, store_url, allowed_origin, deploy_mode, plan, adapter_name, status, panel_password_hash)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (
+                    site_id, name, store_url, allowed_origin, deploy_mode, plan,
+                    adapter_name, status, panel_password_hash, vertical_key,
+                    vertical_config_json, risk_level, locale, prompt_profile_id,
+                    compliance_mode
+                )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (site_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 store_url = EXCLUDED.store_url,
@@ -114,6 +147,10 @@ def create_client(
                 deploy_mode = EXCLUDED.deploy_mode,
                 plan = EXCLUDED.plan,
                 adapter_name = EXCLUDED.adapter_name,
+                vertical_key = EXCLUDED.vertical_key,
+                risk_level = EXCLUDED.risk_level,
+                locale = COALESCE(NULLIF(hub_clients.locale, ''), EXCLUDED.locale),
+                compliance_mode = COALESCE(NULLIF(hub_clients.compliance_mode, ''), EXCLUDED.compliance_mode),
                 status = EXCLUDED.status,
                 panel_password_hash = COALESCE(NULLIF(hub_clients.panel_password_hash, ''), EXCLUDED.panel_password_hash),
                 updated_at = now()
@@ -124,10 +161,16 @@ def create_client(
                 clean_url,
                 _origin_from_url(clean_url),
                 _required_text(deploy_mode, "Deploy mode is required."),
-                _required_text(plan, "Plan is required."),
+                clean_plan,
                 _required_text(adapter_name, "Adapter name is required."),
                 CLIENT_STATUS_LIVE,
                 _hash_panel_password(DEFAULT_CLIENT_PANEL_PASSWORD),
+                vertical.key,
+                "{}",
+                vertical.risk_level,
+                DEFAULT_CLIENT_LOCALE,
+                "",
+                DEFAULT_CLIENT_COMPLIANCE_MODE,
             ),
         )
         conn.commit()
@@ -172,6 +215,83 @@ def set_client_enabled(site_id: str, enabled: bool) -> dict[str, Any]:
     status = CLIENT_STATUS_LIVE if enabled else CLIENT_STATUS_DISABLED
     _update_client_status(site_id, status)
     return get_client_detail(site_id)
+
+
+def list_verticals() -> list[dict[str, Any]]:
+    """Return built-in verticals for CRM selection."""
+    return [vertical.to_dict() for vertical in registry_list_verticals()]
+
+
+def get_vertical_detail(vertical_key: str) -> dict[str, Any]:
+    """Return one vertical definition for CRM/API consumers."""
+    return _validated_vertical(vertical_key).to_dict()
+
+
+def get_client_vertical_key(site_id: str) -> str:
+    """Return the runtime vertical key for a client, defaulting to ecommerce."""
+    client = _client_row(site_id)
+    if not client:
+        return DEFAULT_CLIENT_VERTICAL_KEY
+    return _client_vertical(client.get("vertical_key")).key
+
+
+def update_client_vertical(site_id: str, vertical_key: str) -> dict[str, Any]:
+    """Change a client's vertical without touching tenant data."""
+    clean_site_id = _safe_site_id(site_id)
+    vertical = _validated_vertical(vertical_key)
+    init_admin_schema()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE hub_clients
+            SET vertical_key = %s,
+                risk_level = %s,
+                updated_at = now()
+            WHERE site_id = %s AND status <> %s
+            """,
+            (vertical.key, vertical.risk_level, clean_site_id, CLIENT_STATUS_DELETED),
+        )
+        conn.commit()
+    if cursor.rowcount <= 0:
+        raise LookupError(f"Client {clean_site_id} was not found.")
+    return get_client_detail(clean_site_id)
+
+
+def update_client_discovery_config(
+    site_id: str,
+    *,
+    vertical_key: str,
+    vertical_config: dict[str, Any],
+    adapter_name: str = "generated_adapter.js",
+) -> dict[str, Any]:
+    """Persist generated runtime config from one-line installer discovery."""
+    clean_site_id = _safe_site_id(site_id)
+    vertical = _validated_vertical(vertical_key)
+    init_admin_schema()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE hub_clients
+            SET vertical_key = %s,
+                vertical_config_json = %s,
+                adapter_name = %s,
+                risk_level = %s,
+                updated_at = now()
+            WHERE site_id = %s AND status <> %s
+            """,
+            (
+                vertical.key,
+                json.dumps(vertical_config, ensure_ascii=False, default=str),
+                _required_text(adapter_name, "Adapter name is required."),
+                vertical.risk_level,
+                clean_site_id,
+                CLIENT_STATUS_DELETED,
+            ),
+        )
+        conn.commit()
+    if cursor.rowcount <= 0:
+        raise LookupError(f"Client {clean_site_id} was not found.")
+    return get_client_detail(clean_site_id)
 
 
 def verify_client_panel_password(site_id: str, password: str) -> dict[str, Any]:
@@ -319,7 +439,7 @@ def script_tag_for_site(site_id: str) -> str:
     clean_site_id = _safe_site_id(site_id)
     origin = _public_hub_origin()
     return (
-        f'<script defer src="{origin}/shopbot.js?site={clean_site_id}" '
+        f'<script defer src="{origin}/install.js?site={clean_site_id}" '
         f'data-site-id="{clean_site_id}"></script>'
     )
 
@@ -538,6 +658,11 @@ def _client_summary(client: dict[str, Any]) -> dict[str, Any]:
     site_id = client["site_id"]
     panel_password_hash = client.get("panel_password_hash") or ""
     public_client = {key: value for key, value in client.items() if key != "panel_password_hash"}
+    vertical = _client_vertical(public_client.get("vertical_key"))
+    public_client["vertical_key"] = vertical.key
+    public_client["vertical_label"] = vertical.label
+    public_client["risk_level"] = _risk_level_text(public_client.get("risk_level"), vertical.risk_level)
+    public_client["vertical_config"] = _json_object(public_client.pop("vertical_config_json", "{}"))
 
     from db.quota import quota_status, _usage_summary
     return {
@@ -701,6 +826,40 @@ def _required_text(value: str, message: str) -> str:
     if not clean_value:
         raise ValueError(message)
     return clean_value
+
+
+def _validated_vertical(vertical_key: str | None) -> VerticalDefinition:
+    try:
+        return get_vertical(vertical_key or DEFAULT_CLIENT_VERTICAL_KEY)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def _client_vertical(vertical_key: str | None) -> VerticalDefinition:
+    try:
+        return get_vertical(vertical_key or DEFAULT_CLIENT_VERTICAL_KEY)
+    except ValueError:
+        return get_vertical(DEFAULT_CLIENT_VERTICAL_KEY)
+
+
+def _plan_for_vertical(plan: str, vertical: VerticalDefinition) -> str:
+    clean_plan = _required_text(plan, "Plan is required.")
+    if clean_plan == DEFAULT_PLAN and vertical.default_plan_label != DEFAULT_PLAN:
+        return vertical.default_plan_label
+    return clean_plan
+
+
+def _risk_level_text(value: str | None, fallback: str) -> str:
+    clean_value = str(value or "").strip().lower()
+    return clean_value if clean_value in {"low", "medium", "high"} else fallback
+
+
+def _json_object(raw: str | None) -> dict[str, Any]:
+    try:
+        value = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _set_default_panel_password(site_id: str) -> str:
