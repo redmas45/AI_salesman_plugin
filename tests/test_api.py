@@ -17,9 +17,15 @@ def client():
     """Create a test client (no real server needed)."""
     import config
     from api.main import app
+    from db.admin import _connect, init_admin_schema
     from db.seed import seed
 
     seed([config.DEFAULT_SITE_ID])
+    init_admin_schema()
+    with _connect() as conn:
+        conn.execute("DELETE FROM hub_usage_events WHERE site_id = %s", (config.DEFAULT_SITE_ID,))
+        conn.execute("DELETE FROM hub_conversation_sessions WHERE site_id = %s", (config.DEFAULT_SITE_ID,))
+        conn.commit()
 
     return TestClient(app)
 

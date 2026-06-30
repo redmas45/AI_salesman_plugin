@@ -20,6 +20,9 @@ export function AddClientDialog({
   onClose,
   onCreate,
 }: AddClientDialogProps) {
+  const [verticalKey, setVerticalKey] = useState(DEFAULT_CRM_VERTICAL_KEY);
+  const selectedVertical = CRM_VERTICALS.find((vertical) => vertical.key === verticalKey) ?? CRM_VERTICALS[0];
+
   if (!open) return null;
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -33,19 +36,22 @@ export function AddClientDialog({
       <form className="modal modal-wide" onSubmit={submit}>
         <div className="modal-header">
           <div>
-            <div className="text-xs font-semibold text-muted">Client</div>
-            <h2>Add client</h2>
+            <div className="text-xs font-semibold text-muted">Manual fallback</div>
+            <h2>Create client manually</h2>
+            <p className="mt-1 text-sm text-muted">
+              Use this only when a site cannot run the universal installer auto-registration flow.
+            </p>
           </div>
           <button className="modal-close" type="button" aria-label="Close" onClick={onClose}>
             x
           </button>
         </div>
-        <Field label="Client name" name="name" placeholder="AI-KART" required />
-        <Field label="Website URL" name="store_url" placeholder="https://client-store.com" required />
+        <Field label="Client name" name="name" placeholder="Example Client" required />
+        <Field label="Website URL" name="store_url" placeholder="https://example.com" required />
         <Field label="Site ID" name="site_id" placeholder="auto generated" />
         <label className="field">
           <span>Vertical</span>
-          <select name="vertical_key" defaultValue={DEFAULT_CRM_VERTICAL_KEY}>
+          <select name="vertical_key" value={verticalKey} onChange={(event) => setVerticalKey(event.currentTarget.value)}>
             {CRM_VERTICALS.map((vertical) => (
               <option key={vertical.key} value={vertical.key}>
                 {vertical.label}
@@ -62,7 +68,7 @@ export function AddClientDialog({
               <option value="custom">custom</option>
             </select>
           </label>
-          <Field label="Plan" name="plan" defaultValue="Commerce plan" />
+          <Field key={selectedVertical.key} label="Plan" name="plan" defaultValue={selectedVertical.defaultPlanLabel} />
         </div>
         <Field label="Adapter" name="adapter_name" defaultValue="generic_adapter.js" />
         <div className="modal-footer">

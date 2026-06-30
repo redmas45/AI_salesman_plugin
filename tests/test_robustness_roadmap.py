@@ -2,16 +2,572 @@ import pytest
 
 from agent.adapters.shopify import ShopifyAdapter
 from agent.adapters.woocommerce import WooCommerceAdapter
+from agent.adapter_repair import build_action_repair_proposals
 from agent.extractor import extract_selectors_from_html
-from agent.scanner import _client_hook_capabilities, _is_client_hook_adapter
+from agent.client_initialization import run_widget_initialization
+from agent.scanner import (
+    SiteCapability,
+    _check_cart,
+    _check_checkout,
+    _client_hook_capabilities,
+    _flow_capabilities,
+    _is_client_hook_adapter,
+    _rehearsal_capabilities,
+    _vertical_data_capabilities,
+    _vertical_expected_action_capabilities,
+)
+from agent.tenant_isolation import build_tenant_isolation_audit
+from agent.verticals.registry import list_verticals
 from db.admin import _validated_settings
 
 
-def test_aikart_site_id_is_client_hook_adapter() -> None:
-    assert _is_client_hook_adapter("generic_adapter.js", "ai_kart")
-    caps = {cap.name: cap for cap in _client_hook_capabilities("generic_adapter.js")}
+def test_client_hook_requires_explicit_adapter_name() -> None:
+    assert not _is_client_hook_adapter("generic_adapter.js", "ai_kart")
+    assert _is_client_hook_adapter("verified-client-hook.js", "ai_kart")
+    caps = {cap.name: cap for cap in _client_hook_capabilities("verified-client-hook.js")}
     assert caps["cart"].supported
     assert caps["checkout"].supported
+
+
+def test_insurance_readiness_uses_vertical_data_checks(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent.scanner.knowledge_stats",
+        lambda site_id: {"active_items": 19, "entity_types": 3, "missing_embeddings": 0},
+    )
+
+    caps = {cap.name: cap for cap in _vertical_data_capabilities("policy_site", "insurance")}
+
+    assert caps["plans"].supported
+    assert caps["groups"].supported
+    assert caps["vectors"].supported
+    assert "cart" not in caps
+    assert "checkout" not in caps
+
+
+def test_vertical_expected_action_readiness_flags_mapped_and_missing_actions(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent.scanner.knowledge_stats",
+        lambda site_id: {"active_items": 5, "entity_types": 1, "missing_embeddings": 0},
+    )
+
+    caps = {
+        cap.name: cap
+        for cap in _vertical_expected_action_capabilities(
+            "builder_demo",
+            "construction",
+            {
+                "actions": {
+                    "REQUEST_ESTIMATE": {"type": "form"},
+                    "OPEN_PROJECTS": {"type": "navigate", "path": "/projects"},
+                }
+            },
+        )
+    }
+
+    assert caps["domain_action_coverage"].supported is False
+    assert "Missing:" in caps["domain_action_coverage"].evidence
+    assert caps["expected_action:SHOW_ENTITIES"].supported
+    assert "5 active services" in caps["expected_action:SHOW_ENTITIES"].evidence
+    assert caps["expected_action:REQUEST_ESTIMATE"].supported
+    assert caps["expected_action:OPEN_PROJECTS"].supported
+    assert not caps["expected_action:REQUEST_SITE_VISIT"].supported
+    assert "not mapped" in caps["expected_action:REQUEST_SITE_VISIT"].evidence
+
+
+def test_ecommerce_expected_action_readiness_uses_product_rendering(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent.scanner.tenant_catalog_stats",
+        lambda site_id: {"active_products": 12, "total_products": 12, "missing_embeddings": 0},
+    )
+
+    caps = {
+        cap.name: cap
+        for cap in _vertical_expected_action_capabilities(
+            "ai_kart",
+            "ecommerce",
+            {"actions": {"ADD_TO_CART": {"type": "click", "selector": "button.add"}}},
+        )
+    }
+
+    assert caps["expected_action:SHOW_PRODUCTS"].supported
+    assert "AI Hub product rendering" in caps["expected_action:SHOW_PRODUCTS"].evidence
+    assert caps["expected_action:SHOW_COMPARISON"].supported
+    assert caps["expected_action:SORT_PRODUCTS"].supported
+    assert caps["expected_action:FILTER_PRODUCTS"].supported
+    assert caps["expected_action:ADD_TO_CART"].supported
+    assert not caps["expected_action:CHECKOUT"].supported
+    assert "Missing: CHECKOUT" in caps["domain_action_coverage"].evidence
+
+    caps_with_checkout = {
+        cap.name: cap
+        for cap in _vertical_expected_action_capabilities(
+            "ai_kart",
+            "ecommerce",
+            {"actions": {"ADD_TO_CART": {"type": "click", "selector": "button.add"}}},
+            [SiteCapability("checkout", True, 0.4, "Checkout page at https://shop.example.com/checkout")],
+        )
+    }
+
+    assert caps_with_checkout["expected_action:CHECKOUT"].supported
+    assert "detected checkout capability" in caps_with_checkout["expected_action:CHECKOUT"].evidence
+    assert caps_with_checkout["domain_action_coverage"].supported
+
+
+@pytest.mark.asyncio
+async def test_custom_cart_probe_accepts_html_cart_page(monkeypatch) -> None:
+    calls: list[dict[str, str]] = []
+
+    async def fake_probe(client, url: str, *, method: str = "GET", accept: str = "application/json"):
+        calls.append({"url": url, "method": method, "accept": accept})
+        return 200, "", {}
+
+    monkeypatch.setattr("agent.scanner._probe_url", fake_probe)
+
+    cap = await _check_cart("https://shop.example.com", "custom", object())
+
+    assert cap.supported
+    assert "Cart page" in cap.evidence
+    assert calls == [{"url": "https://shop.example.com/cart", "method": "HEAD", "accept": "text/html"}]
+
+
+@pytest.mark.asyncio
+async def test_custom_checkout_probe_requests_html_accept(monkeypatch) -> None:
+    calls: list[dict[str, str]] = []
+
+    async def fake_probe(client, url: str, *, method: str = "GET", accept: str = "application/json"):
+        calls.append({"url": url, "method": method, "accept": accept})
+        return 200, "", {}
+
+    monkeypatch.setattr("agent.scanner._probe_url", fake_probe)
+
+    cap = await _check_checkout("https://shop.example.com", "custom", object())
+
+    assert cap.supported
+    assert calls == [{"url": "https://shop.example.com/checkout", "method": "HEAD", "accept": "text/html"}]
+
+
+def test_flow_graph_uses_generated_adapter_actions_for_js_static_gap() -> None:
+    caps = {
+        cap.name: cap
+        for cap in _flow_capabilities(
+            {
+                "actions": {"ADD_TO_CART": {"type": "click", "selector": "button.add"}},
+                "flow": {
+                    "engine": "http_fallback",
+                    "summary": {"pages": 6, "actions": 0},
+                    "prompt_suggestions": [],
+                },
+            }
+        )
+    }
+
+    assert caps["flow_graph"].supported
+    assert "generated adapter exposes 1 runtime action" in caps["flow_graph"].evidence
+
+
+def test_empty_rehearsal_uses_validated_adapter_actions_for_js_static_gap() -> None:
+    caps = {
+        cap.name: cap
+        for cap in _rehearsal_capabilities(
+            {
+                "actions": {"ADD_TO_CART": {"type": "click", "selector": "button.add"}},
+                "validation": {"actions": {"ADD_TO_CART": {"supported": True, "status": "ok"}}},
+                "rehearsal": {
+                    "engine": "empty",
+                    "summary": {"total": 0, "supported": 0, "blocked": 0, "needs_confirmation": 0},
+                },
+            }
+        )
+    }
+
+    assert caps["flow_rehearsal"].supported
+    assert "browser validation supports 1/1 adapter action" in caps["flow_rehearsal"].evidence
+    assert caps["flow_confirmation_policy"].supported
+
+
+def test_vertical_expected_action_readiness_covers_every_registered_vertical(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "agent.scanner.knowledge_stats",
+        lambda site_id: {"active_items": 0, "entity_types": 0, "missing_embeddings": 0},
+    )
+
+    for vertical in list_verticals():
+        caps = {
+            cap.name: cap
+            for cap in _vertical_expected_action_capabilities("demo_site", vertical.key, {"actions": {}})
+        }
+
+        assert "domain_action_coverage" in caps
+        for action in vertical.action_types:
+            assert f"expected_action:{action}" in caps
+
+
+def test_auto_initialization_runs_readiness_stage(monkeypatch) -> None:
+    saved_reports = []
+
+    monkeypatch.setattr("agent.client_initialization._save_report", lambda site_id, report: saved_reports.append(report))
+    monkeypatch.setattr("agent.client_initialization._client_detail", lambda site_id: {"site_id": site_id, "vertical_config": {}})
+    monkeypatch.setattr(
+        "agent.client_initialization._crawl_stage",
+        lambda *args, **kwargs: {"name": "crawl", "status": "ok", "message": "done"},
+    )
+    monkeypatch.setattr(
+        "agent.client_initialization._flow_stage",
+        lambda *args, **kwargs: (
+            {"summary": {"pages": 2}},
+            {"name": "flow_discovery", "status": "ok", "message": "done"},
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.client_initialization._rehearsal_stage",
+        lambda *args, **kwargs: (
+            {"summary": {"verified": 1}},
+            {"name": "flow_rehearsal", "status": "ok", "message": "done"},
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.client_initialization._regression_stage",
+        lambda *args, **kwargs: {"name": "flow_regression", "status": "ok", "message": "done"},
+    )
+    monkeypatch.setattr(
+        "agent.client_initialization._readiness_stage",
+        lambda *args, **kwargs: {"name": "readiness_scan", "status": "ok", "message": "done"},
+    )
+
+    report = run_widget_initialization(
+        "policy_site",
+        "https://policy.example.com",
+        vertical_key="insurance",
+        run_crawl=True,
+        run_flow=True,
+        run_rehearsal=True,
+        crawl_max_pages=5,
+        crawl_max_depth=2,
+        run_readiness=True,
+    )
+
+    assert report["status"] == "ok"
+    assert [stage["name"] for stage in report["stages"]] == [
+        "crawl",
+        "flow_discovery",
+        "flow_rehearsal",
+        "flow_regression",
+        "readiness_scan",
+    ]
+    assert saved_reports[0]["status"] == "running"
+
+
+def test_auto_initialization_persists_live_stage_progress(monkeypatch) -> None:
+    saved_reports = []
+
+    monkeypatch.setattr("agent.client_initialization._save_report", lambda site_id, report: saved_reports.append(report))
+    monkeypatch.setattr("agent.client_initialization._client_detail", lambda site_id: {"site_id": site_id, "vertical_config": {}})
+    monkeypatch.setattr(
+        "agent.client_initialization._crawl_stage",
+        lambda *args, **kwargs: {"name": "crawl", "status": "ok", "message": "crawl done"},
+    )
+    monkeypatch.setattr(
+        "agent.client_initialization._readiness_stage",
+        lambda *args, **kwargs: {"name": "readiness_scan", "status": "ok", "message": "ready"},
+    )
+
+    report = run_widget_initialization(
+        "policy_site",
+        "https://policy.example.com",
+        vertical_key="insurance",
+        run_crawl=True,
+        run_flow=False,
+        run_rehearsal=False,
+        crawl_max_pages=5,
+        crawl_max_depth=2,
+        run_readiness=True,
+    )
+
+    running_crawl = next(
+        saved
+        for saved in saved_reports
+        if saved.get("stages") and saved["stages"][-1]["name"] == "crawl" and saved["stages"][-1]["status"] == "running"
+    )
+    completed_crawl = next(
+        saved
+        for saved in saved_reports
+        if saved.get("stages") and saved["stages"][-1]["name"] == "crawl" and saved["stages"][-1]["status"] == "ok"
+    )
+    running_readiness = next(
+        saved
+        for saved in saved_reports
+        if saved.get("stages")
+        and saved["stages"][-1]["name"] == "readiness_scan"
+        and saved["stages"][-1]["status"] == "running"
+    )
+
+    assert report["status"] == "ok"
+    assert running_crawl["stages"][-1]["completed_at"] == ""
+    assert running_crawl["stages"][-1]["started_at"]
+    assert completed_crawl["stages"][-1]["message"] == "crawl done"
+    assert running_readiness["stages"][0]["status"] == "ok"
+
+
+def test_auto_initialization_runs_assistant_smoke_stage_when_requested(monkeypatch) -> None:
+    saved_reports = []
+
+    monkeypatch.setattr("agent.client_initialization._save_report", lambda site_id, report: saved_reports.append(report))
+    monkeypatch.setattr("agent.client_initialization._client_detail", lambda site_id: {"site_id": site_id, "vertical_config": {}})
+    monkeypatch.setattr(
+        "agent.client_initialization._assistant_smoke_stage",
+        lambda *args, **kwargs: {
+            "name": "assistant_smoke_tests",
+            "status": "ok",
+            "message": "2/2 assistant smoke tests passed.",
+            "total": 2,
+            "passed": 2,
+            "failed": 0,
+        },
+    )
+
+    report = run_widget_initialization(
+        "ai_kart",
+        "https://shop.example.com",
+        vertical_key="ecommerce",
+        run_crawl=False,
+        run_flow=False,
+        run_rehearsal=False,
+        crawl_max_pages=5,
+        crawl_max_depth=2,
+        run_readiness=False,
+        run_smoke_tests=True,
+    )
+
+    running_smoke = next(
+        saved
+        for saved in saved_reports
+        if saved.get("stages")
+        and saved["stages"][-1]["name"] == "assistant_smoke_tests"
+        and saved["stages"][-1]["status"] == "running"
+    )
+
+    assert report["status"] == "ok"
+    assert [stage["name"] for stage in report["stages"]] == ["assistant_smoke_tests"]
+    assert running_smoke["stages"][-1]["message"] == "Assistant prompt smoke tests are running."
+
+
+def test_assistant_smoke_cases_cover_registered_verticals() -> None:
+    from agent import client_initialization
+
+    generic_names = {case["name"] for case in client_initialization._assistant_smoke_cases("generic")}
+    domain_specific = {vertical.key for vertical in list_verticals()} - {"generic"}
+
+    for vertical in list_verticals():
+        cases = client_initialization._assistant_smoke_cases(vertical.key)
+
+        assert len(cases) >= 2
+        assert all(str(case.get("prompt") or "").strip() for case in cases)
+        assert all(case.get("expected_actions") for case in cases)
+        if vertical.key in domain_specific:
+            assert {case["name"] for case in cases} != generic_names
+
+
+def test_assistant_smoke_stage_passes_when_expected_actions_return(monkeypatch) -> None:
+    from agent import client_initialization
+
+    def fake_turn(site_id: str, prompt: str) -> dict[str, object]:
+        if "accessory" in prompt.lower():
+            return {
+                "response_text": "A protective case is a useful accessory to buy with the phone.",
+                "intent": "smoke",
+                "ui_actions": [{"action": "SHOW_PRODUCTS", "params": {"product_ids": ["phone-1"]}}],
+            }
+        action = "SORT_PRODUCTS" if "low to high" in prompt else "SHOW_COMPARISON"
+        response_text = (
+            "Apple and Samsung phones are both available to compare."
+            if action == "SHOW_COMPARISON"
+            else "Here is a useful source-backed answer."
+        )
+        return {
+            "response_text": response_text,
+            "intent": "smoke",
+            "ui_actions": [{"action": action, "params": {"product_ids": ["apple-phone-1", "samsung-phone-1"]} if action == "SHOW_COMPARISON" else {"sort_by": "price_asc"}}],
+        }
+
+    monkeypatch.setattr(client_initialization, "_run_assistant_turn", fake_turn)
+
+    stage = client_initialization._assistant_smoke_stage("ai_kart", "ecommerce")
+
+    assert stage["status"] == "ok"
+    assert stage["passed"] == 3
+    assert stage["failed"] == 0
+    assert stage["tests"][0]["matched_actions"] == ["SHOW_COMPARISON"]
+    assert stage["tests"][0]["matched_response_terms_all"] == ["apple", "samsung"]
+    assert stage["tests"][0]["display_action_evidence"][0]["id_count"] == 2
+    assert stage["tests"][0]["failure_kind"] == ""
+    assert stage["tests"][0]["recommended_fix"] == ""
+    assert stage["tests"][2]["matched_response_terms"] == ["accessory", "case"]
+
+
+def test_assistant_smoke_stage_fails_shallow_named_comparison(monkeypatch) -> None:
+    from agent import client_initialization
+
+    def fake_turn(site_id: str, prompt: str) -> dict[str, object]:
+        if "accessory" in prompt.lower():
+            return {
+                "response_text": "A protective case is a useful accessory to buy with the phone.",
+                "intent": "smoke",
+                "ui_actions": [{"action": "SHOW_PRODUCTS", "params": {"product_ids": ["phone-1"]}}],
+            }
+        action = "SORT_PRODUCTS" if "low to high" in prompt else "SHOW_COMPARISON"
+        return {
+            "response_text": "Here is a useful source-backed comparison.",
+            "intent": "smoke",
+            "ui_actions": [{"action": action, "params": {"product_ids": ["apple-phone-1", "samsung-phone-1"]} if action == "SHOW_COMPARISON" else {"sort_by": "price_asc"}}],
+        }
+
+    monkeypatch.setattr(client_initialization, "_run_assistant_turn", fake_turn)
+
+    stage = client_initialization._assistant_smoke_stage("ai_kart", "ecommerce")
+
+    assert stage["status"] == "failed"
+    assert stage["tests"][0]["name"] == "compare_apple_samsung_phone"
+    assert stage["tests"][0]["failure_kind"] == "missing_response_terms"
+    assert stage["tests"][0]["matched_actions"] == ["SHOW_COMPARISON"]
+    assert stage["tests"][0]["expected_response_terms_all"] == ["apple", "samsung"]
+    assert stage["tests"][0]["matched_response_terms_all"] == []
+    assert "missing apple, samsung" in stage["tests"][0]["reason"]
+
+
+def test_assistant_smoke_stage_fails_display_action_without_ids(monkeypatch) -> None:
+    from agent import client_initialization
+
+    def fake_turn(site_id: str, prompt: str) -> dict[str, object]:
+        if "accessory" in prompt.lower():
+            return {
+                "response_text": "A protective case is a useful accessory to buy with the phone.",
+                "intent": "smoke",
+                "ui_actions": [{"action": "SHOW_PRODUCTS", "params": {"product_ids": ["phone-1"]}}],
+            }
+        action = "SORT_PRODUCTS" if "low to high" in prompt else "SHOW_COMPARISON"
+        return {
+            "response_text": "Apple and Samsung phones are available to compare.",
+            "intent": "smoke",
+            "ui_actions": [{"action": action, "params": {} if action == "SHOW_COMPARISON" else {"sort_by": "price_asc"}}],
+        }
+
+    monkeypatch.setattr(client_initialization, "_run_assistant_turn", fake_turn)
+
+    stage = client_initialization._assistant_smoke_stage("ai_kart", "ecommerce")
+
+    assert stage["status"] == "failed"
+    assert stage["tests"][0]["failure_kind"] == "missing_action_ids"
+    assert stage["tests"][0]["display_action_evidence"][0]["action"] == "SHOW_COMPARISON"
+    assert stage["tests"][0]["display_action_evidence"][0]["id_count"] == 0
+    assert "product_ids or entity_ids" in stage["tests"][0]["reason"]
+    assert "action params" in stage["tests"][0]["recommended_fix"]
+
+
+def test_assistant_smoke_stage_fails_no_records_response(monkeypatch) -> None:
+    from agent import client_initialization
+
+    monkeypatch.setattr(
+        client_initialization,
+        "_run_assistant_turn",
+        lambda site_id, prompt: {
+            "response_text": "No records found for that request.",
+            "intent": "smoke",
+            "ui_actions": [{"action": "COMPARE_ENTITIES", "params": {}}],
+        },
+    )
+
+    stage = client_initialization._assistant_smoke_stage("policy_site", "insurance")
+
+    assert stage["status"] == "failed"
+    assert stage["failed"] == 2
+    assert stage["tests"][0]["reason"] == "Assistant response used a no-data or no-records fallback."
+    assert stage["tests"][0]["failure_kind"] == "no_data_fallback"
+    assert "Data storage and Crawl report" in stage["tests"][0]["recommended_fix"]
+
+
+def test_assistant_smoke_stage_includes_retrieval_evidence_in_fix(monkeypatch) -> None:
+    from agent import client_initialization
+
+    monkeypatch.setattr(
+        client_initialization,
+        "_run_assistant_turn",
+        lambda site_id, prompt: {
+            "response_text": "No records found for that request.",
+            "intent": "smoke",
+            "ui_actions": [{"action": "COMPARE_ENTITIES", "params": {}}],
+            "retrieval": {
+                "source": "knowledge_items",
+                "active_records": 4,
+                "missing_embeddings": 0,
+                "retrieved_count": 0,
+                "issue": "retrieval_returned_zero",
+            },
+        },
+    )
+
+    stage = client_initialization._assistant_smoke_stage("policy_site", "insurance")
+
+    assert stage["tests"][0]["retrieval_evidence"]["source"] == "knowledge_items"
+    assert stage["tests"][0]["retrieval_evidence"]["issue"] == "retrieval_returned_zero"
+    assert "retrieval returned zero records" in stage["tests"][0]["recommended_fix"]
+
+
+def test_assistant_smoke_stage_fails_missing_accessory_recommendation(monkeypatch) -> None:
+    from agent import client_initialization
+
+    def fake_turn(site_id: str, prompt: str) -> dict[str, object]:
+        if "accessory" in prompt.lower():
+            return {
+                "response_text": "Here are phones that match the request.",
+                "intent": "smoke",
+                "ui_actions": [{"action": "SHOW_PRODUCTS", "params": {"product_ids": ["phone-1"]}}],
+            }
+        action = "SORT_PRODUCTS" if "low to high" in prompt else "SHOW_COMPARISON"
+        response_text = (
+            "Apple and Samsung phones are available to compare."
+            if action == "SHOW_COMPARISON"
+            else "Here is a useful source-backed answer."
+        )
+        return {
+            "response_text": response_text,
+            "intent": "smoke",
+            "ui_actions": [{"action": action, "params": {"product_ids": ["apple-phone-1", "samsung-phone-1"]} if action == "SHOW_COMPARISON" else {"sort_by": "price_asc"}}],
+        }
+
+    monkeypatch.setattr(client_initialization, "_run_assistant_turn", fake_turn)
+
+    stage = client_initialization._assistant_smoke_stage("ai_kart", "ecommerce")
+
+    assert stage["status"] == "failed"
+    assert stage["passed"] == 2
+    assert stage["failed"] == 1
+    assert stage["tests"][2]["name"] == "recommend_phone_accessory"
+    assert stage["tests"][2]["matched_actions"] == ["SHOW_PRODUCTS"]
+    assert stage["tests"][2]["matched_response_terms"] == []
+    assert stage["tests"][2]["failure_kind"] == "missing_response_terms"
+    assert "Expected response to mention one of" in stage["tests"][2]["reason"]
+    assert "recommendation detail" in stage["tests"][2]["recommended_fix"]
+
+
+def test_assistant_smoke_stage_fails_when_prompt_has_no_ui_action(monkeypatch) -> None:
+    from agent import client_initialization
+
+    monkeypatch.setattr(
+        client_initialization,
+        "_run_assistant_turn",
+        lambda site_id, prompt: {
+            "response_text": "I can help with that.",
+            "intent": "smoke",
+            "ui_actions": [],
+        },
+    )
+
+    stage = client_initialization._assistant_smoke_stage("travel_site", "travel")
+
+    assert stage["status"] == "failed"
+    assert stage["failed"] == 2
+    assert stage["tests"][0]["failure_kind"] == "no_ui_action"
+    assert "without emitting one of" in stage["tests"][0]["recommended_fix"]
 
 
 def test_shopify_variant_id_preserves_large_integer() -> None:
@@ -68,8 +624,114 @@ def test_llm_extractor_requires_explicit_flag(monkeypatch) -> None:
     assert result is None
 
 
+def test_action_repair_proposals_include_health_validation_and_candidates() -> None:
+    proposals = build_action_repair_proposals(
+        vertical_key="construction",
+        vertical_config={
+            "action_health": {
+                "needs_repair": [
+                    {
+                        "action": "REQUEST_ESTIMATE",
+                        "last_reason": "missing selector",
+                        "repair_candidate": {
+                            "type": "click",
+                            "selector": "button.estimate-new",
+                            "confidence": 0.9,
+                        },
+                    }
+                ]
+            },
+            "validation": {
+                "actions": {
+                    "REQUEST_SITE_VISIT": {
+                        "evidence": "replacement found",
+                        "repair": {
+                            "type": "click",
+                            "selector": "button.visit-new",
+                            "confidence": 0.82,
+                        },
+                    }
+                }
+            },
+            "action_candidates": [
+                {
+                    "action": "OPEN_PROJECTS",
+                    "type": "navigate",
+                    "path": "/projects",
+                    "label": "Projects",
+                    "confidence": 0.8,
+                }
+            ],
+        },
+    )
+
+    rows = {proposal["action"]: proposal for proposal in proposals}
+
+    assert rows["REQUEST_ESTIMATE"]["kind"] == "runtime_repair"
+    assert rows["REQUEST_SITE_VISIT"]["kind"] == "validation_repair"
+    assert rows["OPEN_PROJECTS"]["config"]["path"] == "/projects"
+
+
+def test_tenant_isolation_audit_passes_scoped_runtime_prompt_and_knowledge() -> None:
+    audit = build_tenant_isolation_audit(
+        site_id="builder_demo",
+        client={"site_id": "builder_demo"},
+        runtime_config={
+            "site_id": "builder_demo",
+            "install": {
+                "adapter_script": "https://hub.example.com/shopbot-adapter.js?site=builder_demo",
+                "widget_script": "https://hub.example.com/shopbot.js?site=builder_demo",
+            },
+        },
+        prompt_profile={
+            "profile": {"id": "profile_1", "site_id": "builder_demo"},
+            "versions": [{"id": "version_1", "profile_id": "profile_1"}],
+        },
+        knowledge={
+            "stats": {"active_items": 3},
+            "items": [{"id": "item_1", "title": "Renovation"}],
+        },
+    )
+
+    assert audit["status"] == "passed"
+    assert audit["summary"]["failed"] == 0
+
+
+def test_tenant_isolation_audit_fails_cross_site_runtime() -> None:
+    audit = build_tenant_isolation_audit(
+        site_id="builder_demo",
+        client={"site_id": "builder_demo"},
+        runtime_config={
+            "site_id": "other_site",
+            "install": {"adapter_script": "https://hub.example.com/shopbot-adapter.js?site=other_site"},
+        },
+        prompt_profile={"profile": {"id": "profile_1", "site_id": "builder_demo"}, "versions": []},
+        knowledge={"stats": {}, "items": []},
+    )
+
+    failed = {row["key"] for row in audit["checks"] if row["status"] == "failed"}
+
+    assert audit["status"] == "failed"
+    assert "runtime_site_id" in failed
+    assert "install_script_scope" in failed
+
+
 def test_settings_validation_accepts_model_temperature_update() -> None:
     assert _validated_settings({"LLM_TEMPERATURE": "0.3"}) == {"LLM_TEMPERATURE": "0.3"}
+
+
+def test_settings_validation_accepts_openai_provider_usage_settings() -> None:
+    assert _validated_settings(
+        {
+            "OPENAI_ADMIN_KEY": "admin-key",
+            "OPENAI_MONTHLY_BUDGET_USD": "250",
+            "OPENAI_USAGE_REFRESH_SECONDS": "300",
+        }
+    ) == {
+        "OPENAI_ADMIN_KEY": "admin-key",
+        "OPENAI_MONTHLY_BUDGET_USD": "250",
+        "OPENAI_USAGE_REFRESH_SECONDS": "300",
+    }
 
 
 def test_settings_validation_rejects_invalid_model_temperature() -> None:

@@ -1,4 +1,4 @@
-"""Client and widget serving routes for the Voice Shopping Agent API."""
+"""Client and widget serving routes for the AI Hub runtime API."""
 
 from __future__ import annotations
 
@@ -8,13 +8,16 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Response
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
+from pydantic import BaseModel, Field, field_validator
 
 import config
+from agent.action_readiness import action_readiness_for
 from agent.adapter_discovery import build_discovery, render_adapter_code
-from agent.ingestion import sync_web_crawl
+from agent.barrier_policy import build_barrier_action_policy
+from agent.sales_intake import sanitize_intake_questions
 from db import admin as admin_db
 
 logger = logging.getLogger(__name__)
@@ -29,18 +32,69 @@ ADAPTER_SCRIPT_NAME = "shopbot-adapter.js"
 WIDGET_SCRIPT_NAME = "shopbot.js"
 PLUGIN_DIR = Path(__file__).parent.parent.parent / "plugin"
 RUNTIME_CONFIG_VERSION = 1
+GENERIC_VERTICAL_KEY = admin_db.DEFAULT_CLIENT_VERTICAL_KEY
+GENERIC_TO_VERTICAL_CONFIDENCE = 0.6
+EXISTING_VERTICAL_SWITCH_CONFIDENCE = 0.86
 MAX_DISCOVERY_ELEMENTS = 80
 MAX_DISCOVERY_TEXT_LENGTH = 3000
+MAX_DISCOVERY_HTML_LENGTH = 6000
+MAX_DISCOVERY_LABEL_LENGTH = 160
+MAX_DISCOVERY_SELECTOR_LENGTH = 260
+MAX_DISCOVERY_HREF_LENGTH = 600
+MAX_RUNTIME_CAPABILITY_TEXT_LENGTH = 240
+MAX_RUNTIME_CAPABILITY_NUMBER = 10000
+RUNTIME_CAPABILITY_BOOL_KEYS = frozenset({
+    "script_loaded",
+    "secure_context",
+    "top_level_window",
+    "fetch_api",
+    "permissions_api",
+    "media_devices_api",
+    "get_user_media_api",
+    "cookies_enabled",
+    "shadow_dom_api",
+    "custom_elements_api",
+    "mutation_observer_api",
+})
+RUNTIME_CAPABILITY_TEXT_KEYS = frozenset({
+    "reported_at",
+    "origin",
+    "url",
+    "protocol",
+    "document_ready_state",
+    "microphone_permission",
+    "session_storage",
+    "local_storage",
+    "language",
+    "user_agent",
+})
+RUNTIME_CAPABILITY_NUMBER_KEYS = frozenset({"iframe_count"})
 
 router = APIRouter(tags=["Plugin"])
 
 
+DISCOVERY_ELEMENT_FIELD_LIMITS = {
+    "label": MAX_DISCOVERY_LABEL_LENGTH,
+    "selector": MAX_DISCOVERY_SELECTOR_LENGTH,
+    "href": MAX_DISCOVERY_HREF_LENGTH,
+    "input_selector": MAX_DISCOVERY_SELECTOR_LENGTH,
+    "submit_selector": MAX_DISCOVERY_SELECTOR_LENGTH,
+}
+
+
 class DiscoveryElement(BaseModel):
-    label: str = Field(default="", max_length=160)
-    selector: str = Field(default="", max_length=260)
-    href: str = Field(default="", max_length=600)
-    input_selector: str = Field(default="", max_length=260)
-    submit_selector: str = Field(default="", max_length=260)
+    label: str = Field(default="", max_length=MAX_DISCOVERY_LABEL_LENGTH)
+    selector: str = Field(default="", max_length=MAX_DISCOVERY_SELECTOR_LENGTH)
+    href: str = Field(default="", max_length=MAX_DISCOVERY_HREF_LENGTH)
+    input_selector: str = Field(default="", max_length=MAX_DISCOVERY_SELECTOR_LENGTH)
+    submit_selector: str = Field(default="", max_length=MAX_DISCOVERY_SELECTOR_LENGTH)
+    fields: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+
+    @field_validator("label", "selector", "href", "input_selector", "submit_selector", mode="before")
+    @classmethod
+    def trim_browser_discovery_text(cls, value: Any, info: Any) -> str:
+        limit = DISCOVERY_ELEMENT_FIELD_LIMITS.get(info.field_name, MAX_DISCOVERY_LABEL_LENGTH)
+        return str(value or "").strip()[:limit]
 
 
 class WidgetRegisterRequest(BaseModel):
@@ -49,10 +103,58 @@ class WidgetRegisterRequest(BaseModel):
     url: str = Field(..., min_length=1, max_length=600)
     title: str = Field(default="", max_length=180)
     text_sample: str = Field(default="", max_length=MAX_DISCOVERY_TEXT_LENGTH)
+    html_sample: str = Field(default="", max_length=MAX_DISCOVERY_HTML_LENGTH)
     buttons: list[DiscoveryElement] = Field(default_factory=list, max_length=MAX_DISCOVERY_ELEMENTS)
     links: list[DiscoveryElement] = Field(default_factory=list, max_length=MAX_DISCOVERY_ELEMENTS)
     forms: list[DiscoveryElement] = Field(default_factory=list, max_length=MAX_DISCOVERY_ELEMENTS)
     platform_hints: dict[str, Any] = Field(default_factory=dict)
+    barrier_hints: dict[str, Any] = Field(default_factory=dict)
+    runtime_capabilities: dict[str, Any] = Field(default_factory=dict)
+
+
+class WidgetActionValidationRequest(BaseModel):
+    site_id: str = Field(default=config.DEFAULT_SITE_ID, min_length=1, max_length=80)
+    origin: str = Field(..., min_length=1, max_length=240)
+    url: str = Field(..., min_length=1, max_length=600)
+    validated_at: str = Field(default="", max_length=80)
+    actions: dict[str, Any] = Field(default_factory=dict)
+
+
+class WidgetPolicyEventRequest(BaseModel):
+    site_id: str = Field(default=config.DEFAULT_SITE_ID, min_length=1, max_length=80)
+    origin: str = Field(..., min_length=1, max_length=240)
+    url: str = Field(..., min_length=1, max_length=600)
+    occurred_at: str = Field(default="", max_length=80)
+    action: str = Field(..., min_length=1, max_length=80)
+    status: str = Field(default="blocked", max_length=40)
+    reason: str = Field(default="", max_length=240)
+    policy: dict[str, Any] = Field(default_factory=dict)
+
+
+class WidgetActionExecutionEventRequest(BaseModel):
+    site_id: str = Field(default=config.DEFAULT_SITE_ID, min_length=1, max_length=80)
+    origin: str = Field(..., min_length=1, max_length=240)
+    url: str = Field(..., min_length=1, max_length=600)
+    occurred_at: str = Field(default="", max_length=80)
+    action: str = Field(..., min_length=1, max_length=80)
+    status: str = Field(default="unknown", max_length=40)
+    stage: str = Field(default="", max_length=80)
+    reason: str = Field(default="", max_length=240)
+    duration_ms: float = Field(default=0.0, ge=0)
+    param_keys: list[str] = Field(default_factory=list, max_length=20)
+
+
+class WidgetInteractionEventRequest(BaseModel):
+    site_id: str = Field(default=config.DEFAULT_SITE_ID, min_length=1, max_length=80)
+    origin: str = Field(..., min_length=1, max_length=240)
+    url: str = Field(..., min_length=1, max_length=600)
+    occurred_at: str = Field(default="", max_length=80)
+    event_type: str = Field(..., min_length=1, max_length=40)
+    label: str = Field(default="", max_length=180)
+    selector: str = Field(default="", max_length=260)
+    tag: str = Field(default="", max_length=40)
+    href: str = Field(default="", max_length=600)
+    form: dict[str, Any] = Field(default_factory=dict)
 
 
 def _safe_site_id(raw: str) -> str:
@@ -68,10 +170,25 @@ def _safe_script_base_url(raw: str) -> str:
     return ""
 
 
-def _public_widget_base_url() -> str:
+def _request_public_base_url(request: Request | None = None) -> str:
+    if request is None:
+        return ""
+
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    forwarded_host = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+    forwarded_prefix = request.headers.get("x-forwarded-prefix", "").strip().rstrip("/")
+    scheme = forwarded_proto or request.url.scheme
+    host = forwarded_host or request.headers.get("host", "") or request.url.netloc
+    return _safe_script_base_url(f"{scheme}://{host}{forwarded_prefix}") if scheme and host else ""
+
+
+def _public_widget_base_url(request: Request | None = None) -> str:
     return (
-        _safe_script_base_url(os.environ.get("PUBLIC_API_URL", ""))
+        _request_public_base_url(request)
+        or _safe_script_base_url(os.environ.get("HUB_PUBLIC_URL", ""))
+        or _safe_script_base_url(os.environ.get("PUBLIC_API_URL", ""))
         or _safe_script_base_url(config.PUBLIC_API_URL)
+        or _safe_script_base_url(config.HUB_PUBLIC_URL)
         or _safe_script_base_url(config.VOICE_ORB_API_URL or "")
     )
 
@@ -107,32 +224,36 @@ def _disabled_widget_script(*, site: str) -> str:
   window[{json.dumps(DISABLED_WIDGET_FRAME_FLAG)}] = false;
   window[{json.dumps(DISABLED_WIDGET_REGISTRY)}] = window[{json.dumps(DISABLED_WIDGET_REGISTRY)}] || {{}};
   window[{json.dumps(DISABLED_WIDGET_REGISTRY)}][siteId] = true;
-  console.info("[ShopBot] " + {json.dumps(CLIENT_DISABLED_MESSAGE)} + " Site: " + siteId);
+  console.info("[AI Hub Widget] " + {json.dumps(CLIENT_DISABLED_MESSAGE)} + " Site: " + siteId);
 }})();
 """
 
 
-def _script_url(*, api_base_url: str, script_name: str, site: str) -> str:
-    return f"{api_base_url}/{script_name}?site={site}"
+def _script_url(*, api_base_url: str, script_name: str, site: str | None = None) -> str:
+    if site:
+        return f"{api_base_url}/{script_name}?site={site}"
+    return f"{api_base_url}/{script_name}"
 
 
-def _render_install_script(*, site: str, api_base_url: str) -> str:
+def _render_install_script(*, site: str | None = None, api_base_url: str) -> str:
     adapter_url = _script_url(api_base_url=api_base_url, script_name=ADAPTER_SCRIPT_NAME, site=site)
     widget_url = _script_url(api_base_url=api_base_url, script_name=WIDGET_SCRIPT_NAME, site=site)
     return f"""
 (function () {{
-  var siteId = {json.dumps(site)};
+  var siteId = {json.dumps(site or "")};
   var apiBaseUrl = {json.dumps(api_base_url)};
   var loadedSites = window[{json.dumps(INSTALL_REGISTRY_FLAG)}] || {{}};
-  if (loadedSites[siteId]) return;
-  loadedSites[siteId] = true;
+  var installKey = siteId || "auto:" + window.location.origin + ":" + window.location.pathname.split("/").slice(0, 2).join("/");
+  if (loadedSites[installKey]) return;
+  loadedSites[installKey] = true;
   window[{json.dumps(INSTALL_REGISTRY_FLAG)}] = loadedSites;
 
   function loadScript(src, onload) {{
     var script = document.createElement("script");
     script.defer = true;
     script.src = src;
-    script.setAttribute("data-site-id", siteId);
+    if (siteId) script.setAttribute("data-site-id", siteId);
+    script.setAttribute("data-aihub-universal", siteId ? "false" : "true");
     script.setAttribute("data-api-url", apiBaseUrl);
     script.onload = onload || function () {{}};
     script.onerror = function () {{
@@ -146,6 +267,12 @@ def _render_install_script(*, site: str, api_base_url: str) -> str:
   }});
 }})();
 """
+
+
+def universal_install_script_tag(*, api_base_url: str | None = None) -> str:
+    """Return the universal one-line installer for auto-onboarded client sites."""
+    safe_api = (api_base_url or _public_widget_base_url()).rstrip("/")
+    return f'<script defer src="{safe_api}/install.js"></script>'
 
 
 def _public_runtime_config(*, site: str, api_base_url: str) -> dict[str, Any]:
@@ -196,8 +323,8 @@ def _install_asset_config(*, site: str, api_base_url: str) -> dict[str, str]:
 
 def _runtime_vertical_config(vertical: dict[str, Any]) -> dict[str, Any]:
     return {
-        "key": vertical.get("key") or admin_db.DEFAULT_CLIENT_VERTICAL_KEY,
-        "label": vertical.get("label") or "E-commerce",
+        "key": vertical.get("key") or GENERIC_VERTICAL_KEY,
+        "label": vertical.get("label") or "Generic",
         "risk_level": vertical.get("risk_level") or "low",
         "action_types": vertical.get("action_types") or [],
         "entity_types": vertical.get("entity_types") or [],
@@ -215,6 +342,35 @@ def _runtime_adapter_config(
         "platform": vertical_config.get("platform") or "auto",
         "routes": _dict_value(vertical_config, "routes"),
         "actions": _dict_value(vertical_config, "actions"),
+        "action_policy": build_barrier_action_policy(
+            vertical_config,
+            str(client.get("vertical_key") or admin_db.DEFAULT_CLIENT_VERTICAL_KEY),
+        ),
+        "action_events": _list_value(vertical_config, "action_events"),
+        "action_health": _dict_value(vertical_config, "action_health"),
+        "action_proposals": _list_value(vertical_config, "action_proposals"),
+        "action_proposal_reviews": _list_value(vertical_config, "action_proposal_reviews"),
+        "action_repairs": _list_value(vertical_config, "action_repairs"),
+        "action_reviews": _list_value(vertical_config, "action_reviews"),
+        "flow_repair_proposals": _list_value(vertical_config, "flow_repair_proposals"),
+        "flow_repair_reviews": _list_value(vertical_config, "flow_repair_reviews"),
+        "policy_events": _list_value(vertical_config, "policy_events"),
+        "interaction_events": _list_value(vertical_config, "interaction_events"),
+        "action_candidates": _list_value(vertical_config, "action_candidates"),
+        "prompt_suggestions": _list_value(vertical_config, "prompt_suggestions"),
+        "intake_questions": sanitize_intake_questions(vertical_config.get("intake_questions")),
+        "action_readiness": action_readiness_for(
+            vertical_config,
+            str(client.get("vertical_key") or admin_db.DEFAULT_CLIENT_VERTICAL_KEY),
+        ),
+        "discovery": _dict_value(vertical_config, "discovery"),
+        "validation": _dict_value(vertical_config, "validation"),
+        "initialization": _dict_value(vertical_config, "initialization"),
+        "flow": _dict_value(vertical_config, "flow"),
+        "barriers": _dict_value(vertical_config, "barriers"),
+        "rehearsal": _dict_value(vertical_config, "rehearsal"),
+        "regression": _dict_value(vertical_config, "regression"),
+        "runtime_capabilities": _dict_value(vertical_config, "runtime_capabilities"),
         "selectors": selectors.get("selectors") or _dict_value(vertical_config, "selectors"),
         "selector_confidence": float(selectors.get("confidence") or 0),
         "selector_validated": bool(selectors.get("validated")),
@@ -226,6 +382,102 @@ def _dict_value(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _list_value(data: dict[str, Any], key: str) -> list[Any]:
+    value = data.get(key)
+    return value[:20] if isinstance(value, list) else []
+
+
+def _validated_runtime_capabilities(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+
+    capabilities: dict[str, Any] = {}
+    for key in RUNTIME_CAPABILITY_BOOL_KEYS:
+        if key in raw:
+            capabilities[key] = bool(raw.get(key))
+    for key in RUNTIME_CAPABILITY_TEXT_KEYS:
+        if key in raw:
+            capabilities[key] = str(raw.get(key) or "").strip()[:MAX_RUNTIME_CAPABILITY_TEXT_LENGTH]
+    for key in RUNTIME_CAPABILITY_NUMBER_KEYS:
+        if key in raw:
+            capabilities[key] = _bounded_capability_number(raw.get(key))
+    return capabilities
+
+
+def _bounded_capability_number(value: Any) -> int:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(numeric, MAX_RUNTIME_CAPABILITY_NUMBER))
+
+
+def _registration_vertical_decision(
+    client: dict[str, Any],
+    detected_vertical_key: str,
+    confidence: float,
+) -> dict[str, Any]:
+    current_key = _clean_vertical_key(client.get("vertical_key"))
+    detected_key = _clean_vertical_key(detected_vertical_key)
+    safe_confidence = max(0.0, min(float(confidence or 0.0), 1.0))
+
+    if current_key == detected_key:
+        reason = "same_vertical"
+        applied_key = current_key
+    elif current_key == GENERIC_VERTICAL_KEY and safe_confidence >= GENERIC_TO_VERTICAL_CONFIDENCE:
+        reason = "generic_upgraded_from_confident_discovery"
+        applied_key = detected_key
+    elif detected_key == GENERIC_VERTICAL_KEY:
+        reason = "kept_existing_vertical_after_generic_discovery"
+        applied_key = current_key
+    elif safe_confidence >= EXISTING_VERTICAL_SWITCH_CONFIDENCE:
+        reason = "switched_after_high_confidence_discovery"
+        applied_key = detected_key
+    else:
+        reason = "kept_existing_vertical_after_low_confidence_discovery"
+        applied_key = current_key
+
+    return {
+        "previous_vertical_key": current_key,
+        "detected_vertical_key": detected_key,
+        "applied_vertical_key": applied_key,
+        "confidence": round(safe_confidence, 3),
+        "reason": reason,
+        "apply_generated_actions": applied_key == detected_key,
+    }
+
+
+def _clean_vertical_key(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text or GENERIC_VERTICAL_KEY
+
+
+def _registration_vertical_config(
+    discovery_config: dict[str, Any],
+    runtime_capabilities: dict[str, Any],
+    vertical_decision: dict[str, Any],
+) -> dict[str, Any]:
+    vertical_config = dict(discovery_config)
+    if not vertical_decision.get("apply_generated_actions"):
+        vertical_config.pop("actions", None)
+        vertical_config.pop("prompt_suggestions", None)
+        vertical_config.pop("intake_questions", None)
+
+    discovery_meta = _dict_value(vertical_config, "discovery")
+    discovery_meta.update(
+        {
+            "previous_vertical_key": vertical_decision["previous_vertical_key"],
+            "detected_vertical_key": vertical_decision["detected_vertical_key"],
+            "applied_vertical_key": vertical_decision["applied_vertical_key"],
+            "vertical_decision": vertical_decision["reason"],
+            "confidence": vertical_decision["confidence"],
+        }
+    )
+    vertical_config["discovery"] = discovery_meta
+    vertical_config["runtime_capabilities"] = runtime_capabilities
+    return vertical_config
+
+
 def _process_widget_registration(req: WidgetRegisterRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     payload = req.model_dump()
     discovery = build_discovery(payload)
@@ -235,10 +487,16 @@ def _process_widget_registration(req: WidgetRegisterRequest, background_tasks: B
         raise HTTPException(status_code=400, detail="Registration origin must be http or https.")
 
     client = _ensure_registration_client(safe_site, store_url, req.title, discovery.vertical_key)
+    vertical_decision = _registration_vertical_decision(client, discovery.vertical_key, discovery.confidence)
+    vertical_config = _registration_vertical_config(
+        discovery.vertical_config,
+        _validated_runtime_capabilities(req.runtime_capabilities),
+        vertical_decision,
+    )
     client = admin_db.update_client_discovery_config(
         safe_site,
-        vertical_key=discovery.vertical_key,
-        vertical_config=discovery.vertical_config,
+        vertical_key=vertical_decision["applied_vertical_key"],
+        vertical_config=vertical_config,
         adapter_name="generated_adapter.js",
     )
     admin_db.save_site_selectors(
@@ -247,15 +505,130 @@ def _process_widget_registration(req: WidgetRegisterRequest, background_tasks: B
         confidence=discovery.confidence,
         validated=discovery.confidence >= 0.65,
     )
-    _seed_generated_prompt_once(safe_site, client, discovery)
-    _schedule_auto_crawl_if_needed(background_tasks, safe_site, store_url, client)
+    if vertical_decision["apply_generated_actions"]:
+        _seed_generated_prompt_once(safe_site, client, discovery)
+    initialization_plan = _manual_registration_initialization_plan()
     return {
         "site_id": safe_site,
-        "vertical_key": discovery.vertical_key,
+        "vertical_key": vertical_decision["applied_vertical_key"],
+        "detected_vertical_key": discovery.vertical_key,
+        "vertical_decision": vertical_decision["reason"],
         "confidence": discovery.confidence,
-        "actions": sorted(discovery.vertical_config.get("actions", {}).keys()),
-        "crawl_scheduled": _should_auto_crawl(client),
+        "actions": sorted(vertical_config.get("actions", {}).keys()),
+        "crawl_scheduled": initialization_plan["crawl"],
+        "flow_scheduled": initialization_plan["flow"],
+        "rehearsal_scheduled": initialization_plan["rehearsal"],
     }
+
+
+def _process_action_validation_report(req: WidgetActionValidationRequest) -> dict[str, Any]:
+    safe_site = _safe_site_id(req.site_id)
+    origin = _safe_script_base_url(req.origin)
+    if not origin:
+        raise HTTPException(status_code=400, detail="Validation origin must be http or https.")
+    client = _safe_client_detail(safe_site)
+    allowed_origin = _safe_script_base_url(str(client.get("allowed_origin") or ""))
+    if allowed_origin and allowed_origin != origin:
+        raise HTTPException(status_code=403, detail="Validation origin is not allowed for this client.")
+    report = {
+        "source": "browser_runtime",
+        "origin": origin,
+        "url": same_origin_public_url(req.url, origin),
+        "validated_at": req.validated_at,
+        "actions": req.actions,
+    }
+    admin_db.save_adapter_validation_report(safe_site, report)
+    validation = _dict_value(admin_db.get_client_detail(safe_site).get("vertical_config") or {}, "validation")
+    return {
+        "site_id": safe_site,
+        "summary": validation.get("summary") or {},
+    }
+
+
+def _process_policy_event(req: WidgetPolicyEventRequest) -> dict[str, Any]:
+    safe_site = _safe_site_id(req.site_id)
+    origin = _safe_script_base_url(req.origin)
+    if not origin:
+        raise HTTPException(status_code=400, detail="Policy event origin must be http or https.")
+    client = _safe_client_detail(safe_site)
+    allowed_origin = _safe_script_base_url(str(client.get("allowed_origin") or ""))
+    if allowed_origin and allowed_origin != origin:
+        raise HTTPException(status_code=403, detail="Policy event origin is not allowed for this client.")
+    event = {
+        "source": "browser_runtime",
+        "origin": origin,
+        "url": same_origin_public_url(req.url, origin),
+        "occurred_at": req.occurred_at,
+        "action": req.action,
+        "status": req.status,
+        "reason": req.reason,
+        "policy": req.policy,
+    }
+    admin_db.save_client_policy_event(safe_site, event)
+    return {"site_id": safe_site, "status": "ok"}
+
+
+def _process_action_execution_event(req: WidgetActionExecutionEventRequest) -> dict[str, Any]:
+    safe_site = _safe_site_id(req.site_id)
+    origin = _safe_script_base_url(req.origin)
+    if not origin:
+        raise HTTPException(status_code=400, detail="Action event origin must be http or https.")
+    client = _safe_client_detail(safe_site)
+    allowed_origin = _safe_script_base_url(str(client.get("allowed_origin") or ""))
+    if allowed_origin and allowed_origin != origin:
+        raise HTTPException(status_code=403, detail="Action event origin is not allowed for this client.")
+    event = {
+        "source": "browser_runtime",
+        "origin": origin,
+        "url": same_origin_public_url(req.url, origin),
+        "occurred_at": req.occurred_at,
+        "action": req.action,
+        "status": req.status,
+        "stage": req.stage,
+        "reason": req.reason,
+        "duration_ms": req.duration_ms,
+        "param_keys": req.param_keys,
+    }
+    admin_db.save_client_action_event(safe_site, event)
+    return {"site_id": safe_site, "status": "ok"}
+
+
+def _process_interaction_event(req: WidgetInteractionEventRequest) -> dict[str, Any]:
+    safe_site = _safe_site_id(req.site_id)
+    origin = _safe_script_base_url(req.origin)
+    if not origin:
+        raise HTTPException(status_code=400, detail="Interaction origin must be http or https.")
+    client = _safe_client_detail(safe_site)
+    allowed_origin = _safe_script_base_url(str(client.get("allowed_origin") or ""))
+    if allowed_origin and allowed_origin != origin:
+        raise HTTPException(status_code=403, detail="Interaction origin is not allowed for this client.")
+    event = {
+        "source": "browser_runtime",
+        "origin": origin,
+        "url": same_origin_public_url(req.url, origin),
+        "occurred_at": req.occurred_at,
+        "event_type": req.event_type,
+        "label": req.label,
+        "selector": req.selector,
+        "tag": req.tag,
+        "href": req.href,
+        "form": req.form,
+    }
+    admin_db.save_client_interaction_event(safe_site, event)
+    return {"site_id": safe_site, "status": "ok"}
+
+
+def same_origin_public_url(url: str, origin: str) -> str:
+    clean_url = str(url or "").strip()[:600]
+    try:
+        parsed = urlparse(clean_url)
+    except ValueError:
+        return origin
+    if not parsed.scheme or not parsed.netloc:
+        return origin
+    if f"{parsed.scheme}://{parsed.netloc}" != origin:
+        return origin
+    return clean_url
 
 
 def _ensure_registration_client(site_id: str, store_url: str, title: str, vertical_key: str) -> dict[str, Any]:
@@ -263,7 +636,7 @@ def _ensure_registration_client(site_id: str, store_url: str, title: str, vertic
         return admin_db.get_client_detail(site_id)
     except LookupError:
         name = str(title or site_id.replace("_", " ").title()).strip()[:120]
-        return admin_db.create_client(
+        return admin_db.discover_available_client(
             name=name or site_id,
             store_url=store_url,
             site_id=site_id,
@@ -291,41 +664,19 @@ def _seed_generated_prompt_once(site_id: str, client: dict[str, Any], discovery:
     )
 
 
-def _schedule_auto_crawl_if_needed(
-    background_tasks: BackgroundTasks,
-    site_id: str,
-    store_url: str,
-    client: dict[str, Any],
-) -> None:
-    if not _should_auto_crawl(client):
-        return
-    admin_db.update_client_crawl_status(site_id, admin_db.CRAWL_STATUS_RUNNING, "Auto crawl scheduled from widget install.")
-    background_tasks.add_task(_run_auto_crawl, site_id, store_url)
+def _manual_registration_initialization_plan() -> dict[str, bool]:
+    """Keep widget registration discovery-only.
+
+    Heavy work must be started from CRM so opening a site with the widget cannot
+    unexpectedly crawl, discover flows, or run setup jobs.
+    """
+    return {"crawl": False, "flow": False, "rehearsal": False}
 
 
-def _should_auto_crawl(client: dict[str, Any]) -> bool:
-    status_text = str(client.get("last_crawl_status") or admin_db.CRAWL_STATUS_NOT_STARTED)
-    if status_text == admin_db.CRAWL_STATUS_RUNNING:
-        return False
-    catalog = client.get("catalog") if isinstance(client.get("catalog"), dict) else {}
-    active_products = int(catalog.get("active_products") or 0)
-    return status_text in {admin_db.CRAWL_STATUS_NOT_STARTED, admin_db.CRAWL_STATUS_ERROR} or active_products <= 0
-
-
-def _run_auto_crawl(site_id: str, store_url: str) -> None:
-    try:
-        sync_web_crawl(
-            store_url,
-            max_pages=config.CRAWL_MAX_PAGES,
-            max_depth=config.CRAWL_MAX_DEPTH,
-            site_id=site_id,
-            reconcile_missing=True,
-            source_name="widget_auto_crawler",
-        )
-        admin_db.update_client_crawl_status(site_id, admin_db.CRAWL_STATUS_OK, "Auto crawler completed.")
-    except Exception as exc:
-        logger.error("Auto crawl failed for %s: %s", site_id, exc)
-        admin_db.update_client_crawl_status(site_id, admin_db.CRAWL_STATUS_ERROR, str(exc))
+def _vertical_config_section(client: dict[str, Any], key: str) -> dict[str, Any]:
+    vertical_config = client.get("vertical_config") if isinstance(client.get("vertical_config"), dict) else {}
+    section = vertical_config.get(key)
+    return section if isinstance(section, dict) else {}
 
 
 def _render_embed_bootstrap(*, site: str, api_base_url: str) -> str:
@@ -345,9 +696,9 @@ def _render_embed_bootstrap(*, site: str, api_base_url: str) -> str:
 
   var frame = document.createElement("iframe");
   frame.src = frameUrl.toString();
-  frame.title = "ShopBot Voice Orb";
+  frame.title = "AI Hub Voice Widget";
   frame.setAttribute("allow", "microphone");
-  frame.setAttribute("aria-label", "ShopBot Voice Orb");
+  frame.setAttribute("aria-label", "AI Hub Voice Widget");
   frame.style.position = "fixed";
   frame.style.left = "50%";
   frame.style.bottom = "12px";
@@ -409,19 +760,44 @@ def _render_embed_bootstrap(*, site: str, api_base_url: str) -> str:
 
 @router.get("/v1/widget/config")
 async def widget_config(
+    request: Request,
     site_id: str = config.DEFAULT_SITE_ID,
     site: Optional[str] = None,
     shop: Optional[str] = None,
 ) -> dict[str, Any]:
     """Return public adapter/runtime config for one tenant."""
     safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    return _public_runtime_config(site=safe_site, api_base_url=_public_widget_base_url())
+    return _public_runtime_config(site=safe_site, api_base_url=_public_widget_base_url(request))
 
 
 @router.post("/v1/widget/register")
 async def widget_register(req: WidgetRegisterRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
     """Register one script-installed page and generate adapter config."""
     return _process_widget_registration(req, background_tasks)
+
+
+@router.post("/v1/widget/action-report")
+async def widget_action_report(req: WidgetActionValidationRequest) -> dict[str, Any]:
+    """Accept non-destructive browser validation of generated adapter actions."""
+    return _process_action_validation_report(req)
+
+
+@router.post("/v1/widget/policy-event")
+async def widget_policy_event(req: WidgetPolicyEventRequest) -> dict[str, Any]:
+    """Accept browser runtime evidence when action policy blocks execution."""
+    return _process_policy_event(req)
+
+
+@router.post("/v1/widget/action-event")
+async def widget_action_event(req: WidgetActionExecutionEventRequest) -> dict[str, Any]:
+    """Accept browser runtime evidence for executed adapter actions."""
+    return _process_action_execution_event(req)
+
+
+@router.post("/v1/widget/interaction-event")
+async def widget_interaction_event(req: WidgetInteractionEventRequest) -> dict[str, Any]:
+    """Accept privacy-safe browser interaction metadata for adapter learning."""
+    return _process_interaction_event(req)
 
 
 @router.get("/v1/widget/status")
@@ -440,6 +816,7 @@ async def widget_status(
 
 @router.get("/shopbot-frame")
 async def serve_plugin_frame(
+    request: Request,
     site: Optional[str] = None,
     site_id: Optional[str] = None,
     shop: Optional[str] = None,
@@ -447,7 +824,7 @@ async def serve_plugin_frame(
 ) -> Response:
     """Serve a standalone orb frame for external website modes."""
     safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    script_path = f"{_public_widget_base_url()}/shopbot-widget.js?site={safe_site}"
+    script_path = f"{_public_widget_base_url(request)}/shopbot-widget.js?site={safe_site}"
     if parent_origin:
         script_path += f"&parent_origin={parent_origin}"
 
@@ -463,7 +840,7 @@ async def serve_plugin_frame(
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>ShopBot</title>
+    <title>AI Hub Widget</title>
     <style>
       html, body {{
         margin: 0;
@@ -492,16 +869,18 @@ async def serve_plugin_frame(
 
 @router.get("/shopbot-widget.js")
 async def serve_plugin_widget(
+    request: Request,
     site: Optional[str] = None,
     site_id: Optional[str] = None,
     shop: Optional[str] = None,
 ) -> Response:
     """Serve the full widget app for direct use or inside the external embed frame."""
-    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    safe_api = _public_widget_base_url()
+    explicit_site = site or site_id or shop
+    safe_site = _safe_site_id(explicit_site) if explicit_site else ""
+    safe_api = _public_widget_base_url(request)
     js_code = (
         _load_widget_script(site=safe_site, api_base_url=safe_api)
-        if admin_db.is_client_widget_enabled(safe_site)
+        if not safe_site or admin_db.is_client_widget_enabled(safe_site)
         else _disabled_widget_script(site=safe_site)
     )
 
@@ -514,16 +893,18 @@ async def serve_plugin_widget(
 
 @router.get("/shopbot-adapter.js")
 async def serve_plugin_adapter(
+    request: Request,
     site: Optional[str] = None,
     site_id: Optional[str] = None,
     shop: Optional[str] = None,
 ) -> Response:
     """Serve the client-side adapter runtime used by the one-line installer."""
-    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    safe_api = _public_widget_base_url()
+    explicit_site = site or site_id or shop
+    safe_site = _safe_site_id(explicit_site) if explicit_site else ""
+    safe_api = _public_widget_base_url(request)
     js_code = (
         _load_adapter_script(site=safe_site, api_base_url=safe_api)
-        if admin_db.is_client_widget_enabled(safe_site)
+        if not safe_site or admin_db.is_client_widget_enabled(safe_site)
         else _disabled_widget_script(site=safe_site)
     )
 
@@ -536,6 +917,7 @@ async def serve_plugin_adapter(
 
 @router.get("/shopbot.js")
 async def serve_plugin(
+    request: Request,
     site: Optional[str] = None,
     site_id: Optional[str] = None,
     shop: Optional[str] = None,
@@ -546,11 +928,12 @@ async def serve_plugin(
     ngrok because the interstitial "Visit Site" page blocks iframe loading.
     Serving the full widget JS directly avoids this issue entirely.
     """
-    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    safe_api = _public_widget_base_url()
+    explicit_site = site or site_id or shop
+    safe_site = _safe_site_id(explicit_site) if explicit_site else ""
+    safe_api = _public_widget_base_url(request)
     js_code = (
         _load_widget_script(site=safe_site, api_base_url=safe_api)
-        if admin_db.is_client_widget_enabled(safe_site)
+        if not safe_site or admin_db.is_client_widget_enabled(safe_site)
         else _disabled_widget_script(site=safe_site)
     )
 
@@ -563,16 +946,18 @@ async def serve_plugin(
 
 @router.get("/install.js")
 async def serve_install_script(
+    request: Request,
     site: Optional[str] = None,
     site_id: Optional[str] = None,
     shop: Optional[str] = None,
 ) -> Response:
     """Serve the single script clients paste into their website."""
-    safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    safe_api = _public_widget_base_url()
+    explicit_site = site or site_id or shop
+    safe_site = _safe_site_id(explicit_site) if explicit_site else ""
+    safe_api = _public_widget_base_url(request)
     js_code = (
-        _render_install_script(site=safe_site, api_base_url=safe_api)
-        if admin_db.is_client_widget_enabled(safe_site)
+        _render_install_script(site=safe_site or None, api_base_url=safe_api)
+        if not safe_site or admin_db.is_client_widget_enabled(safe_site)
         else _disabled_widget_script(site=safe_site)
     )
 

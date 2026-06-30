@@ -12,6 +12,10 @@ export type View =
 
 export type Theme = 'light' | 'dark';
 
+export type ClientBoardSection = 'all' | 'current' | 'available' | 'online' | 'offline';
+
+export type AnalyticsSectionId = 'overview' | 'quality' | 'details';
+
 export interface HealthSnapshot {
   fastapi?: string;
   postgres?: string;
@@ -88,6 +92,13 @@ export interface Client {
   last_crawl_at?: string | null;
   panel_password_configured?: boolean;
   panel_password_status?: 'configured' | 'revoked' | 'not_configured' | string;
+  runtime_status?: {
+    status?: 'online' | 'offline' | 'unknown' | string;
+    label?: string;
+    checked_url?: string;
+    status_code?: number;
+    message?: string;
+  };
   script_tag: string;
   catalog: CatalogSummary;
   usage: UsageSummary;
@@ -135,6 +146,43 @@ export interface OverviewMetrics {
   tokens_estimated: number;
 }
 
+export interface ProviderUsageEvent {
+  provider: string;
+  category: string;
+  message: string;
+  occurred_at: string;
+}
+
+export interface ProviderUsageStatus {
+  status: string;
+  provider: string;
+  llm_model: string;
+  openai_api_key_configured: boolean;
+  openai_admin_key_configured: boolean;
+  local_tokens: {
+    estimated_total: number;
+    turns_total: number;
+    turns_today: number;
+    avg_latency_ms: number;
+  };
+  openai_costs: {
+    status: string;
+    message: string;
+    month_to_date_usd: number;
+    currency: string;
+    period_start?: string;
+  };
+  budget: {
+    monthly_budget_usd: number;
+    month_to_date_usd: number;
+    remaining_budget_usd: number;
+    percent_used: number;
+    configured: boolean;
+  };
+  recent_events: ProviderUsageEvent[];
+  checked_at: string;
+}
+
 export interface UsageEvent {
   site_id: string;
   session_id: string;
@@ -152,6 +200,7 @@ export interface UsageEvent {
 
 export interface Overview {
   health: HealthSnapshot;
+  provider_usage?: ProviderUsageStatus;
   metrics: OverviewMetrics;
   clients: Client[];
   recent_activity: UsageEvent[];
@@ -270,6 +319,12 @@ export interface VerticalsResponse {
   verticals: VerticalDefinition[];
 }
 
+export interface UniversalInstallerResponse {
+  script_tag: string;
+  script_url: string;
+  mode: string;
+}
+
 export interface TokenLimitsPayload {
   token_limit: number;
   session_token_limit: number;
@@ -303,6 +358,7 @@ export interface CapabilitiesSummary {
   supported: string[];
   unsupported: string[];
   allowed_actions: string[];
+  action_policy?: Record<string, unknown>;
   scanned_at?: string;
 }
 
@@ -322,6 +378,40 @@ export interface CrawlReport {
   duration_ms: number;
   stopped_by_limit: boolean;
   created_at: string;
+}
+
+export type OperationKind = 'crawl' | 'readiness' | 'integration';
+export type OperationStatusValue = 'pending' | 'running' | 'complete' | 'failed' | 'skipped' | string;
+
+export interface OperationStageStatus {
+  name: string;
+  label: string;
+  status: OperationStatusValue;
+  message: string;
+  started_at?: string;
+  completed_at?: string;
+  duration_ms?: number;
+  detail?: Record<string, unknown>;
+}
+
+export interface OperationStatus {
+  kind: OperationKind;
+  label: string;
+  status: OperationStatusValue;
+  message: string;
+  progress: number;
+  started_at?: string;
+  completed_at?: string;
+  duration_ms?: number;
+  result_tab: string;
+  stages: OperationStageStatus[];
+  logs: string[];
+}
+
+export interface OperationStatusResponse {
+  site_id: string;
+  generated_at: string;
+  operations: Record<OperationKind, OperationStatus>;
 }
 
 export interface KnowledgeStats {
@@ -367,6 +457,29 @@ export interface AdapterRuntimeConfig {
     platform?: string;
     routes?: Record<string, unknown>;
     actions?: Record<string, unknown>;
+    action_policy?: Record<string, unknown>;
+    action_events?: Array<Record<string, unknown>>;
+    action_health?: Record<string, unknown>;
+    action_proposals?: Array<Record<string, unknown>>;
+    action_proposal_reviews?: Array<Record<string, unknown>>;
+    action_repairs?: Array<Record<string, unknown>>;
+    action_reviews?: Array<Record<string, unknown>>;
+    flow_repair_proposals?: Array<Record<string, unknown>>;
+    flow_repair_reviews?: Array<Record<string, unknown>>;
+    policy_events?: Array<Record<string, unknown>>;
+    interaction_events?: Array<Record<string, unknown>>;
+    action_candidates?: Array<Record<string, unknown>>;
+    prompt_suggestions?: string[];
+    intake_questions?: Array<Record<string, unknown>>;
+    action_readiness?: Array<Record<string, unknown>>;
+    discovery?: Record<string, unknown>;
+    validation?: Record<string, unknown>;
+    initialization?: Record<string, unknown>;
+    flow?: Record<string, unknown>;
+    barriers?: Record<string, unknown>;
+    rehearsal?: Record<string, unknown>;
+    regression?: Record<string, unknown>;
+    runtime_capabilities?: Record<string, unknown>;
     selectors?: Record<string, unknown>;
     selector_confidence?: number;
     selector_validated?: boolean;
@@ -376,6 +489,55 @@ export interface AdapterRuntimeConfig {
 export interface AdapterConfigResponse {
   runtime_config: AdapterRuntimeConfig;
   adapter_code: string;
+}
+
+export interface FlowReport {
+  site_id: string;
+  site_url: string;
+  vertical_key: string;
+  detected_vertical_key: string;
+  confidence: number;
+  engine: string;
+  pages: Array<Record<string, unknown>>;
+  actions: Array<Record<string, unknown>>;
+  routes: Record<string, string>;
+  adapter_actions: Record<string, unknown>;
+  prompt_suggestions: string[];
+  barriers: Record<string, unknown>;
+  summary: Record<string, unknown>;
+  discovered_at: string;
+  duration_ms: number;
+}
+
+export interface FlowDiscoveryResponse {
+  flow: FlowReport;
+  runtime_config: AdapterRuntimeConfig;
+  adapter_code: string;
+}
+
+export interface FlowRehearsalReport {
+  site_id: string;
+  site_url: string;
+  engine: string;
+  steps: Array<Record<string, unknown>>;
+  summary: Record<string, unknown>;
+  rehearsed_at: string;
+  duration_ms: number;
+}
+
+export interface FlowRehearsalResponse {
+  rehearsal: FlowRehearsalReport;
+  runtime_config: AdapterRuntimeConfig;
+  adapter_code: string;
+}
+
+export interface FlowRegressionReport {
+  site_id: string;
+  site_url: string;
+  status: string;
+  summary: Record<string, unknown>;
+  changes: Array<Record<string, unknown>>;
+  compared_at: string;
 }
 
 export interface PromptVersion {

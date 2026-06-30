@@ -22,5 +22,14 @@ VERTICAL = VerticalDefinition(
     ),
     entity_types=("insurance_plan", "insurer", "coverage_feature", "claim_flow", "document_requirement"),
     readiness_checks=("plans", "quote_flow", "claims", "renewals", "disclosures", "lead_capture"),
-    action_types=("SHOW_ENTITIES", "COMPARE_ENTITIES", "START_QUOTE", "CAPTURE_LEAD", "HANDOFF_TO_AGENT"),
+    action_types=(
+        "SHOW_ENTITIES",
+        "COMPARE_ENTITIES",
+        "SORT_ENTITIES",
+        "START_QUOTE",
+        "REQUEST_CALLBACK",
+        "CAPTURE_LEAD",
+        "HANDOFF_TO_AGENT",
+        "HANDOFF_TO_LICENSED_AGENT",
+    ),
 )

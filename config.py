@@ -8,6 +8,9 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 OPENAI_API_KEY: str = (os.getenv("OPENAI_API_KEY", "") or os.getenv("\ufeffOPENAI_API_KEY", "")).strip()
+OPENAI_ADMIN_KEY: str = os.getenv("OPENAI_ADMIN_KEY", "").strip()
+OPENAI_MONTHLY_BUDGET_USD: float = float(os.getenv("OPENAI_MONTHLY_BUDGET_USD", "0") or 0)
+OPENAI_USAGE_REFRESH_SECONDS: int = int(os.getenv("OPENAI_USAGE_REFRESH_SECONDS", "300") or 300)
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -26,9 +29,9 @@ LLM_EXTRACTOR_ENABLED: bool = _env_bool("LLM_EXTRACTOR_ENABLED", False)
 FAST_VOICE_MODE: bool = _env_bool("FAST_VOICE_MODE", True)
 _RAW_TTS_MODEL: str = os.getenv("TTS_MODEL", "tts-1")
 TTS_MODEL: str = os.getenv("FAST_TTS_MODEL", "tts-1") if FAST_VOICE_MODE else _RAW_TTS_MODEL
-TTS_VOICE: str = os.getenv("TTS_VOICE", "alloy")
+TTS_VOICE: str = os.getenv("TTS_VOICE", "nova")
 GROQ_TTS_MODEL: str = os.getenv("GROQ_TTS_MODEL", "canopylabs/orpheus-v1-english")
-GROQ_TTS_VOICE: str = os.getenv("GROQ_TTS_VOICE", "troy")
+GROQ_TTS_VOICE: str = os.getenv("GROQ_TTS_VOICE", "hannah")
 GROQ_TTS_RESPONSE_FORMAT: str = os.getenv("GROQ_TTS_RESPONSE_FORMAT", "wav")
 TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "groq" if GROQ_API_KEY else "openai").strip().lower()
 GROQ_FALLBACK_TO_OPENAI: bool = _env_bool("GROQ_FALLBACK_TO_OPENAI", True)
@@ -64,6 +67,7 @@ CURRENT_URL: str = os.getenv("CURRENT_URL", "").strip()
 MANUAL_WIDGET_SCRIPT: str = os.getenv("MANUAL_WIDGET_SCRIPT", "").strip()
 PUBLIC_WIDGET_SCRIPT_URL: str = os.getenv("PUBLIC_WIDGET_SCRIPT_URL", "").strip()
 VOICE_ORB_API_URL: str = os.getenv("VOICE_ORB_API_URL", "").strip()
+CLIENT_PANEL_TOKEN_SECRET: str = os.getenv("CLIENT_PANEL_TOKEN_SECRET", "").strip()
 
 DATABASE_URL: str = os.getenv(
     "DATABASE_URL",
@@ -73,13 +77,14 @@ BASE_DIR = Path(__file__).parent
 
 CRAWL_MAX_PAGES: int = int(os.getenv("CRAWL_MAX_PAGES", "60"))
 CRAWL_MAX_DEPTH: int = int(os.getenv("CRAWL_MAX_DEPTH", "3"))
-CRAWL_ON_STARTUP: bool = os.getenv("CRAWL_ON_STARTUP", "true").strip().lower() not in {
+CRAWL_ON_STARTUP: bool = os.getenv("CRAWL_ON_STARTUP", "false").strip().lower() not in {
     "0",
     "false",
     "no",
     "off",
 }
-CRAWL_PERIODIC_ENABLED: bool = _env_bool("CRAWL_PERIODIC_ENABLED", True)
+CRAWL_PERIODIC_ENABLED: bool = _env_bool("CRAWL_PERIODIC_ENABLED", False)
+ENSURE_DEFAULT_CLIENT_ON_STARTUP: bool = _env_bool("ENSURE_DEFAULT_CLIENT_ON_STARTUP", False)
 
 MAX_TRANSCRIPT_CHARS: int = 2000
 MAX_RESPONSE_CHARS: int = 3000
@@ -131,6 +136,7 @@ VALID_UI_ACTIONS = {
     "HANDOFF_TO_RECRUITER",
     "RUN_CALCULATOR",
     "RUN_AFFORDABILITY_CALCULATOR",
+    "RUN_DOM_SEQUENCE",
     "BUILD_ITINERARY",
     "BUILD_LEARNING_PATH",
     "CHECK_AVAILABILITY",

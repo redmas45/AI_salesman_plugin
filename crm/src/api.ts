@@ -8,13 +8,20 @@ import type {
   ConversationsResponse,
   CrawlReport,
   CreateClientPayload,
+  FlowDiscoveryResponse,
+  FlowReport,
+  FlowRegressionReport,
+  FlowRehearsalReport,
+  FlowRehearsalResponse,
   KnowledgeResponse,
+  OperationStatusResponse,
   Overview,
   PromptProfileResponse,
   PromptProfileSavePayload,
   ReadinessReport,
   SettingsResponse,
   TokenLimitsPayload,
+  UniversalInstallerResponse,
   VerticalsResponse,
 } from './types';
 
@@ -114,6 +121,7 @@ export const crmApi = {
       method: 'POST',
       body: JSON.stringify({ range, site_id: siteId }),
     }),
+  installer: () => request<UniversalInstallerResponse>('/installer'),
   verticals: () => request<VerticalsResponse>('/verticals'),
   client: (siteId: string) => request<{ client: Client }>(`/clients/${encodeURIComponent(siteId)}`),
   createClient: (payload: CreateClientPayload) =>
@@ -123,6 +131,10 @@ export const crmApi = {
     }),
   removeClient: (siteId: string) =>
     request<{ status: string }>(`/clients/${encodeURIComponent(siteId)}`, { method: 'DELETE' }),
+  activateClient: (siteId: string) =>
+    request<{ client: Client; status: string; message: string }>(`/clients/${encodeURIComponent(siteId)}/activate`, {
+      method: 'POST',
+    }),
   setClientEnabled: (siteId: string, enabled: boolean) =>
     request<{ client: Client }>(`/clients/${encodeURIComponent(siteId)}/status`, {
       method: 'PATCH',
@@ -151,6 +163,15 @@ export const crmApi = {
     request<{ status: string; message: string }>(`/clients/${encodeURIComponent(siteId)}/crawl`, {
       method: 'POST',
     }),
+  autoIntegrateClient: (siteId: string) =>
+    request<{ status: string; message: string }>(`/clients/${encodeURIComponent(siteId)}/auto-integrate`, {
+      method: 'POST',
+    }),
+  runAssistantSmokeTests: (siteId: string) =>
+    request<{ status: string; message: string; report: Record<string, unknown>; client: Client }>(
+      `/clients/${encodeURIComponent(siteId)}/assistant-smoke-tests`,
+      { method: 'POST' },
+    ),
   scanClient: (siteId: string) =>
     request<{ report: ReadinessReport }>(`/scan/${encodeURIComponent(siteId)}`, {
       method: 'POST',
@@ -161,12 +182,63 @@ export const crmApi = {
     request<CapabilitiesSummary>(`/capabilities/${encodeURIComponent(siteId)}`),
   getCrawlReport: (siteId: string) =>
     request<{ report: CrawlReport }>(`/crawl-report/${encodeURIComponent(siteId)}`),
+  getOperationStatus: (siteId: string) =>
+    request<OperationStatusResponse>(`/clients/${encodeURIComponent(siteId)}/operation-status`),
   getClientKnowledge: (siteId: string, limit = 50) =>
     request<KnowledgeResponse>(
       `/clients/${encodeURIComponent(siteId)}/knowledge?limit=${encodeURIComponent(String(limit))}`,
     ),
   getClientAdapter: (siteId: string) =>
     request<AdapterConfigResponse>(`/clients/${encodeURIComponent(siteId)}/adapter`),
+  getClientFlows: (siteId: string) =>
+    request<{ flow: FlowReport }>(`/clients/${encodeURIComponent(siteId)}/flows`),
+  discoverClientFlows: (siteId: string, maxPages = 6) =>
+    request<FlowDiscoveryResponse>(`/clients/${encodeURIComponent(siteId)}/flows/discover`, {
+      method: 'POST',
+      body: JSON.stringify({ max_pages: maxPages }),
+    }),
+  getClientFlowRegression: (siteId: string) =>
+    request<{ regression: FlowRegressionReport }>(`/clients/${encodeURIComponent(siteId)}/flows/regression`),
+  getClientFlowRehearsal: (siteId: string) =>
+    request<{ rehearsal: FlowRehearsalReport }>(`/clients/${encodeURIComponent(siteId)}/flows/rehearsal`),
+  rehearseClientFlows: (siteId: string, maxSteps = 24) =>
+    request<FlowRehearsalResponse>(`/clients/${encodeURIComponent(siteId)}/flows/rehearse`, {
+      method: 'POST',
+      body: JSON.stringify({ max_steps: maxSteps }),
+    }),
+  saveClientAdapterActions: (siteId: string, actions: Record<string, unknown>) =>
+    request<AdapterConfigResponse>(`/clients/${encodeURIComponent(siteId)}/adapter/actions`, {
+      method: 'PATCH',
+      body: JSON.stringify({ actions }),
+    }),
+  reviewClientAdapterAction: (
+    siteId: string,
+    payload: { candidate: Record<string, unknown>; decision: 'approve' | 'reject'; action_name?: string; note?: string },
+  ) =>
+    request<AdapterConfigResponse>(`/clients/${encodeURIComponent(siteId)}/adapter/action-candidates/review`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  refreshClientAdapterActionProposals: (siteId: string) =>
+    request<AdapterConfigResponse>(`/clients/${encodeURIComponent(siteId)}/adapter/action-proposals/refresh`, {
+      method: 'POST',
+    }),
+  reviewClientAdapterActionProposal: (
+    siteId: string,
+    payload: { proposal: Record<string, unknown>; decision: 'approve' | 'reject'; note?: string },
+  ) =>
+    request<AdapterConfigResponse>(`/clients/${encodeURIComponent(siteId)}/adapter/action-proposals/review`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  reviewClientFlowRepairProposal: (
+    siteId: string,
+    payload: { proposal: Record<string, unknown>; decision: 'approve' | 'reject'; note?: string },
+  ) =>
+    request<AdapterConfigResponse>(`/clients/${encodeURIComponent(siteId)}/adapter/flow-repair-proposals/review`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
   getPromptProfile: (siteId: string) =>
     request<PromptProfileResponse>(`/clients/${encodeURIComponent(siteId)}/prompt-profile`),
   savePromptProfile: (siteId: string, payload: PromptProfileSavePayload) =>

@@ -15,25 +15,37 @@ DEFAULT_SOURCE_TYPE = "product_catalog"
 KNOWLEDGE_PREVIEW_LIMIT = 50
 
 
-def sync_products_to_knowledge(site_id: str, source_name: str = DEFAULT_SOURCE_NAME) -> int:
-    """Mirror active ecommerce products into generic knowledge_items."""
+def sync_products_to_knowledge(
+    site_id: str,
+    source_name: str = DEFAULT_SOURCE_NAME,
+    *,
+    entity_type: str = "product",
+    source_type: str = DEFAULT_SOURCE_TYPE,
+) -> int:
+    """Mirror catalog rows into generic knowledge_items."""
     init_tenant_schema(site_id)
     source_id = _source_id(source_name)
     with get_db(site_id) as conn:
-        _upsert_source(conn, source_id, source_name)
+        _upsert_source(conn, source_id, source_name, source_type=source_type)
         rows = conn.execute(
             """
-            SELECT p.*, c.name AS category_name, c.slug AS category_slug
+            SELECT p.*, c.name AS category_name, c.slug AS category_slug,
+                   csp.raw_product AS source_raw_product
             FROM products p
             JOIN categories c ON p.category_id = c.id
+            LEFT JOIN catalog_source_products csp
+              ON csp.product_id = p.id
+             AND csp.source_name = %s
+             AND csp.is_active = 1
             ORDER BY p.id
-            """
+            """,
+            (source_name,),
         ).fetchall()
 
     changed = 0
     with get_db(site_id) as conn:
         for row in rows:
-            changed += _upsert_product_knowledge_item(conn, dict(row), source_id)
+            changed += _upsert_product_knowledge_item(conn, dict(row), source_id, entity_type=entity_type)
     return changed
 
 
@@ -95,7 +107,13 @@ def get_knowledge_items_by_ids(site_id: str, item_ids: list[str]) -> list[dict[s
     return [_decode_item(row) for row in rows]
 
 
-def _upsert_source(conn: psycopg.Connection, source_id: str, source_name: str) -> None:
+def _upsert_source(
+    conn: psycopg.Connection,
+    source_id: str,
+    source_name: str,
+    *,
+    source_type: str = DEFAULT_SOURCE_TYPE,
+) -> None:
     conn.execute(
         """
         INSERT INTO knowledge_sources
@@ -106,7 +124,7 @@ def _upsert_source(conn: psycopg.Connection, source_id: str, source_name: str) -
             status = EXCLUDED.status,
             updated_at = CURRENT_TIMESTAMP
         """,
-        (source_id, DEFAULT_SOURCE_TYPE, source_name),
+        (source_id, source_type, source_name),
     )
 
 
@@ -114,18 +132,21 @@ def _upsert_product_knowledge_item(
     conn: psycopg.Connection,
     product: dict[str, Any],
     source_id: str,
+    *,
+    entity_type: str = "product",
 ) -> int:
-    item = _product_to_knowledge_item(product, source_id)
+    item = _product_to_knowledge_item(product, source_id, entity_type=entity_type)
     row = conn.execute(
         """
         INSERT INTO knowledge_items
             (
                 id, external_id, entity_type, title, subtitle, summary, body,
                 url, image_url, source_id, attributes_json, pricing_json,
-                availability_json, is_active, last_seen_at, updated_at, embedding
+                availability_json, policy_json, risk_tags_json,
+                is_active, last_seen_at, updated_at, embedding
             )
         VALUES
-            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL)
+            (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL)
         ON CONFLICT (id) DO UPDATE SET
             external_id = EXCLUDED.external_id,
             entity_type = EXCLUDED.entity_type,
@@ -139,6 +160,8 @@ def _upsert_product_knowledge_item(
             attributes_json = EXCLUDED.attributes_json,
             pricing_json = EXCLUDED.pricing_json,
             availability_json = EXCLUDED.availability_json,
+            policy_json = EXCLUDED.policy_json,
+            risk_tags_json = EXCLUDED.risk_tags_json,
             is_active = EXCLUDED.is_active,
             last_seen_at = CURRENT_TIMESTAMP,
             updated_at = CURRENT_TIMESTAMP,
@@ -148,6 +171,8 @@ def _upsert_product_knowledge_item(
                   OR knowledge_items.body IS DISTINCT FROM EXCLUDED.body
                   OR knowledge_items.attributes_json IS DISTINCT FROM EXCLUDED.attributes_json
                   OR knowledge_items.pricing_json IS DISTINCT FROM EXCLUDED.pricing_json
+                  OR knowledge_items.policy_json IS DISTINCT FROM EXCLUDED.policy_json
+                  OR knowledge_items.risk_tags_json IS DISTINCT FROM EXCLUDED.risk_tags_json
                 THEN NULL
                 ELSE knowledge_items.embedding
             END
@@ -163,6 +188,8 @@ def _upsert_product_knowledge_item(
            OR knowledge_items.attributes_json IS DISTINCT FROM EXCLUDED.attributes_json
            OR knowledge_items.pricing_json IS DISTINCT FROM EXCLUDED.pricing_json
            OR knowledge_items.availability_json IS DISTINCT FROM EXCLUDED.availability_json
+           OR knowledge_items.policy_json IS DISTINCT FROM EXCLUDED.policy_json
+           OR knowledge_items.risk_tags_json IS DISTINCT FROM EXCLUDED.risk_tags_json
            OR knowledge_items.is_active IS DISTINCT FROM EXCLUDED.is_active
         RETURNING id
         """,
@@ -180,32 +207,42 @@ def _upsert_product_knowledge_item(
             item["attributes_json"],
             item["pricing_json"],
             item["availability_json"],
+            item["policy_json"],
+            item["risk_tags_json"],
             item["is_active"],
         ),
     ).fetchone()
     return 1 if row else 0
 
 
-def _product_to_knowledge_item(product: dict[str, Any], source_id: str) -> dict[str, Any]:
+def _product_to_knowledge_item(
+    product: dict[str, Any],
+    source_id: str,
+    *,
+    entity_type: str = "product",
+) -> dict[str, Any]:
     product_id = str(product.get("id") or "")
-    title = _text(product.get("name"), f"Product {product_id}")
-    category = _text(product.get("category_name"), product.get("category"), "Products")
+    title = _text(product.get("name"), f"Item {product_id}")
+    category = _text(product.get("category_name"), product.get("category"), "Knowledge")
     brand = _text(product.get("brand"))
-    summary = _product_summary(product, brand, category)
+    summary = _knowledge_summary(product, brand, category, entity_type)
+    source_payload = _source_product_payload(product)
     return {
         "id": f"product:{product_id}",
         "external_id": product_id,
-        "entity_type": "product",
+        "entity_type": _safe_entity_type(entity_type),
         "title": title,
         "subtitle": " | ".join(part for part in (brand, category) if part),
         "summary": summary,
-        "body": _product_body(product, summary),
+        "body": _knowledge_body(product, summary),
         "url": _text(product.get("url")),
         "image_url": _text(product.get("image_url")),
         "source_id": source_id,
         "attributes_json": _json_text(_product_attributes(product, category, brand)),
-        "pricing_json": _json_text(_product_pricing(product)),
+        "pricing_json": _json_text(_product_pricing(product, source_payload)),
         "availability_json": _json_text(_product_availability(product)),
+        "policy_json": _json_text(_product_policy(source_payload)),
+        "risk_tags_json": _json_text(_product_risk_tags(source_payload)),
         "is_active": int(product.get("is_active", 1) or 0),
     }
 
@@ -224,12 +261,18 @@ def _product_attributes(product: dict[str, Any], category: str, brand: str) -> d
     }
 
 
-def _product_pricing(product: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _product_pricing(product: dict[str, Any], source_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    pricing = {
         "price": float(product.get("price") or 0),
         "original_price": _optional_float(product.get("original_price")),
         "currency": "INR",
     }
+    source_pricing = source_payload.get("pricing_json") if isinstance(source_payload, dict) else None
+    if isinstance(source_pricing, dict):
+        for key in ("premium_monthly", "premium_annual", "currency"):
+            if source_pricing.get(key) not in (None, ""):
+                pricing[key] = source_pricing[key]
+    return pricing
 
 
 def _product_availability(product: dict[str, Any]) -> dict[str, Any]:
@@ -237,15 +280,51 @@ def _product_availability(product: dict[str, Any]) -> dict[str, Any]:
     return {"stock": stock, "in_stock": stock > 0, "is_active": bool(product.get("is_active", 1))}
 
 
-def _product_summary(product: dict[str, Any], brand: str, category: str) -> str:
+def _source_product_payload(product: dict[str, Any]) -> dict[str, Any]:
+    raw = product.get("source_raw_product")
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        value = json.loads(str(raw))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _product_policy(source_payload: dict[str, Any]) -> dict[str, Any]:
+    raw_policy = source_payload.get("policy_json") if isinstance(source_payload, dict) else None
+    if not isinstance(raw_policy, dict):
+        return {}
+    return {key: value for key, value in raw_policy.items() if value not in ("", None, [], {})}
+
+
+def _product_risk_tags(source_payload: dict[str, Any]) -> list[str]:
+    raw_tags = source_payload.get("risk_tags") if isinstance(source_payload, dict) else None
+    tags = raw_tags if isinstance(raw_tags, list) else []
+    return [str(tag).strip() for tag in tags if str(tag or "").strip()]
+
+
+def _knowledge_summary(product: dict[str, Any], brand: str, category: str, entity_type: str) -> str:
     price = float(product.get("price") or 0)
-    return f"{brand} {category} priced at INR {price:,.0f}.".strip()
+    type_label = _safe_entity_type(entity_type).replace("_", " ")
+    owner = f"{brand} " if brand else ""
+    if price > 0:
+        return f"{owner}{category} {type_label} priced at INR {price:,.0f}.".strip()
+    return f"{owner}{category} {type_label}.".strip()
 
 
-def _product_body(product: dict[str, Any], summary: str) -> str:
+def _knowledge_body(product: dict[str, Any], summary: str) -> str:
     description = _text(product.get("description"))
     parts = [summary, description]
     return " ".join(part for part in parts if part)
+
+
+def _safe_entity_type(value: str) -> str:
+    clean = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in str(value or "").strip().lower())
+    clean = "_".join(part for part in clean.split("_") if part)
+    return clean or "knowledge_item"
 
 
 def _decode_item(row: dict[str, Any]) -> dict[str, Any]:

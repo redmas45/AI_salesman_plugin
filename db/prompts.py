@@ -6,8 +6,8 @@ import json
 import uuid
 from typing import Any
 
-from agent.actions.registry import list_action_names
-from agent.verticals.registry import get_vertical
+from agent.actions.registry import is_supported_action
+from agent.verticals.registry import DEFAULT_VERTICAL_KEY, get_vertical
 from db.clients import _client_row, _safe_site_id
 from db.schema import _connect, init_admin_schema
 
@@ -15,6 +15,31 @@ PROMPT_STATUS_DRAFT = "draft"
 PROMPT_STATUS_PUBLISHED = "published"
 PROMPT_STATUS_ARCHIVED = "archived"
 DEFAULT_CREATED_BY = "crm"
+PROMPT_BASE_ACTIONS: frozenset[str] = frozenset({
+    "SHOW_ENTITIES",
+    "COMPARE_ENTITIES",
+    "FILTER_ENTITIES",
+    "OPEN_ENTITY_DETAIL",
+    "SORT_ENTITIES",
+    "NAVIGATE_TO",
+    "OPEN_CONTACT",
+    "OPEN_POLICY",
+    "CLEAR_HISTORY",
+    "UPDATE_PREFERENCES",
+})
+ECOMMERCE_PROMPT_ACTIONS: frozenset[str] = frozenset({
+    "SHOW_PRODUCTS",
+    "SHOW_COMPARISON",
+    "FILTER_PRODUCTS",
+    "SORT_PRODUCTS",
+    "SHOW_PRODUCT_DETAIL",
+    "CLEAR_FILTERS",
+    "ADD_TO_CART",
+    "REMOVE_FROM_CART",
+    "UPDATE_CART_QUANTITY",
+    "CLEAR_CART",
+    "CHECKOUT",
+})
 
 
 def get_client_prompt_profile(site_id: str) -> dict[str, Any]:
@@ -44,7 +69,7 @@ def ensure_client_prompt_profile(site_id: str) -> dict[str, Any]:
     if profile:
         return profile
 
-    vertical_key = str(client.get("vertical_key") or "ecommerce")
+    vertical_key = str(client.get("vertical_key") or DEFAULT_VERTICAL_KEY)
     profile = _create_prompt_profile(
         site_id=site_id,
         name=f"{client.get('name') or site_id} prompt",
@@ -56,6 +81,7 @@ def ensure_client_prompt_profile(site_id: str) -> dict[str, Any]:
         status=PROMPT_STATUS_DRAFT,
         system_prompt=_default_system_prompt(client, vertical_key),
         developer_rules=_default_developer_rules(vertical_key),
+        allowed_actions=_allowed_prompt_actions(vertical_key),
     )
     _link_profile_to_client(site_id, profile["id"])
     return profile
@@ -73,6 +99,7 @@ def save_client_prompt_profile(
     """Create a new prompt version as draft or published."""
     clean_site_id = _safe_site_id(site_id)
     profile = ensure_client_prompt_profile(clean_site_id)
+    vertical_key = str(profile.get("vertical_key") or _client_vertical_key(clean_site_id))
     clean_name = _required_text(name, "Prompt profile name is required.")
     clean_prompt = _required_text(system_prompt, "System prompt is required.")
     status = PROMPT_STATUS_PUBLISHED if publish else PROMPT_STATUS_DRAFT
@@ -108,7 +135,7 @@ def save_client_prompt_profile(
                 status,
                 clean_prompt,
                 str(developer_rules or ""),
-                _json_text(sorted(list_action_names())),
+                _json_text(_allowed_prompt_actions(vertical_key)),
                 str(changelog or ""),
                 DEFAULT_CREATED_BY,
                 publish,
@@ -210,6 +237,7 @@ def _create_prompt_version(
     status: str,
     system_prompt: str,
     developer_rules: str,
+    allowed_actions: list[str],
 ) -> None:
     with _connect() as conn:
         conn.execute(
@@ -228,11 +256,24 @@ def _create_prompt_version(
                 status,
                 system_prompt,
                 developer_rules,
-                _json_text(sorted(list_action_names())),
+                _json_text(allowed_actions),
                 DEFAULT_CREATED_BY,
             ),
         )
         conn.commit()
+
+
+def _allowed_prompt_actions(vertical_key: str) -> list[str]:
+    vertical = get_vertical(vertical_key)
+    allowed = set(vertical.action_types) | set(PROMPT_BASE_ACTIONS)
+    if vertical.key == "ecommerce":
+        allowed |= set(ECOMMERCE_PROMPT_ACTIONS)
+    return sorted(action for action in allowed if is_supported_action(action))
+
+
+def _client_vertical_key(site_id: str) -> str:
+    client = _client_row(site_id)
+    return str((client or {}).get("vertical_key") or DEFAULT_VERTICAL_KEY)
 
 
 def _profile_by_id(profile_id: str) -> dict[str, Any] | None:
@@ -313,17 +354,28 @@ def _archive_published_versions(conn, profile_id: str) -> None:
 def _default_system_prompt(client: dict[str, Any], vertical_key: str) -> str:
     vertical = get_vertical(vertical_key)
     return (
-        f"You are the AI assistant for {client.get('name') or client.get('site_id')}. "
-        f"The client vertical is {vertical.label}. Answer from retrieved source data only, "
-        "keep responses concise, and trigger human handoff for regulated or uncertain decisions."
+        f"You are Maya, the expert AI sales and support associate for {client.get('name') or client.get('site_id')}. "
+        f"You must strictly use a warm, empathetic, and professional female persona. Introduce yourself briefly as Maya when appropriate. "
+        f"Do NOT use generic AI disclaimers (e.g., 'As an AI...', 'I am an AI...'). Speak naturally like a top-tier human consultant. "
+        f"The client vertical is {vertical.label}. Your sole source of truth is the website's retrieved context for "
+        f"{vertical.entity_label_plural}, pages, policies, forms, and live browser data. "
+        "CRITICAL GUARDRAILS:\n"
+        "1. Never invent, guess, or estimate prices, premiums, inventory, eligibility, dates, or legal/medical/financial outcomes.\n"
+        "2. If information is missing from the context, honestly state that you don't have that specific data and offer the next best website action (like contacting support or checking a related category).\n"
+        "3. Keep responses extremely concise and conversational. Do not output massive walls of text.\n"
+        "4. Guide the user fluidly through the website by triggering supported UI actions (comparing, sorting, adding to cart, opening details) rather than just describing how to do it."
     )
 
 
 def _default_developer_rules(vertical_key: str) -> str:
     vertical = get_vertical(vertical_key)
     if vertical.risk_level == "high":
-        return "High-risk vertical: do not make regulated decisions, diagnoses, legal conclusions, approval promises, or financial suitability recommendations."
-    return "Do not invent unavailable data, prices, stock, terms, or policy details."
+        return (
+            "High-risk vertical: do not make regulated decisions, diagnoses, legal conclusions, approval promises, "
+            "claim guarantees, underwriting decisions, or financial suitability recommendations. Use source-backed "
+            "explanations and website-supported handoff/action flows only. NEVER hallucinate terms."
+        )
+    return "Do not invent unavailable data, prices, stock, dates, terms, policy details, or completion states. Be concise and human-like."
 
 
 def _required_text(value: str, message: str) -> str:

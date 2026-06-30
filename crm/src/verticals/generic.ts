@@ -20,4 +20,5 @@ export const genericVertical: CrmVerticalDefinition = {
   ],
   entityTypes: ['knowledge_item', 'service', 'article', 'faq', 'policy_page', 'contact'],
   readinessChecks: ['knowledge', 'sources', 'contact', 'policies', 'lead_capture'],
+  actionTypes: ['SHOW_ENTITIES', 'SORT_ENTITIES', 'NAVIGATE_TO', 'CAPTURE_LEAD', 'HANDOFF_TO_HUMAN'],
 };

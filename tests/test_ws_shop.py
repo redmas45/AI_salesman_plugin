@@ -33,6 +33,8 @@ def test_ws_text_turn_streams_pipeline_events(monkeypatch):
     def fake_run_stream(**kwargs):
         assert kwargs["site_id"] == "site_1"
         assert kwargs["text_input"] == "hello"
+        assert kwargs["page_context"]["path"] == "/quote"
+        assert kwargs["page_context"]["forms"][0]["fields"][0]["name"] == "Phone"
         yield {"event": "transcript", "data": {"transcript": "hello"}}
         yield {"event": "actions", "data": {"ui_actions": []}}
         yield {
@@ -45,7 +47,23 @@ def test_ws_text_turn_streams_pipeline_events(monkeypatch):
     client = TestClient(app)
     with client.websocket_connect("/v1/ws/shop?site_id=site_1") as ws:
         assert ws.receive_json()["type"] == "ready"
-        ws.send_json({"type": "config", "history": []})
+        ws.send_json({
+            "type": "config",
+            "history": [],
+            "page_context": {
+                "path": "/quote",
+                "controls": {
+                    "forms": [
+                        {
+                            "selector": "form.quote",
+                            "fields": [
+                                {"selector": "input.phone", "name": "Phone", "type": "tel", "value": "secret"}
+                            ],
+                        }
+                    ]
+                },
+            },
+        })
         assert ws.receive_json()["type"] == "configured"
 
         ws.send_json({"type": "text", "text": "hello"})

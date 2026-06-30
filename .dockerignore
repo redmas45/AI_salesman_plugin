@@ -13,6 +13,11 @@ __pycache__
 logs
 tmp
 .local
+scripts
+tests
+*.md
+aihub.md
+rules.md
 deploy/certs
 plugin/node_modules
 crm/node_modules

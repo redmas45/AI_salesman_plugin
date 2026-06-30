@@ -68,7 +68,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
 
-        if path == "/crm" or path.startswith("/crm/"):
+        if path == "/crm" or path.startswith("/crm/") or path == "/client-panel" or path.startswith("/client-panel/"):
             response.headers.setdefault("X-Frame-Options", "DENY")
             response.headers.setdefault(
                 "Content-Security-Policy",

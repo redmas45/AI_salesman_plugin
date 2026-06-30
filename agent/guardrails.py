@@ -6,6 +6,7 @@ Output guardrails: Applied to LLM response before returning to client.
 """
 
 import logging
+import json
 import re
 from typing import Any
 
@@ -18,9 +19,11 @@ from api.models import (
     ACTION_FILTER_PRODUCTS,
     ACTION_NAVIGATE_TO,
     ACTION_REMOVE_FROM_CART,
+    ACTION_RUN_DOM_SEQUENCE,
     ACTION_SHOW_COMPARISON,
     ACTION_SHOW_PRODUCT_DETAIL,
     ACTION_SHOW_PRODUCTS,
+    ACTION_SORT_ENTITIES,
     ACTION_SORT_PRODUCTS,
     ACTION_UPDATE_CART_QUANTITY,
     PAGE_PARAM,
@@ -55,6 +58,39 @@ _VALID_FILTER_KEYS = {
     "min_rating",
     "brand",
     "tags",
+}
+_MAX_ACTION_PARAM_KEYS = 20
+_MAX_ACTION_PARAM_VALUE_LENGTH = 500
+_SAFE_ACTION_PARAM_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,79}$")
+_BLOCKED_ACTION_PARAM_KEYS = frozenset({"__proto__", "constructor", "prototype"})
+
+_DOM_SEQUENCE_STEPS_PARAM = "steps"
+_DOM_SEQUENCE_MAX_STEPS = 30
+_DOM_SEQUENCE_MAX_STRING_LENGTH = 500
+_DOM_SEQUENCE_MAX_WAIT_MS = 5000
+_DOM_SEQUENCE_ALLOWED_OPERATIONS = {
+    "check",
+    "click",
+    "fill",
+    "focus",
+    "navigate",
+    "scroll",
+    "select",
+    "set_value",
+    "submit",
+    "uncheck",
+    "wait",
+    "wait_for",
+}
+_DOM_SEQUENCE_SELECTOR_OPERATIONS = {
+    "check",
+    "fill",
+    "focus",
+    "select",
+    "set_value",
+    "submit",
+    "uncheck",
+    "wait_for",
 }
 
 
@@ -225,6 +261,7 @@ def validate_output(
         )
         actions = actions[: config.MAX_UI_ACTIONS]
 
+    adapter_contract = _adapter_contract(site_id)
     validated_actions = []
     for action in actions:
         if not isinstance(action, dict):
@@ -270,12 +307,17 @@ def validate_output(
                 continue
 
         if action_type == ACTION_NAVIGATE_TO:
-            params = _validate_navigation_params(params)
+            params = _validate_navigation_params(params, adapter_contract.get("routes", {}))
             if params is None:
                 continue
 
-        if action_type == ACTION_SORT_PRODUCTS:
+        if action_type in (ACTION_SORT_PRODUCTS, ACTION_SORT_ENTITIES):
             params = _validate_sort_params(params)
+            if params is None:
+                continue
+
+        if action_type == ACTION_RUN_DOM_SEQUENCE:
+            params = _validate_dom_sequence_params(params)
             if params is None:
                 continue
 
@@ -284,6 +326,14 @@ def validate_output(
 
         if action_type == ACTION_CLEAR_CART:
             params = {}
+
+        if action_type in adapter_contract.get("actions", {}):
+            params = _validate_adapter_action_params(
+                params,
+                adapter_contract["actions"][action_type],
+            )
+            if params is None:
+                continue
 
         validated_actions.append({"action": action_type, "params": params})
 
@@ -379,13 +429,38 @@ def _validate_filter_params(params: dict) -> dict:
     return params
 
 
-def _validate_navigation_params(params: dict) -> dict | None:
+def _validate_navigation_params(params: dict, adapter_routes: dict[str, str] | None = None) -> dict | None:
     """Validate navigation targets for the frontend router."""
     page = str(params.get("page", "")).strip().lower().strip("/")
     if page in _VALID_NAV_PAGES or page.startswith("category/"):
         return {"page": page}
+    route_target = _adapter_route_target(page, adapter_routes or {})
+    if route_target:
+        return {"page": route_target}
     logger.warning("Guardrail | Invalid navigation page: %r - skipping.", page)
     return None
+
+
+def _adapter_route_target(page: str, adapter_routes: dict[str, str]) -> str:
+    if not page:
+        return ""
+    normalized_page = page.strip("/")
+    for key, path in adapter_routes.items():
+        route_key = str(key or "").strip().lower().strip("/")
+        route_path = _clean_same_origin_path(path)
+        if normalized_page == route_key and route_path:
+            return route_key
+        if route_path and normalized_page == route_path.strip("/"):
+            return route_path.strip("/")
+    return ""
+
+
+def _clean_same_origin_path(value: Any) -> str:
+    path = str(value or "").strip()
+    lowered = path.lower()
+    if not path or lowered.startswith(("http://", "https://", "javascript:", "data:")):
+        return ""
+    return path if path.startswith("/") else f"/{path}"
 
 
 def _validate_sort_params(params: dict) -> dict | None:
@@ -395,6 +470,242 @@ def _validate_sort_params(params: dict) -> dict | None:
         logger.warning("Guardrail | Invalid sort option: %r - skipping.", sort_by)
         return None
     return {"sort_by": sort_by}
+
+
+def _validate_dom_sequence_params(params: dict) -> dict | None:
+    """Validate a generated same-origin DOM operation sequence."""
+    raw_steps = params.get(_DOM_SEQUENCE_STEPS_PARAM)
+    if not isinstance(raw_steps, list):
+        logger.warning("Guardrail | RUN_DOM_SEQUENCE steps must be a list.")
+        return None
+
+    steps = []
+    for raw_step in raw_steps[:_DOM_SEQUENCE_MAX_STEPS]:
+        step = _validate_dom_sequence_step(raw_step)
+        if step is not None:
+            steps.append(step)
+
+    if not steps:
+        logger.warning("Guardrail | RUN_DOM_SEQUENCE had no valid steps.")
+        return None
+    return {_DOM_SEQUENCE_STEPS_PARAM: steps}
+
+
+def _validate_adapter_action_params(params: dict, action_config: dict[str, Any]) -> dict | None:
+    """Keep privacy/safety-safe params needed by generated adapter actions."""
+    action_type = str(action_config.get("type") or "").lower()
+    if action_type in {"click", "navigate"}:
+        return _safe_action_params(params, allowed_keys=_adapter_param_keys(action_config), allow_open=False)
+    if action_type in {"form", "sequence"}:
+        allowed_keys = _adapter_param_keys(action_config)
+        return _safe_action_params(params, allowed_keys=allowed_keys, allow_open=not allowed_keys)
+    return _safe_action_params(params, allowed_keys=set(), allow_open=True)
+
+
+def _safe_action_params(params: dict, *, allowed_keys: set[str], allow_open: bool) -> dict | None:
+    clean_params: dict[str, Any] = {}
+    for raw_key, raw_value in list(params.items())[:_MAX_ACTION_PARAM_KEYS]:
+        key = _clean_action_param_key(raw_key)
+        if not key:
+            continue
+        if allowed_keys and _normalize_action_param_key(key) not in allowed_keys:
+            continue
+        if not allowed_keys and not allow_open:
+            continue
+        value = _clean_action_param_value(raw_value)
+        if value is None:
+            continue
+        clean_params[key] = value
+    return clean_params
+
+
+def _adapter_param_keys(action_config: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    for raw_key in action_config.get("fields") or []:
+        key = _normalize_action_param_key(raw_key)
+        if key:
+            keys.add(key)
+    for raw_step in action_config.get("steps") or []:
+        if not isinstance(raw_step, dict):
+            continue
+        for field in ("param", "parameter", "name"):
+            key = _normalize_action_param_key(raw_step.get(field))
+            if key:
+                keys.add(key)
+    return keys
+
+
+def _clean_action_param_key(value: Any) -> str:
+    key = str(value or "").strip()
+    if key in _BLOCKED_ACTION_PARAM_KEYS or not _SAFE_ACTION_PARAM_KEY.match(key):
+        return ""
+    return key
+
+
+def _normalize_action_param_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+
+
+def _clean_action_param_value(value: Any) -> str | int | float | bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    if not isinstance(value, str):
+        return None
+    text = value.replace("\x00", "").strip()[:_MAX_ACTION_PARAM_VALUE_LENGTH]
+    if text.lower().startswith(("javascript:", "data:")):
+        return None
+    return text
+
+
+def _adapter_contract(site_id: str) -> dict[str, Any]:
+    vertical_config = _client_vertical_config(site_id)
+    actions = vertical_config.get("actions")
+    routes = vertical_config.get("routes")
+    return {
+        "actions": {
+            str(name or "").strip().upper(): config
+            for name, config in (actions or {}).items()
+            if isinstance(config, dict)
+        } if isinstance(actions, dict) else {},
+        "routes": {
+            str(name or "").strip().lower(): str(path or "").strip()
+            for name, path in (routes or {}).items()
+            if str(name or "").strip() and _clean_same_origin_path(path)
+        } if isinstance(routes, dict) else {},
+    }
+
+
+def _client_vertical_config(site_id: str) -> dict[str, Any]:
+    try:
+        from db import admin as admin_db
+
+        client = admin_db._client_row(site_id)
+    except Exception as exc:
+        logger.debug("Guardrail | adapter contract lookup failed for %s: %s", site_id, exc)
+        return {}
+    raw_config = (client or {}).get("vertical_config_json")
+    if isinstance(raw_config, dict):
+        return raw_config
+    try:
+        parsed = json.loads(str(raw_config or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _validate_dom_sequence_step(raw_step: Any) -> dict | None:
+    if not isinstance(raw_step, dict):
+        return None
+
+    operation = _clean_dom_sequence_text(
+        raw_step.get("op") or raw_step.get("type") or raw_step.get("action"),
+        limit=40,
+    ).lower()
+    if operation not in _DOM_SEQUENCE_ALLOWED_OPERATIONS:
+        return None
+
+    step = {"op": operation}
+    _copy_dom_sequence_common_fields(raw_step, step)
+    if not _copy_dom_sequence_operation_fields(raw_step, step):
+        return None
+    return step
+
+
+def _copy_dom_sequence_common_fields(raw_step: dict, step: dict) -> None:
+    if raw_step.get("optional") is True:
+        step["optional"] = True
+    for key in ("label", "text", "name", "param", "parameter"):
+        value = _clean_dom_sequence_text(raw_step.get(key))
+        if value:
+            step[key] = value
+
+
+def _copy_dom_sequence_operation_fields(raw_step: dict, step: dict) -> bool:
+    operation = step["op"]
+    if operation == "navigate":
+        return _copy_dom_sequence_path(raw_step, step)
+    if operation == "wait":
+        step["ms"] = _clean_dom_sequence_wait(raw_step.get("ms") or raw_step.get("timeout_ms"))
+        return True
+    if operation in {"click", "scroll"}:
+        return _copy_dom_sequence_target(raw_step, step, require_selector=False)
+
+    return _copy_dom_sequence_target(raw_step, step, require_selector=operation in _DOM_SEQUENCE_SELECTOR_OPERATIONS)
+
+
+def _copy_dom_sequence_target(raw_step: dict, step: dict, require_selector: bool) -> bool:
+    selector = _clean_dom_sequence_selector(raw_step.get("selector"))
+    if selector:
+        step["selector"] = selector
+    if require_selector and not selector:
+        return False
+
+    value = _clean_dom_sequence_text(raw_step.get("value"))
+    if value:
+        step["value"] = value
+    if step["op"] == "wait_for" and selector:
+        step["ms"] = _clean_dom_sequence_wait(raw_step.get("ms") or raw_step.get("timeout_ms"))
+    if step["op"] == "scroll":
+        _copy_dom_sequence_scroll_fields(raw_step, step)
+    return bool(selector or step.get("label") or step.get("text") or step["op"] == "scroll")
+
+
+def _copy_dom_sequence_scroll_fields(raw_step: dict, step: dict) -> None:
+    target = _clean_dom_sequence_text(raw_step.get("to"), limit=20).lower()
+    if target in {"top", "bottom"}:
+        step["to"] = target
+    for key in ("x", "y"):
+        if raw_step.get(key) is not None:
+            step[key] = _clean_dom_sequence_number(raw_step.get(key))
+
+
+def _copy_dom_sequence_path(raw_step: dict, step: dict) -> bool:
+    path = _clean_dom_sequence_path(raw_step.get("path") or raw_step.get("url") or raw_step.get("href"))
+    if not path:
+        return False
+    step["path"] = path
+    return True
+
+
+def _clean_dom_sequence_path(value: Any) -> str:
+    path = _clean_dom_sequence_text(value)
+    lowered = path.lower()
+    if not path or lowered.startswith(("http://", "https://", "javascript:", "data:")):
+        return ""
+    return path
+
+
+def _clean_dom_sequence_selector(value: Any) -> str:
+    selector = _clean_dom_sequence_text(value)
+    if not selector or _has_control_characters(selector):
+        return ""
+    return selector
+
+
+def _clean_dom_sequence_text(value: Any, limit: int = _DOM_SEQUENCE_MAX_STRING_LENGTH) -> str:
+    text = str(value or "").strip()
+    return text[:limit]
+
+
+def _clean_dom_sequence_wait(value: Any) -> int:
+    try:
+        wait_ms = int(value)
+    except (TypeError, ValueError):
+        return 100
+    return max(0, min(wait_ms, _DOM_SEQUENCE_MAX_WAIT_MS))
+
+
+def _clean_dom_sequence_number(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _has_control_characters(value: str) -> bool:
+    return any(ord(char) < 32 for char in value)
 
 
 def _coerce_product_id(value: Any) -> int | None:

@@ -19,4 +19,5 @@ export const ecommerceVertical: CrmVerticalDefinition = {
   ],
   entityTypes: ['product', 'category', 'brand', 'variant', 'offer', 'policy_page'],
   readinessChecks: ['catalog', 'variants', 'cart', 'checkout'],
+  actionTypes: ['SHOW_PRODUCTS', 'SHOW_COMPARISON', 'FILTER_PRODUCTS', 'SORT_PRODUCTS', 'ADD_TO_CART', 'CHECKOUT'],
 };

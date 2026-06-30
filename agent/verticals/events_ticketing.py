@@ -21,5 +21,5 @@ VERTICAL = VerticalDefinition(
     ),
     entity_types=("event", "venue", "performer", "ticket_type", "showtime", "organizer"),
     readiness_checks=("events", "date_location", "ticket_handoff", "venue_maps", "policies", "organizer_contact"),
-    action_types=("SHOW_ENTITIES", "CHECK_AVAILABILITY", "START_TICKET_PURCHASE", "JOIN_WAITLIST", "CAPTURE_LEAD"),
+    action_types=("SHOW_ENTITIES", "SORT_ENTITIES", "CHECK_AVAILABILITY", "START_TICKET_PURCHASE", "JOIN_WAITLIST", "CAPTURE_LEAD"),
 )

@@ -21,5 +21,13 @@ VERTICAL = VerticalDefinition(
     ),
     entity_types=("restaurant", "menu_item", "grocery_item", "cuisine", "offer", "delivery_zone"),
     readiness_checks=("menu", "location", "delivery_zone", "cart", "checkout", "dietary_data"),
-    action_types=("SHOW_ENTITIES", "SET_LOCATION", "ADD_TO_CART", "CHECKOUT_HANDOFF", "CAPTURE_LEAD"),
+    action_types=(
+        "SHOW_ENTITIES",
+        "SORT_ENTITIES",
+        "SET_LOCATION",
+        "ADD_TO_CART",
+        "SCHEDULE_ORDER",
+        "CHECKOUT_HANDOFF",
+        "CAPTURE_LEAD",
+    ),
 )

@@ -18,6 +18,27 @@ window.__shopbot_identifier = "voice-orb";
 let activeRecorder = null;
 let statusPollTimer = null;
 let pendingSpeechText = "";
+let selectedSpeechVoiceName = "";
+const SPEECH_RATE = 1;
+const SPEECH_PITCH = 1.08;
+const VOICE_FALLBACK_DELAY_MS = 300;
+const FEMALE_VOICE_HINTS = Object.freeze([
+  "hannah",
+  "zira",
+  "aria",
+  "jenny",
+  "samantha",
+  "victoria",
+  "tessa",
+  "moira",
+  "karen",
+  "female",
+  "woman",
+  "nova",
+  "shimmer",
+  "google us english",
+  "microsoft aria",
+]);
 
 function boot() {
   if (window.__shopbotBooted || document.getElementById("shopbot-widget")) {
@@ -155,8 +176,10 @@ function speakText(text) {
   const speak = () => {
     try {
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1;
-      utterance.pitch = 1;
+      const voice = preferredSpeechVoice(window.speechSynthesis.getVoices());
+      if (voice) utterance.voice = voice;
+      utterance.rate = SPEECH_RATE;
+      utterance.pitch = SPEECH_PITCH;
       utterance.onstart = () => {
         pendingSpeechText = "";
       };
@@ -177,7 +200,35 @@ function speakText(text) {
   }
 
   window.speechSynthesis.onvoiceschanged = speak;
-  window.setTimeout(speak, 300);
+  window.setTimeout(speak, VOICE_FALLBACK_DELAY_MS);
+}
+
+function preferredSpeechVoice(voices) {
+  if (!Array.isArray(voices) || voices.length === 0) return null;
+  if (selectedSpeechVoiceName) {
+    const selectedVoice = voices.find((voice) => voice.name === selectedSpeechVoiceName);
+    if (selectedVoice) return selectedVoice;
+  }
+  const requestedName = config.speechVoiceName.toLowerCase();
+  if (requestedName) {
+    const exactVoice = voices.find((voice) => voice.name.toLowerCase() === requestedName);
+    if (exactVoice) {
+      selectedSpeechVoiceName = exactVoice.name;
+      return exactVoice;
+    }
+  }
+  let selectedVoice = null;
+  if (config.speechVoicePreference.toLowerCase() !== "female") {
+    selectedVoice = voices.find((voice) => voice.default) || voices[0];
+  } else {
+    selectedVoice = (
+      voices.find((voice) => FEMALE_VOICE_HINTS.some((hint) => voice.name.toLowerCase().includes(hint))) ||
+      voices.find((voice) => voice.default) ||
+      voices[0]
+    );
+  }
+  if (selectedVoice) selectedSpeechVoiceName = selectedVoice.name;
+  return selectedVoice;
 }
 
 function replayPendingSpeech() {
@@ -188,6 +239,7 @@ function replayPendingSpeech() {
 function shutdownWidget() {
   activeRecorder?.cancel();
   activeRecorder = null;
+  selectedSpeechVoiceName = "";
   window.__shopbotBooted = false;
   document.getElementById("shopbot-widget")?.remove();
   document.getElementById("shopbot-product-panel")?.remove();

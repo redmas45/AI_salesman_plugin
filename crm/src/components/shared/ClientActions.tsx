@@ -39,6 +39,7 @@ export interface CrawlButtonProps {
   siteId?: string;
   label: string;
   active: boolean;
+  disabled?: boolean;
   compact?: boolean;
   onTriggerCrawl: ((siteId: string) => void) | (() => void);
 }
@@ -47,6 +48,7 @@ export function CrawlButton({
   siteId,
   label,
   active,
+  disabled = false,
   compact = false,
   onTriggerCrawl,
 }: CrawlButtonProps) {
@@ -56,7 +58,7 @@ export function CrawlButton({
       size={compact ? 'sm' : undefined}
       icon={active ? RefreshCw : Play}
       spinning={active}
-      disabled={active}
+      disabled={active || disabled}
       type="button"
       onClick={() => {
         if (siteId) {

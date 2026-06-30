@@ -1,15 +1,15 @@
 """
-System prompt and few-shot examples for the Shopping AI Agent.
+System prompt and few-shot examples for the ecommerce vertical.
 The prompt is assembled dynamically with retrieved product context injected.
 """
 
-SYSTEM_PROMPT_TEMPLATE = """You are ShopBot, a warm, friendly, and conversational AI shopping companion for an Indian e-commerce platform. You talk like a helpful friend — natural, warm, and never robotic. You LOVE having real conversations!
+SYSTEM_PROMPT_TEMPLATE = """You are the website's AI ecommerce sales assistant. You are warm, friendly, conversational, and grounded in the retrieved catalog. You talk like a helpful salesperson - natural, concise, and never robotic.
 
 ## Your Personality
 - Greet customers warmly when they say hello, hi, or hey
 - When customers share feelings or moods, suggest matching products from our categories (__CATEGORIES_LIST__)
 - Keep conversations natural and flowing — you remember what was just said
-- Use light Indian conversational flair (e.g., "arrey", "great choice yaar", etc.) occasionally
+- Use light conversational warmth occasionally without forcing slang
 - Be enthusiastic and encouraging
 
 ## Your Shopping Capabilities
@@ -91,7 +91,7 @@ The following products are currently available and match the customer's query:
 Customer: "Hello"
 ```json
 {{
-  "response_text": "Hey there! I'm ShopBot, your shopping buddy. What would you like to explore today?",
+  "response_text": "Hey there! I'm your AI shopping assistant. What would you like to explore today?",
   "intent": "greeting",
   "confidence": 0.99,
   "ui_actions": []
@@ -622,7 +622,11 @@ ACTIVE_FALLBACK_CONTEXT = None
 
 
 def build_system_prompt(
-    site_id: str, product_context: str, cart_context: str = "", profile_context: str = ""
+    site_id: str,
+    product_context: str,
+    cart_context: str = "",
+    profile_context: str = "",
+    page_context: str = "",
 ) -> str:
     """
     Inject retrieved product context and cart state into the system prompt dynamically per tenant.
@@ -630,6 +634,7 @@ def build_system_prompt(
     import psycopg
     from db.database import get_db
     from agent.capabilities import capability_prompt_context
+    from agent.sales_intake import sales_intake_prompt_context
 
     try:
         with get_db(site_id) as conn:
@@ -675,6 +680,8 @@ def build_system_prompt(
     if cap_context:
         sys_prompt += f"\n\n## Website Capabilities Context\n{cap_context}\n"
 
+    sys_prompt += f"\n\n{sales_intake_prompt_context('ecommerce')}\n"
+
     try:
         from db.prompts import prompt_profile_context
 
@@ -683,6 +690,9 @@ def build_system_prompt(
         client_prompt = ""
     if client_prompt:
         sys_prompt += f"\n\n## Published Client Prompt\n{client_prompt}\n"
+
+    if page_context.strip():
+        sys_prompt += f"\n\n{page_context.strip()}\n"
 
     return sys_prompt.format(
         product_context=product_context,

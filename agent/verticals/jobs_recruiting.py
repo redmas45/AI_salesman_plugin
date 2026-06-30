@@ -21,5 +21,5 @@ VERTICAL = VerticalDefinition(
     ),
     entity_types=("job_posting", "company", "role_family", "skill", "application_flow", "recruiter"),
     readiness_checks=("jobs", "application_flow", "resume_upload", "company_pages", "privacy", "decisioning_guard"),
-    action_types=("SHOW_ENTITIES", "MATCH_JOBS", "START_APPLICATION", "CAPTURE_LEAD", "HANDOFF_TO_RECRUITER"),
+    action_types=("SHOW_ENTITIES", "SORT_ENTITIES", "MATCH_JOBS", "START_APPLICATION", "CAPTURE_LEAD", "HANDOFF_TO_RECRUITER"),
 )

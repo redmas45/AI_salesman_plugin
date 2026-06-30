@@ -1,4 +1,5 @@
 import { fetchHubProductsByIds, resolveProductDetailUrl } from "./productResolver";
+import { executeWithAIHubAdapter, hasAIHubAdapter } from "./adapterBridge";
 import {
   ACTION_PARAMS,
   ACTIONS,
@@ -8,7 +9,16 @@ import {
   OVERLAY_COLLAPSE_DELAY_MS,
 } from "./constants";
 
-const PLACEHOLDER_IMAGE = "https://demo.vercel.store/placeholder.png";
+const PLACEHOLDER_IMAGE = [
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='240' viewBox='0 0 320 240'%3E",
+  "%3Crect width='320' height='240' fill='%23f1f2ee'/%3E",
+  "%3Cpath d='M98 156h124l-31-40-25 30-17-22-51 32Z' fill='%23c8c3ba'/%3E",
+  "%3Ccircle cx='117' cy='95' r='17' fill='%23d8d3ca'/%3E",
+  "%3Ctext x='160' y='198' text-anchor='middle' fill='%23686660' font-family='Arial,sans-serif' font-size='16'%3EImage pending%3C/text%3E",
+  "%3C/svg%3E",
+].join("");
+let currentProducts = [];
+let currentTitle = DEFAULT_RECOMMENDATION_TITLE;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -219,13 +229,6 @@ async function fetchProductsByIds(productIds) {
 }
 
 async function requestAddToCart(productId) {
-  const cart = window.ShopCart;
-  if (cart && typeof cart.addItem === "function") {
-    await cart.addItem(productId, DEFAULT_CART_QUANTITY);
-    if (typeof cart.open === "function") cart.open();
-    return;
-  }
-
   const detail = {
     action: ACTIONS.ADD_TO_CART,
     params: {
@@ -237,6 +240,11 @@ async function requestAddToCart(productId) {
       [ACTION_PARAMS.QUANTITY]: DEFAULT_CART_QUANTITY,
     },
   };
+
+  if (hasAIHubAdapter() && (await executeWithAIHubAdapter(detail))) {
+    return;
+  }
+
   window.dispatchEvent(new CustomEvent(EVENTS.SHOPBOT_ACTION, { detail }));
 }
 
@@ -248,13 +256,7 @@ async function requestProductDetail(productId) {
       return;
     }
   } catch (error) {
-    console.warn("[ShopBot] Product detail URL lookup failed:", error);
-  }
-
-  const cart = window.ShopCart;
-  if (cart && typeof cart.showProductDetail === "function") {
-    await cart.showProductDetail(productId);
-    return;
+    console.warn("[AI Hub Widget] Product detail URL lookup failed:", error);
   }
 
   const detail = {
@@ -262,6 +264,10 @@ async function requestProductDetail(productId) {
     params: { [ACTION_PARAMS.PRODUCT_ID]: productId },
     parameters: { [ACTION_PARAMS.PRODUCT_ID]: productId },
   };
+  if (hasAIHubAdapter() && (await executeWithAIHubAdapter(detail))) {
+    return;
+  }
+
   window.dispatchEvent(new CustomEvent(EVENTS.SHOPBOT_ACTION, { detail }));
 }
 
@@ -283,11 +289,13 @@ function renderProducts(products, title) {
   const grid = panel.querySelector(".shopbot-product-grid");
   const heading = panel.querySelector(".shopbot-product-title");
   const count = products.length;
+  currentProducts = Array.isArray(products) ? [...products] : [];
+  currentTitle = title || DEFAULT_RECOMMENDATION_TITLE;
 
   panel.classList.remove("count-1", "count-2", "count-3", "count-many");
   panel.classList.add(countClass(count));
   panel.style.setProperty("--shopbot-card-count", String(cardCount(count)));
-  heading.textContent = title || DEFAULT_RECOMMENDATION_TITLE;
+  heading.textContent = currentTitle;
 
   if (!count) {
     grid.innerHTML = `<p class="shopbot-product-empty">No matching products are currently available.</p>`;
@@ -343,8 +351,54 @@ export async function showProductOverlay(productIds, title = DEFAULT_RECOMMENDAT
     renderProducts(products, title);
     return true;
   } catch (err) {
-    console.warn("[ShopBot] Product overlay failed:", err);
+    console.warn("[AI Hub Widget] Product overlay failed:", err);
     renderProducts([], title);
     return true;
   }
+}
+
+export function sortProductOverlay(params = {}) {
+  if (!currentProducts.length) return false;
+
+  const sortBy = String(params.sort_by || params.sortBy || "price_asc").trim().toLowerCase();
+  const sorted = [...currentProducts].sort((left, right) => compareProducts(left, right, sortBy));
+  renderProducts(sorted, sortedTitle(currentTitle, sortBy));
+  return true;
+}
+
+function compareProducts(left, right, sortBy) {
+  if (sortBy === "price_desc") {
+    return numericValue(right.price, Number.NEGATIVE_INFINITY) - numericValue(left.price, Number.NEGATIVE_INFINITY);
+  }
+  if (sortBy === "rating") {
+    return numericValue(right.rating || right.review_rating, Number.NEGATIVE_INFINITY) - numericValue(left.rating || left.review_rating, Number.NEGATIVE_INFINITY);
+  }
+  if (sortBy === "newest") {
+    return productTime(right) - productTime(left);
+  }
+  return numericValue(left.price, Number.POSITIVE_INFINITY) - numericValue(right.price, Number.POSITIVE_INFINITY);
+}
+
+function numericValue(value, fallback) {
+  const match = String(value ?? "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+  if (!match) return fallback;
+  const number = Number(match[0]);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function productTime(product) {
+  const raw = product?.updated_at || product?.created_at || product?.date || "";
+  const time = Date.parse(String(raw || ""));
+  return Number.isFinite(time) ? time : 0;
+}
+
+function sortedTitle(title, sortBy) {
+  const suffixes = {
+    price_asc: "sorted low to high",
+    price_desc: "sorted high to low",
+    rating: "sorted by rating",
+    newest: "newest first",
+  };
+  const cleanTitle = String(title || DEFAULT_RECOMMENDATION_TITLE).replace(/\s+-\s+sorted.*$/i, "");
+  return `${cleanTitle} - ${suffixes[sortBy] || suffixes.price_asc}`;
 }

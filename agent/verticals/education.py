@@ -20,5 +20,13 @@ VERTICAL = VerticalDefinition(
     ),
     entity_types=("course", "program", "certificate", "instructor", "learning_path", "cohort"),
     readiness_checks=("courses", "syllabus", "pricing", "enrollment", "lead_capture", "policies"),
-    action_types=("SHOW_ENTITIES", "BUILD_LEARNING_PATH", "START_ENROLLMENT", "CAPTURE_LEAD"),
+    action_types=(
+        "SHOW_ENTITIES",
+        "SORT_ENTITIES",
+        "BUILD_LEARNING_PATH",
+        "CHECK_PREREQUISITES",
+        "START_ENROLLMENT",
+        "REQUEST_COUNSELOR_CALLBACK",
+        "CAPTURE_LEAD",
+    ),
 )

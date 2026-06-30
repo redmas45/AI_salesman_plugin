@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { UnauthorizedError, clearStoredAdminToken, crmApi, getStoredAdminToken, setStoredAdminToken } from './api';
 import type {
@@ -9,11 +9,16 @@ import type {
   Overview,
   SettingsResponse,
   Theme,
+  VerticalDefinition,
   View,
+  ClientBoardSection,
+  AnalyticsSectionId,
 } from './types';
+import type { ClientWorkspaceTabId } from './verticals/types';
 import { Sidebar } from './components/shared/Sidebar';
 import { Topbar } from './components/shared/Topbar';
 import { AddClientDialog, ClientPanelPasswordDialog } from './components/shared/Dialogs';
+import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { ViewRenderer } from './views/ViewRenderer';
 
 const THEME_STORAGE_KEY = 'aiHubCrmTheme';
@@ -24,11 +29,12 @@ export function App() {
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [settings, setSettings] = useState<SettingsResponse | null>(null);
+  const [verticals, setVerticals] = useState<VerticalDefinition[]>([]);
   const [conversations, setConversations] = useState<ConversationsResponse | null>(null);
   const [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [range, setRange] = useState(DEFAULT_RANGE);
-  const [theme, setTheme] = useState<Theme>(storedTheme());
+  const [theme] = useState<Theme>(storedTheme());
   const [loading, setLoading] = useState(true);
   const [authRequired, setAuthRequired] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -36,13 +42,28 @@ export function App() {
   const [toast, setToast] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [passwordDialogClient, setPasswordDialogClient] = useState<Client | null>(null);
+  const [clientInitialTab, setClientInitialTab] = useState<ClientWorkspaceTabId>('overview');
+  const [clientTabRequestKey, setClientTabRequestKey] = useState(0);
+  const [clientBoardSection, setClientBoardSection] = useState<ClientBoardSection>('all');
+  const [analyticsSection, setAnalyticsSection] = useState<AnalyticsSectionId>('overview');
+  const [settingsFocusKey, setSettingsFocusKey] = useState('');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [crawlingSites, setCrawlingSites] = useState<Set<string>>(() => new Set());
+  const [autoIntegratingSites, setAutoIntegratingSites] = useState<Set<string>>(() => new Set());
+  const contentRef = useRef<HTMLElement | null>(null);
+  const pageTitle = titleForView(view);
 
   useEffect(() => {
     document.body.dataset.theme = theme;
     localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    document.title =
+      view === 'client-detail' && selectedClient
+        ? `AI Hub - Client: ${selectedClient.site_id}`
+        : `AI Hub - ${pageTitle}`;
+  }, [pageTitle, selectedClient, view]);
 
   useEffect(() => {
     loadInitial();
@@ -56,6 +77,10 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0, left: 0 });
+  }, [view, selectedClient?.site_id, clientInitialTab, analyticsSection]);
+
   async function loadInitial() {
     if (!getStoredAdminToken()) {
       setLoading(false);
@@ -67,16 +92,18 @@ export function App() {
     setLoading(true);
     setLoadError('');
     try {
-      const [nextOverview, nextSettings, nextConversations, nextAnalytics] = await Promise.all([
+      const [nextOverview, nextSettings, nextConversations, nextAnalytics, nextVerticals] = await Promise.all([
         crmApi.overview(),
         crmApi.settings(),
         crmApi.conversations(range),
         crmApi.analytics(range),
+        crmApi.verticals(),
       ]);
       setOverview(nextOverview);
       setSettings(nextSettings);
       setConversations(nextConversations);
       setAnalytics(nextAnalytics);
+      setVerticals(nextVerticals.verticals);
       setAuthRequired(false);
     } catch (error) {
       if (error instanceof UnauthorizedError) {
@@ -128,6 +155,7 @@ export function App() {
         setSelectedClient(response.client);
       }
       if (view === 'settings') setSettings(await crmApi.settings());
+      if (view === 'health') setVerticals((await crmApi.verticals()).verticals);
       if (view === 'dashboard' || view === 'conversations') setConversations(await crmApi.conversations(range));
       if (view === 'dashboard' || view === 'analytics') setAnalytics(await crmApi.analytics(range));
       setToast('CRM refreshed.');
@@ -155,17 +183,26 @@ export function App() {
     }
   }
 
-  async function openClient(siteId: string) {
+  async function openClient(siteId: string, initialTab: ClientWorkspaceTabId = 'overview') {
     setBusy(true);
     try {
       const response = await crmApi.client(siteId);
       setSelectedClient(response.client);
+      setClientInitialTab(initialTab);
       setView('client-detail');
     } catch (error) {
       showError(error, 'Client failed to load.');
     } finally {
       setBusy(false);
     }
+  }
+
+  function openCurrentClientTab(tabId: ClientWorkspaceTabId) {
+    if (!selectedClient) return;
+    setClientInitialTab(tabId);
+    setClientTabRequestKey((key) => key + 1);
+    setView('client-detail');
+    setMobileSidebarOpen(false);
   }
 
   async function createClient(payload: CreateClientPayload) {
@@ -190,17 +227,34 @@ export function App() {
   }
 
   async function removeClient(siteId: string) {
-    if (!window.confirm(`Remove ${siteId}? Tenant data is kept.`)) return;
+    if (!window.confirm(`Move ${siteId} out of Current clients? Tenant data is kept.`)) return;
     setBusy(true);
     try {
       await crmApi.removeClient(siteId);
       setSelectedClient(null);
       setPasswordDialogClient((current) => (current?.site_id === siteId ? null : current));
       setOverview(await crmApi.overview());
+      setClientBoardSection('available');
       setView('clients');
-      setToast('Client removed.');
+      setToast('Client moved to Available.');
     } catch (error) {
       showError(error, 'Client removal failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function activateClient(siteId: string) {
+    setBusy(true);
+    try {
+      const response = await crmApi.activateClient(siteId);
+      setSelectedClient(response.client);
+      setClientInitialTab('overview');
+      setOverview(await crmApi.overview());
+      setView('client-detail');
+      setToast('Client moved to Current.');
+    } catch (error) {
+      showError(error, 'Client activation failed.');
     } finally {
       setBusy(false);
     }
@@ -276,24 +330,53 @@ export function App() {
   }
 
   async function triggerCrawl(siteId: string) {
-    setCrawlingSites((current) => new Set(current).add(siteId));
+    const cleanSiteId = typeof siteId === 'string' ? siteId.trim() : '';
+    if (!cleanSiteId) {
+      setToast('Crawler could not start because the client site ID was missing.');
+      return;
+    }
+    setCrawlingSites((current) => new Set(current).add(cleanSiteId));
     setBusy(true);
     try {
-      await crmApi.crawlClient(siteId);
+      await crmApi.crawlClient(cleanSiteId);
       setOverview(await crmApi.overview());
-      if (selectedClient?.site_id === siteId) {
-        const response = await crmApi.client(siteId);
+      if (selectedClient?.site_id === cleanSiteId) {
+        const response = await crmApi.client(cleanSiteId);
         setSelectedClient(response.client);
       }
       setToast('Crawler started.');
-      void pollCrawlStatus(siteId);
+      void pollCrawlStatus(cleanSiteId);
     } catch (error) {
       setCrawlingSites((current) => {
+        const next = new Set(current);
+        next.delete(cleanSiteId);
+        return next;
+      });
+      showError(error, 'Crawler failed to start.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function triggerAutoIntegration(siteId: string) {
+    setAutoIntegratingSites((current) => new Set(current).add(siteId));
+    setBusy(true);
+    try {
+      await crmApi.autoIntegrateClient(siteId);
+      setToast('Setup run queued.');
+      setOverview(await crmApi.overview());
+      if (selectedClient?.site_id === siteId) {
+        const response = await crmApi.client(siteId);
+        syncClient(response.client);
+      }
+      void pollAutoIntegrationStatus(siteId);
+    } catch (error) {
+      setAutoIntegratingSites((current) => {
         const next = new Set(current);
         next.delete(siteId);
         return next;
       });
-      showError(error, 'Crawler failed to start.');
+      showError(error, 'Setup run failed to start.');
     } finally {
       setBusy(false);
     }
@@ -321,9 +404,27 @@ export function App() {
     }
   }
 
-  async function copyScript(client: Client) {
-    await navigator.clipboard.writeText(client.script_tag);
-    setToast('Script copied.');
+  async function pollAutoIntegrationStatus(siteId: string) {
+    const startedAt = Date.now();
+    try {
+      while (Date.now() - startedAt < 30 * 60 * 1000) {
+        await delay(10000);
+        const response = await crmApi.client(siteId);
+        syncClient(response.client);
+        const initialization = response.client.vertical_config?.initialization as Record<string, unknown> | undefined;
+        const status = String(initialization?.status || '').toLowerCase();
+        if (status && status !== 'running') break;
+      }
+      setOverview(await crmApi.overview());
+    } catch (error) {
+      showError(error, 'Setup status refresh failed.');
+    } finally {
+      setAutoIntegratingSites((current) => {
+        const next = new Set(current);
+        next.delete(siteId);
+        return next;
+      });
+    }
   }
 
   async function saveSettings(values: Record<string, string>): Promise<SettingsResponse> {
@@ -364,36 +465,78 @@ export function App() {
   }
 
   const clients = overview?.clients ?? [];
-  const pageTitle = titleForView(view);
+  const viewResetKey = `${view}:${selectedClient?.site_id ?? 'all'}`;
+  const openView = (nextView: View) => {
+    if (nextView !== 'client-detail') {
+      setSelectedClient(null);
+      setClientInitialTab('overview');
+    }
+    if (nextView !== 'settings') setSettingsFocusKey('');
+    setView(nextView);
+    setMobileSidebarOpen(false);
+  };
+  const openSettings = (focusKey = '') => {
+    setSelectedClient(null);
+    setClientInitialTab('overview');
+    setSettingsFocusKey(focusKey);
+    setView('settings');
+    setMobileSidebarOpen(false);
+  };
+  const openClientBoardSection = (section: ClientBoardSection) => {
+    setClientBoardSection(section);
+    setSelectedClient(null);
+    setClientInitialTab('overview');
+    setView('clients');
+    setMobileSidebarOpen(false);
+  };
+  const openAnalyticsSection = (section: AnalyticsSectionId) => {
+    setAnalyticsSection(section);
+    setSelectedClient(null);
+    setClientInitialTab('overview');
+    setView('analytics');
+    setMobileSidebarOpen(false);
+  };
 
   return (
     <>
       <div className="crm-shell">
         <Sidebar
           view={view}
-          setView={(nextView) => {
-            setView(nextView);
-            setMobileSidebarOpen(false);
-          }}
+          setView={openView}
           health={overview?.health ?? {}}
           selectedClient={selectedClient}
+          activeClientTab={clientInitialTab}
+          clientBoardSection={clientBoardSection}
+          analyticsSection={analyticsSection}
           open={mobileSidebarOpen}
+          onOpenClientBoardSection={openClientBoardSection}
+          onOpenClientTab={openCurrentClientTab}
+          onOpenAnalyticsSection={openAnalyticsSection}
         />
         <div className="crm-body">
           <Topbar
             title={pageTitle}
+            view={view}
             health={overview?.health ?? {}}
             selectedClient={selectedClient}
-            theme={theme}
+            activeClientTab={clientInitialTab}
             busy={busy}
             onToggleSidebar={() => setMobileSidebarOpen((open) => !open)}
             onRefresh={refreshCurrentView}
-            onAddClient={() => setDialogOpen(true)}
-            onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             onLogout={logoutAdmin}
+            onOpenDashboard={() => openView('dashboard')}
+            onOpenClients={() => openClientBoardSection('all')}
+            onOpenView={openView}
+            onOpenClient={(siteId, initialTab) => {
+              if (selectedClient?.site_id === siteId) {
+                openCurrentClientTab(initialTab ?? clientInitialTab);
+                return;
+              }
+              void openClient(siteId, initialTab);
+            }}
             authenticated={!authRequired && Boolean(overview)}
           />
-          <main className="crm-content">
+          <main className="crm-content" ref={contentRef}>
             {authRequired ? (
               <AdminTokenView busy={loading} error={loadError} onSubmit={submitAdminToken} />
             ) : loading || (!overview && !loadError) ? (
@@ -401,29 +544,44 @@ export function App() {
             ) : loadError && !overview ? (
               <LoadErrorView message={loadError} onRetry={loadInitial} />
             ) : (
-              <ViewRenderer
-                view={view}
-                overview={overview as Overview}
-                clients={clients}
-                selectedClient={selectedClient}
-                conversations={conversations}
-                analytics={analytics}
-                settings={settings}
-                range={range}
-                crawlingSites={crawlingSites}
-                onRangeChange={updateRange}
-                onViewChange={setView}
-                onAddClient={() => setDialogOpen(true)}
-                onOpenClient={openClient}
-                onCopyScript={copyScript}
-                onTriggerCrawl={triggerCrawl}
-                onRemoveClient={removeClient}
-                onToggleClient={toggleClient}
-                onUpdateTokenLimits={updateClientTokenLimits}
-                onOpenPasswordDialog={setPasswordDialogClient}
-                onSaveSettings={saveSettings}
-                onGenerateSummary={generateSummary}
-              />
+              <ErrorBoundary resetKey={viewResetKey}>
+                <ViewRenderer
+                  view={view}
+                  overview={overview as Overview}
+                  clients={clients}
+                  selectedClient={selectedClient}
+                  clientInitialTab={clientInitialTab}
+                  clientTabRequestKey={clientTabRequestKey}
+                  clientBoardSection={clientBoardSection}
+                  analyticsSection={analyticsSection}
+                  conversations={conversations}
+                  analytics={analytics}
+                  settings={settings}
+                  settingsFocusKey={settingsFocusKey}
+                  verticals={verticals}
+                  range={range}
+                  busy={busy}
+                  crawlingSites={crawlingSites}
+                  autoIntegratingSites={autoIntegratingSites}
+                  onRangeChange={updateRange}
+                  onViewChange={setView}
+                  onOpenSettings={openSettings}
+                  onOpenClientBoardSection={openClientBoardSection}
+                  onOpenAnalyticsSection={openAnalyticsSection}
+                  onAddClient={() => setDialogOpen(true)}
+                  onOpenClient={openClient}
+                  onClientWorkspaceTabChange={setClientInitialTab}
+                  onActivateClient={activateClient}
+                  onTriggerCrawl={triggerCrawl}
+                  onAutoIntegrate={triggerAutoIntegration}
+                  onRemoveClient={removeClient}
+                  onToggleClient={toggleClient}
+                  onUpdateTokenLimits={updateClientTokenLimits}
+                  onOpenPasswordDialog={setPasswordDialogClient}
+                  onSaveSettings={saveSettings}
+                  onGenerateSummary={generateSummary}
+                />
+              </ErrorBoundary>
             )}
           </main>
         </div>
@@ -461,8 +619,9 @@ function AdminTokenView({
   return (
     <section className="mx-auto mt-12 grid w-full max-w-md gap-4 rounded-lg border border-line bg-panel p-5 shadow-xl">
       <div>
-        <div className="text-xs font-semibold uppercase text-muted">Protected CRM</div>
-        <h2 className="mt-2 text-lg font-semibold">Enter admin token</h2>
+        <div className="text-xs font-semibold uppercase text-muted">AI Hub CRM</div>
+        <h2 className="mt-2 text-lg font-semibold">Unlock Maya operations</h2>
+        <p className="mt-1 text-sm text-muted">Use the admin token to manage clients, prompts, adapters, and runtime health.</p>
       </div>
       <form className="grid gap-3" onSubmit={onSubmit}>
         <label className="field">
@@ -543,7 +702,8 @@ function delay(ms: number) {
 }
 
 function storedTheme(): Theme {
-  return localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light';
+  localStorage.setItem(THEME_STORAGE_KEY, 'light');
+  return 'light';
 }
 
 function titleForView(view: View) {
@@ -551,7 +711,7 @@ function titleForView(view: View) {
     dashboard: 'Dashboard',
     clients: 'Clients',
     'client-detail': 'Client detail',
-    catalogs: 'Catalogs',
+    catalogs: 'Data storage',
     usage: 'Usage',
     conversations: 'Conversations',
     analytics: 'Analytics',

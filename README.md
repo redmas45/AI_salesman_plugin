@@ -6,24 +6,75 @@ The client website stays independent. It owns its own users, products or busines
 
 ## Current State
 
-Current development checkpoint: **L9 automatic vertical and hosted adapter foundation**
+Current development checkpoint: **L12 universal domain readiness matrix and safe action contracts**
 
-Date: **2026-06-26**
+Date: **2026-06-30**
 
 This repo has moved past the old ecommerce-only baseline. The current foundation supports:
 
-- Universal one-line installer: `/install.js?site=<site_id>`.
+- Universal one-line installer: `/install.js` with automatic client identity and vertical discovery.
 - Hosted browser adapter runtime: `/shopbot-adapter.js`.
 - Hosted widget bundle: `/shopbot.js` and `/shopbot-widget.js`.
 - Browser discovery beacon: `POST /v1/widget/register`.
+- Browser-side hard-widget/provider hints for auth gates, CAPTCHA, payment providers, calendar widgets, maps, file uploads, iframes, and external handoffs.
+- Safe provider handoff execution for map links/embeds, appointment scheduler links/embeds, and contact providers such as phone, email, and WhatsApp-style links.
 - Automatic client bootstrap when an installed site is first seen.
-- Deterministic vertical classification across ecommerce, travel, insurance, finance, healthcare, food, real estate, education, automotive, legal services, jobs, events/ticketing, and generic websites.
+- Deterministic vertical classification across ecommerce, travel, insurance, finance, healthcare, food, real estate, education, automotive, legal services, jobs, events/ticketing, construction, and generic websites.
 - Generated adapter runtime config for routes, selectors, actions, platform hints, and discovery metadata.
+- Admin-visible live action candidates from buttons, links, forms, routes, and generated action mappings.
+- CRM approval/rejection controls for live action candidates and repair proposals, with review history preserved in client runtime config.
+
+## Recent Enhancements (2026-06-29)
+
+- **Widget Runtime Readiness**: Added missing AI hub widget runtime paths (`/v1/shop`, `/v1/shop/stream`, `/v1/ws/shop`, `/ws/chat`) to the public CORS whitelist to allow proper widget integration across external client websites.
+- **Docker Cache Optimization**: Separated massive dependencies (PyTorch CPU, Playwright, Crawl4AI) into a dedicated pre-requirements layer in the `Dockerfile`. This preserves the 3GB cache layer across Python file and requirement updates, dramatically reducing rebuild times.
+- **Dynamic LLM Smoke Tests**: Setup can generate domain-aware smoke tests with `gpt-4o` from the client's vertical/runtime context, with deterministic vertical-specific fallback tests for every supported README vertical. Unit/regression tests and quota-limited environments do not depend on external LLM calls for smoke-case generation.
+- **Autonomous Auto-Healing Setup**: The setup phase is now a self-healing loop. If a smoke test fails (e.g., action mismatch or data fallback), the system autonomously diagnoses the failure, uses an LLM to generate a developer rule for the prompt profile, and retries the test until it succeeds. Setup times are tracked, and website drift automatically flags a site as needing re-setup. During auto-repair, LLM-generated developer rules bypassing the AI's base policy are prefixed with `[CRITICAL OVERRIDE RULE]` so that the system correctly forces the agent to follow them, preventing infinite retry loops.
+- **CRM Client Security**: Added a "Security & Access" section to the Client Overview tab where admins can view the initial randomized client panel password and quickly reset it.
+- **CRM Duplicate Installs UI**: Enhanced the `ClientsView` component to intelligently hide duplicate `auto_*` dynamically generated installations when an active, explicitly set client (like `ai_kart`) is already running on the same origin (including resolving localhost domain aliases like `host.docker.internal`).
+- **Universal Domain Readiness Matrix**: Added an automated gate for every README vertical that checks discovery profile actions survive capability filtering, deterministic setup smoke cases request valid/allowed actions, and non-commerce source-backed fact answers still show retrieved records when the LLM gives a weak answer.
+- **Browser Runtime Action Execution Gate**: Added a browser-level regression that loads the hosted adapter bundle, sends a server-style generated `START_QUOTE` action with runtime sequence params, and verifies the website form submits and navigates to the quote-results route.
+- Immediate prompt suggestions from first-page discovery before deeper flow discovery runs.
+- CRM Prompt tab can promote discovered prompt suggestions into editable developer rules for admin review.
+- Vertical-aware sales intake questions for ecommerce, insurance, travel, finance, healthcare, food, real estate, education, automotive, legal, recruiting, events, construction, and generic sites.
+- CRM Prompt tab shows generated sales intake questions so admins can review what the assistant will ask before starting flows.
+- Action-readiness summaries connect generated form/sequence actions to required params and the intake question that should collect them before execution.
+- Runtime repair proposals from action health, validation evidence, and high-confidence action candidates.
+- Tenant isolation audit endpoint for checking client runtime config, install script scoping, prompt profile scoping, and knowledge/RAG scoping.
+- Robots/sitemap-aware HTTP crawl fallback that prioritizes high-value URLs and respects discovered disallow rules.
+- Deterministic multi-domain discovery fixtures for 13 vertical patterns, including construction.
+- Provider-heavy multi-domain discovery fixtures for payment, scheduler, CAPTCHA, auth, upload, iframe, map, and external-provider boundaries.
+- Generic same-origin DOM sequence runner for bounded actions such as fill, click, select, submit, wait, scroll, and navigate.
+- Shared browser target resolver for stale selectors, with fallback matching by label, text, field name, placeholder, role, and nearest form.
+- Deep DOM traversal for open shadow roots and same-origin iframe documents during discovery, action execution, validation, barrier hints, and async rediscovery.
+- Shared custom-control selectors for ARIA buttons, links, menu items, tabs, options, comboboxes, searchboxes, textboxes, and contenteditable fields.
+- User-like browser event driver for focus, scroll, pointer/mouse activation, keyboard activation, text entry, checkbox state, select options, and form submit.
+- Runtime action execution telemetry for success, failure, blocked, and fallback-stage outcomes, visible in CRM and preserved across rediscovery.
+- Generic entity lookup and widget rendering for non-commerce RAG actions such as `SHOW_ENTITIES`, `COMPARE_ENTITIES`, and `OPEN_ENTITY_DETAIL`.
+- First-load runtime config refresh after browser registration, so a newly pasted script does not need a page reload to use generated config.
+- SPA route-change rediscovery for `pushState`, `replaceState`, `popstate`, and hash navigation.
+- Debounced async DOM rediscovery for late-loaded buttons, forms, iframes, and fields after SPA hydration or widget injection.
+- Rediscovery-safe config merging, so late page observations update routes/actions without wiping learned interactions, CRM overrides, validation, flow, rehearsal, regression, prompt suggestions, or barrier policy evidence.
+- Privacy-safe interaction learning from same-origin clicks and form submits, stored as recent interaction traces and action candidates.
+- Vertical-aware interaction-to-action learning that can promote high-confidence observed buttons/forms into safe per-client adapter actions without replacing manual CRM overrides.
 - CRM vertical selector and vertical-aware client workspace labels/tabs.
 - CRM Adapter tab showing the generated adapter code and runtime config for each client.
 - CRM Prompt tab for draft/published prompt profile editing and version history.
-- Generic knowledge tables and product-to-knowledge sync for future non-commerce RAG.
+- Generic knowledge tables, product-to-knowledge sync, and public exact-ID entity lookup for non-commerce RAG.
 - Existing AI-KART ecommerce behavior preserved.
+- Current CRM operation model:
+  - script-detected sites stay Available until explicitly approved
+  - Available installs are grouped by online/offline reachability
+  - duplicate `auto_*` installs are hidden when an explicit installer `data-site-id` exists on the same origin
+  - setup is the single visible operator action for crawl, flow discovery, rehearsal, readiness evidence, and prompt smoke tests
+  - crawl/setup stay locked while the source website is offline
+- Universal action execution rule:
+  - setup/discovery must never depend on client-specific website patches or hardcoded site IDs
+  - safe information, comparison, sorting, page-opening, and chat-session actions are derived from the shared action registry instead of hand-maintained per-vertical allowlists
+  - low-sensitivity result forms, such as search, availability, calculator, and quote-results forms, may be submitted when their labels indicate they show options/results and their fields do not collect contact, payment, identity, upload, medical, application, or other sensitive/finalization data
+  - lead capture, checkout, booking finalization, payment, application, claim, renewal, contact, and sensitive forms stay prepare-only or handoff-first until the website/provider/human confirms the next step
+  - browser-discovered field schemas and action sequences are preserved during setup; later flow discovery must not replace a richer executable action contract with a weaker selector-only action
+- Local voice defaults are female for both backend TTS and browser greeting fallback: OpenAI `nova`, Groq `hannah`.
 
 Important reality: this is a strong automatic foundation, not a magic 100% automation guarantee for every website on the internet. Public pages with readable HTML, standard forms/buttons, Shopify/WooCommerce hints, and accessible APIs work best. Login-only pages, CAPTCHA, payment steps, private APIs, anti-bot systems, and heavily custom SPAs still need validation, feeds, API access, or explicit client support.
 
@@ -44,26 +95,47 @@ Shared Nginx routing is owned by AI-KART:
 /                         -> AI-KART frontend on 127.0.0.1:5175
 /api/                     -> AI-KART backend on 127.0.0.1:8000
 /aihub/                   -> AI Hub Docker app on 127.0.0.1:5176
-/client-panel/<client_id> -> Client Panel on 127.0.0.1:5177
+/client-panel/<client_id> -> AI Hub-served Client Panel bundle from sibling client_panel/dist
 ```
 
 Public route changes belong in `C:\Users\admin\Desktop\Vercel_website\aikart.md`, not in this repo.
 
 ## One-Line Install Contract
 
-Current AI-KART script:
+Universal script shown in AI Hub CRM:
 
 ```html
-<script defer src="http://143.198.5.97/aihub/install.js?site=ai_kart" data-site-id="ai_kart"></script>
+<script defer src="http://143.198.5.97/aihub/install.js"></script>
 ```
 
-Generic client script:
+Generic deployed form:
+
+```html
+<script defer src="https://hub.example.com/install.js"></script>
+```
+
+Local AI Hub form:
+
+```html
+<script defer src="http://127.0.0.1:5176/install.js"></script>
+```
+
+The installer loads the hosted adapter runtime first, then the widget. The browser runtime derives a stable site id from the installed website origin and, for localhost/IP path deployments, a safe path scope when needed. On first page load, the Hub auto-creates or updates the client as Available, binds the origin, detects the vertical, generates runtime config, and seeds prompts. Crawl and Setup run stay manual until an admin moves the site to Current and explicitly starts the action.
+
+Advanced explicit-site override still exists for controlled migrations:
 
 ```html
 <script defer src="https://hub.example.com/install.js?site=client_site_id" data-site-id="client_site_id"></script>
 ```
 
-The installer loads the hosted adapter runtime first, then the widget. Normal clients should not paste separate hook blocks. Client-specific behavior belongs in Hub-owned runtime config, generated selectors/actions, platform adapters, prompts, and CRM controls.
+Local explicit-site examples for independent test websites:
+
+```html
+<script defer src="http://127.0.0.1:5176/install.js?site=ai_kart" data-site-id="ai_kart"></script>
+<script defer src="http://127.0.0.1:5176/install.js?site=policy_website" data-site-id="policy_website"></script>
+```
+
+Normal clients should not paste separate hook blocks. Client-specific behavior belongs in Hub-owned runtime config, generated selectors/actions, platform adapters, prompts, and CRM controls.
 
 ## Automatic Onboarding Flow
 
@@ -80,15 +152,26 @@ Client site
 Browser adapter discovery
   reads safe page signals:
     title, URL, text sample, links, buttons, forms, platform hints
+    hard-widget/provider hints for action policy
     |
     v
 POST /v1/widget/register
   creates or updates Hub client
   classifies vertical
   generates routes/selectors/actions
+  generates first-page barrier policy from browser hints
   saves adapter config
   seeds prompt profile
-  schedules crawl when needed
+  leaves the client available with no crawl queued
+    |
+    v
+Adapter runtime refresh
+  reloads runtime config after registration
+  observes same-tab SPA route changes and rediscover pages
+  observes meaningful async DOM changes and rediscover late-loaded controls
+  merges fresh observations with previous learned/admin state
+  records privacy-safe click/form-submit metadata for adapter learning
+  promotes high-confidence learned actions into runtime adapter config
     |
     v
 CRM client workspace
@@ -108,6 +191,14 @@ The adapter is the Hub-controlled execution layer that tells the widget how to o
 - Which actions are allowed for the vertical.
 - Which platform hints were detected, such as Shopify or WooCommerce.
 - Which safe fallback behavior should be used when direct platform APIs are not available.
+- Which fallback target resolver should recover stale selectors from visible page labels and form fields.
+- Which accessible nested DOMs, such as open web components and same-origin embedded frames, can be searched by the universal adapter.
+- Which custom controls, ARIA roles, and contenteditable fields are treated as actionable or fillable targets.
+- Which user-like DOM events are dispatched when operating buttons, custom controls, fields, and forms.
+- Which action execution attempts succeeded, failed, were blocked, or fell through to fallback stages.
+- Which guarded DOM sequences can run for multi-step forms and flows.
+- Which live action candidates and prompt ideas were inferred from the pasted script.
+- Which high-confidence browser interactions were promoted into executable adapter actions.
 
 The browser runtime lives in `plugin/src/adapter/` and is served as `/shopbot-adapter.js`.
 
@@ -139,6 +230,7 @@ automotive
 legal_services
 jobs_recruiting
 events_ticketing
+construction
 generic
 ```
 
@@ -208,10 +300,11 @@ Key endpoints:
 
 ```text
 GET /v1/knowledge?site_id=<site_id>
+GET /v1/knowledge/by-ids?site_id=<site_id>&ids=<id,id>
 GET /v1/admin/clients/{site_id}/knowledge
 ```
 
-Current rule: keep ecommerce stable while generic knowledge is introduced gradually. Do not delete product tables or ecommerce prompt wrappers until the generic path is proven in production.
+Current rule: keep ecommerce stable while generic knowledge, generic entity display, and dynamic DOM control are introduced gradually. Do not delete product tables, ecommerce prompt wrappers, Shopify/WooCommerce support, or legacy ecommerce widget fallbacks until runtime reports and tests prove the generic path has production parity.
 
 ## Repository Layout
 
@@ -240,7 +333,7 @@ Use this when you want the full Hub exactly like deployment:
 
 ```powershell
 cd C:\Users\admin\Desktop\AI_salesman_plugin
-docker compose up -d --build db app
+docker compose up -d --build
 ```
 
 Open:
@@ -260,8 +353,9 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+playwright install chromium
 
-uvicorn api.main:app --reload --host 127.0.0.1 --port 5176
+uvicorn api.main:app --reload --host 127.0.0.1 --port 8585
 ```
 
 Build CRM:
@@ -284,7 +378,7 @@ npm run build
 If you see `ModuleNotFoundError: No module named 'app'`, you are probably running an AI-KART command in the Hub repo, or a Hub command in the AI-KART repo. AI Hub runs with:
 
 ```powershell
-uvicorn api.main:app --reload --host 127.0.0.1 --port 5176
+uvicorn api.main:app --reload --host 127.0.0.1 --port 8585
 ```
 
 AI-KART runs separately from `C:\Users\admin\Desktop\Vercel_website\backend` with:
@@ -322,9 +416,13 @@ HUB_PUBLIC_URL=http://143.198.5.97/aihub
 PUBLIC_API_URL=http://143.198.5.97/aihub
 PUBLIC_STOREFRONT_ORIGIN=http://143.198.5.97
 CORS_ORIGINS=http://143.198.5.97
-CURRENT_SITE_ID=ai_kart
-DEFAULT_SITE_ID=ai_kart
-AI_DEFAULT_SITE_ID=ai_kart
+CURRENT_SITE_ID=site_1
+DEFAULT_SITE_ID=site_1
+AI_DEFAULT_SITE_ID=site_1
+CURRENT_URL=
+CRAWL_ON_STARTUP=false
+CRAWL_PERIODIC_ENABLED=false
+ENSURE_DEFAULT_CLIENT_ON_STARTUP=false
 OPENAI_API_KEY=
 GROQ_API_KEY=
 CRM_ADMIN_TOKEN=
@@ -344,8 +442,8 @@ High-level order:
 
 1. Deploy AI Hub from `/var/www/AI_salesman_plugin/aihub.md`.
 2. Deploy or reload AI-KART shared Nginx from `/var/www/Vercel_website/aikart.md`.
-3. Deploy Client Panel from `/var/www/client_panel/clientpanel.md`.
-4. Open CRM and confirm the client workspace, adapter tab, prompt tab, and crawl status.
+3. Build the Client Panel bundle in `/var/www/client_panel`; AI Hub serves that `dist` at `/client-panel`.
+4. Open CRM and confirm the client workspace, Setup workspace, adapter tab, prompt tab, client-panel link, and crawl status.
 
 Production AI Hub runs in Docker Compose:
 
@@ -353,6 +451,10 @@ Production AI Hub runs in Docker Compose:
 db  -> PostgreSQL with pgvector
 app -> FastAPI app, CRM static files, widget bundle, AI pipeline
 ```
+
+AI Hub serves the client-facing analytics panel from a sibling `client_panel/dist`
+directory by default. Override `CLIENT_PANEL_SOURCE_DIR` or
+`CLIENT_PANEL_STATIC_DIR` if the panel bundle lives somewhere else.
 
 AI Hub production does not use a host Python venv for runtime.
 
@@ -363,7 +465,7 @@ Backend:
 ```powershell
 cd C:\Users\admin\Desktop\AI_salesman_plugin
 python -m pytest -q
-python -m compileall api db agent tests
+python -m compileall agent api db tests
 ```
 
 CRM:
@@ -371,6 +473,15 @@ CRM:
 ```powershell
 cd C:\Users\admin\Desktop\AI_salesman_plugin\crm
 npm run lint
+npm run build
+```
+
+Client Panel:
+
+```powershell
+cd C:\Users\admin\Desktop\client_panel
+$env:VITE_CLIENT_PANEL_BASE_PATH="/client-panel/"
+$env:VITE_AI_HUB_API_BASE=""
 npm run build
 ```
 
@@ -387,16 +498,23 @@ Useful focused tests:
 python -m pytest tests/test_verticals.py -q
 python -m pytest tests/test_vertical_runtime.py -q
 python -m pytest tests/test_widget_install.py -q
+python -m pytest tests/test_flow_discovery.py tests/test_flow_rehearsal.py tests/test_flow_barriers.py -q
 python -m pytest tests/test_knowledge.py -q
 ```
 
-Recent local verification after the automatic adapter/vertical work:
+Manual no-bias local onboarding test:
+
+Use the command block in "Local Independent Manual Test" below. Start both client
+websites independently, start AI Hub independently, then paste each CRM-generated
+script into that website's `index.html`. Keep the local Hub database persistent
+while testing; only disable automatic default-client seeding to avoid hidden bias.
+Clients created by the script remain in that database until deleted from CRM.
+
+Recent local verification after the universal domain readiness matrix:
 
 ```text
-python -m pytest -q                         -> 112 passed
-python -m compileall api db agent tests      -> passed
-cd crm; npm run lint                         -> passed
-cd crm; npm run build                        -> passed
+python -m pytest -q                         -> 459 passed
+python -m compileall agent api db tests      -> passed
 cd plugin; npm run build                     -> passed
 ```
 
@@ -424,16 +542,65 @@ AI Hub does not own:
 
 ## Reliability Roadmap
 
-The next major reliability layer should be browser-based action validation:
+Current automatic-discovery reliability layer:
 
-- Server-side Playwright discovery for multi-page flows.
-- Dry-run validation of generated selectors/actions.
+- Server-side Playwright flow discovery with HTTP fallback.
+- Safe flow rehearsal with browser verification and HTTP/static fallback.
+- Hard-flow barrier detection for auth gates, CAPTCHA, iframes, payment handoffs, calendars, maps, file uploads, and external action links.
+- Barrier-aware action policy that blocks unsafe finalization actions and exposes handoff actions in prompts, CRM, and runtime config.
+- Widget runtime stops unsafe fallback execution after a policy block and shows a visible handoff panel for checkout, agent, advisor, clinic, legal, recruiting, and generic human handoff actions.
+- Contract-aware output guardrails that allow generated adapter routes/actions while sanitizing dynamic form and sequence params.
+- Flow regression detection when routes, actions, or rehearsed targets change between scans.
+- Browser-side dry-run validation of generated selectors/actions from the pasted script.
+- Browser-side live page context is sent with each HTTP/WebSocket turn so prompts see current path, actions, routes, buttons, links, and form fields.
+- Browser-side target resolution fallback for stale click/form/sequence selectors.
+- Browser-side deep DOM traversal for open shadow roots and same-origin iframes.
+- Browser-side custom-control coverage for ARIA/menu/tab/combobox/searchbox/contenteditable widgets.
+- Browser-side event driver for pointer, mouse, keyboard, text-entry, select, checkbox, and submit behavior.
+- Browser-side generic form filler that maps action parameters to fields by label, name, placeholder, autocomplete, select options, checkbox, and radio metadata.
+- Browser-side action execution telemetry for repair and admin review.
+- Runtime action-health loop that turns repeated browser execution failures into CRM repair warnings and temporary runtime policy blocks.
+- Runtime self-repair bridge that can replace broken generated actions from high-confidence recent browser interactions while preserving CRM overrides.
+- Flow-level repair proposals that group route/action drift into CRM-reviewable patch plans after regression checks.
+- Optional LLM-assisted flow repair proposals, validated into safe same-origin route/action patches before CRM review.
+- Modular widget action executor that delegates platform actions to the shared universal adapter layer.
+- Modular generic entity executor and overlay for source-backed non-commerce knowledge results.
+- Browser-side hard-widget/provider detection during first registration.
+- Browser-side safe provider handoff openers for map, appointment scheduler, and contact-provider URLs.
+- Provider-specific handoff playbooks for login/CAPTCHA, payment, calendar, file upload, iframe, and external-provider boundaries.
+- Browser-side async DOM rediscovery for hydrated buttons, forms, iframes, and fields.
+- Rediscovery-safe persistence that preserves learned/admin runtime state across repeated registrations.
+- Browser-side interaction learning from observed clicks and form submits, without storing typed field values.
+- Vertical-aware learned action promotion with manual override protection.
+- Vertical-aware sales intake prompt block that makes the assistant collect missing domain facts before quote, booking, checkout, application, appointment, or lead-capture actions.
+- Runtime action-readiness prompt block that names missing required params and follow-up questions before generated actions are emitted.
+- CRM approve/reject workflow for live action candidates.
+- CRM refresh/approve/reject workflow for action repair proposals.
+- CRM approve/reject workflow for flow-level route/action repair plans.
+- Tenant/RAG isolation audit for per-client runtime, prompt, install, and knowledge boundaries.
+- Robots/sitemap-aware HTTP discovery fallback.
+- Static cleanup guards against old monolithic widget action files, demo-site globals, and hardcoded AI-KART/ecommerce widget chrome.
+- Provider-heavy fixture coverage for travel, healthcare, insurance, ecommerce, construction, education, and recruiting layouts with handoff playbooks and prompt-safe browser context.
 - Confidence scores per route/action.
 - CRM override editor for adapter config.
-- Regression checks when a client site changes.
-- Human handoff rules for payment, login, regulated decisions, CAPTCHA, and uncertain flows.
+- CRM flow rehearsal controls and confirmation policy visibility.
+- CRM automation-barrier visibility with handling guidance.
+- CRM site-change visibility for broken or changed routes/actions.
+- Flow-generated prompt suggestions visible in CRM.
+- Setup-run assistant smoke tests that run source-backed prompts through Maya and flag missing expected UI actions or no-record fallback responses.
+- Universal domain readiness matrix for every built-in vertical, covering discovery-profile action compatibility, deterministic setup-smoke actions, and source-backed non-commerce fact-answer recovery.
+- Browser runtime action-execution regression proving generated form/sequence actions returned by Maya can be executed by the hosted adapter and navigate the website.
+- Universal safe-submit action contracts: generated quote/search/availability/calculator forms can submit only when the detected fields and labels show a low-sensitivity results flow; sensitive lead/application/payment/booking/claim forms remain prepare-only or handoff-first.
+- Setup merge protection for executable form contracts: browser-discovered field schemas, required params, submit mode, and DOM sequences are not overwritten by weaker later flow observations.
 
-Until that exists, the system should be presented as automatic discovery plus admin-verifiable setup, not as guaranteed perfect autonomous control on every site.
+Remaining reliability work before claiming near-universal autonomous control:
+
+- Real-world provider-specific control/repair tuning for auth walls, complex iframe widgets, payment pages, and CAPTCHA handoff flows.
+- Real-world tuning of LLM-assisted flow repair across complex live layouts.
+- Live browser testing against real deployed third-party layouts per vertical, not only deterministic fixture pages.
+- Deeper provider-specific integrations for payment, login, regulated decisions, CAPTCHA, and uncertain external widgets.
+
+Until those remaining layers exist, the system should be presented as automatic discovery plus admin-verifiable setup, not as guaranteed perfect autonomous control on every site.
 
 ## Troubleshooting
 
@@ -452,7 +619,8 @@ Rebuild the Docker app with --no-cache using aihub.md, then hard refresh the bro
 Client Panel login fails:
 
 ```text
-Check CLIENT_PANEL_DEFAULT_PASSWORD and CLIENT_PANEL_TOKEN_SECRET in AI Hub .env, then redeploy AI Hub.
+Check CLIENT_PANEL_TOKEN_SECRET in AI Hub .env and set or generate the client's panel password from CRM.
+The CRM admin token and client-panel password are separate credentials.
 ```
 
 AI-KART admin login fails:
@@ -465,4 +633,103 @@ Widget appears but microphone recording fails on public HTTP:
 
 ```text
 Production microphone access needs HTTPS. DNS plus HTTPS is required for reliable public mic support.
+```
+
+## Local Independent Manual Test
+
+Use separate terminals. Start AI Hub first, then the independent test websites.
+
+AI Hub Docker app and database:
+
+```powershell
+cd C:\Users\admin\Desktop\AI_salesman_plugin
+docker compose up -d --build
+```
+
+Open CRM:
+
+```text
+http://127.0.0.1:5176/crm/
+```
+
+Stop AI Hub later:
+
+```powershell
+cd C:\Users\admin\Desktop\AI_salesman_plugin
+docker compose stop
+```
+
+AI-KART backend:
+
+```powershell
+cd C:\Users\admin\Desktop\Vercel_website\backend
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+AI-KART frontend:
+
+```powershell
+cd C:\Users\admin\Desktop\Vercel_website\frontend
+npm run dev -- --host 0.0.0.0 --port 5175
+```
+
+Policy backend:
+
+```powershell
+cd C:\Users\admin\Desktop\Policy_website\backend
+.\venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8003
+```
+
+Policy frontend:
+
+```powershell
+cd C:\Users\admin\Desktop\Policy_website\frontend
+$env:VITE_API_PROXY_TARGET="http://127.0.0.1:8003"
+npm run dev -- --host 0.0.0.0 --port 5183
+```
+
+Open test websites:
+
+```text
+AI-KART: http://127.0.0.1:5175/
+Policy:  http://127.0.0.1:5183/
+```
+
+Client panel links are hosted by AI Hub, for example:
+
+```text
+http://127.0.0.1:5176/client-panel/ai_kart
+http://127.0.0.1:5176/client-panel/policy_website
+```
+
+`CLIENT_PANEL_DEFAULT_PASSWORD` is only a fallback for clients that do not already
+have a stored panel password. For existing clients, use CRM -> Client -> Manage
+password before sharing the panel URL. If the fallback is shorter than 12
+characters, new clients are left with no configured panel password so CRM must
+generate or set one before the panel can be shared.
+
+Current local script tags:
+
+```html
+<script defer src="http://127.0.0.1:5176/install.js?site=ai_kart" data-site-id="ai_kart"></script>
+<script defer src="http://127.0.0.1:5176/install.js?site=policy_website" data-site-id="policy_website"></script>
+```
+
+Expected manual flow:
+
+```text
+1. Open each test website once so the script registers the site.
+2. CRM shows the install under Available, grouped as Online or Offline by reachability.
+3. Move the install to Current.
+4. Run setup only when the source website is online.
+5. Setup produces crawl, flow, readiness evidence, and prompt smoke-test evidence.
+6. Crawl stays locked while the source website is offline.
+```
+
+Production customer persistence:
+
+```text
+ENSURE_DEFAULT_CLIENT_ON_STARTUP=false only disables implicit default-client seeding.
+It does not make clients temporary. Customers remain permanent as long as the same
+database volume is used and the client is not deleted from CRM.
 ```

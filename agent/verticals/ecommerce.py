@@ -24,6 +24,7 @@ VERTICAL = VerticalDefinition(
         "SHOW_PRODUCTS",
         "SHOW_COMPARISON",
         "FILTER_PRODUCTS",
+        "SORT_PRODUCTS",
         "ADD_TO_CART",
         "CHECKOUT",
     ),

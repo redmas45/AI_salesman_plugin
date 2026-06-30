@@ -2,9 +2,9 @@ import { config } from "./config";
 import { API_PATHS } from "./constants";
 
 const HOST_CATALOG_ENDPOINTS = Object.freeze([
-  "/api/products.json",
-  "/products.json",
-  "/collections/all/products.json",
+  { path: "/api/products.json", routePrefix: "" },
+  { path: "/products.json", routePrefix: "/products/" },
+  { path: "/collections/all/products.json", routePrefix: "/products/" },
 ]);
 const CATALOG_ARRAY_FIELDS = Object.freeze(["products", "data", "items", "results"]);
 const PRODUCT_ID_FIELDS = Object.freeze(["id", "product_id", "handle", "sku"]);
@@ -16,8 +16,6 @@ const PRODUCT_CATEGORY_FIELDS = Object.freeze(["category", "category_name", "pro
 const PRODUCT_DESCRIPTION_FIELDS = Object.freeze(["description", "summary", "body_html"]);
 const DEFAULT_PRODUCT_BRAND = "Unknown Brand";
 const DEFAULT_PRODUCT_CATEGORY = "Products";
-const AI_KART_PRODUCT_PATH_PREFIX = "/product/";
-const SHOPIFY_PRODUCT_PATH_PREFIX = "/products/";
 const PRODUCT_ROUTE_SUFFIX = "/";
 const HANDLE_PATTERN = /^[a-z0-9][a-z0-9-]*$/i;
 
@@ -68,21 +66,16 @@ function sameOriginUrl(raw) {
   }
 }
 
-function routePrefixFor(endpointPath) {
-  return endpointPath === "/products.json" || endpointPath.includes("/collections/")
-    ? SHOPIFY_PRODUCT_PATH_PREFIX
-    : AI_KART_PRODUCT_PATH_PREFIX;
-}
-
-function productUrlFrom(raw, handle, endpointPath) {
+function productUrlFrom(raw, handle, endpoint) {
   const explicitUrl = sameOriginUrl(firstValue(raw, PRODUCT_URL_FIELDS));
   if (explicitUrl) return explicitUrl;
 
   if (!HANDLE_PATTERN.test(handle) || !/[a-z]/i.test(handle)) return "";
-  return `${routePrefixFor(endpointPath)}${encodeURIComponent(handle)}${PRODUCT_ROUTE_SUFFIX}`;
+  if (!endpoint?.routePrefix) return "";
+  return `${endpoint.routePrefix}${encodeURIComponent(handle)}${PRODUCT_ROUTE_SUFFIX}`;
 }
 
-function normalizeProduct(raw, endpointPath = "") {
+function normalizeProduct(raw, endpoint = {}) {
   if (!raw) return null;
 
   const id = firstValue(raw, PRODUCT_ID_FIELDS);
@@ -101,7 +94,7 @@ function normalizeProduct(raw, endpointPath = "") {
     description: firstValue(raw, PRODUCT_DESCRIPTION_FIELDS),
     price: Number.isFinite(price) ? price : 0,
     imageUrl: imageFrom(raw),
-    url: productUrlFrom(raw, handle || id, endpointPath),
+    url: productUrlFrom(raw, handle || id, endpoint),
   };
 }
 
@@ -137,19 +130,19 @@ function flattenCatalogPayload(payload) {
   return [];
 }
 
-async function fetchCatalogEndpoint(endpointPath) {
+async function fetchCatalogEndpoint(endpoint) {
   try {
-    const response = await fetch(new URL(endpointPath, window.location.origin), {
+    const response = await fetch(new URL(endpoint.path, window.location.origin), {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) return [];
 
     const payload = await response.json();
     return flattenCatalogPayload(payload)
-      .map((product) => normalizeProduct(product, endpointPath))
+      .map((product) => normalizeProduct(product, endpoint))
       .filter(Boolean);
   } catch (error) {
-    console.warn(`[ShopBot] Catalog endpoint lookup failed for ${endpointPath}:`, error);
+    console.warn(`[AI Hub Widget] Catalog endpoint lookup failed for ${endpoint.path}:`, error);
     return [];
   }
 }
@@ -173,7 +166,7 @@ export async function fetchHubProductsByIds(productIds) {
   url.searchParams.set("ids", ids.join(","));
 
   const response = await fetch(url.toString(), { headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error("Failed to fetch products from ShopBot API");
+  if (!response.ok) throw new Error("Failed to fetch products from AI Hub API");
 
   const products = (await response.json()).map((product) => normalizeProduct(product)).filter(Boolean);
   const byId = new Map(products.map((product) => [String(product.id), product]));

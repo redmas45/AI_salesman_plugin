@@ -12,8 +12,11 @@ from pydantic import BaseModel, Field
 
 import config
 from agent.adapter_discovery import render_adapter_code
+from agent.client_initialization import run_assistant_smoke_tests, run_widget_initialization
 from agent.ingestion import sync_web_crawl
-from api.routes.clients import _public_runtime_config, _public_widget_base_url
+from agent.provider_status import provider_usage_status
+from agent.tenant_isolation import build_tenant_isolation_audit
+from api.routes.clients import _public_runtime_config, _public_widget_base_url, universal_install_script_tag
 from db import admin as admin_db
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,37 @@ class PromptProfileSaveRequest(BaseModel):
     developer_rules: str = Field(default="", max_length=12000)
     publish: bool = False
     changelog: str = Field(default="", max_length=500)
+
+
+class AdapterActionsSaveRequest(BaseModel):
+    actions: dict[str, Any] = Field(default_factory=dict)
+
+
+class AdapterActionReviewRequest(BaseModel):
+    candidate: dict[str, Any] = Field(default_factory=dict)
+    decision: str = Field(..., min_length=1, max_length=20)
+    action_name: str = Field(default="", max_length=80)
+    note: str = Field(default="", max_length=500)
+
+
+class AdapterActionProposalReviewRequest(BaseModel):
+    proposal: dict[str, Any] = Field(default_factory=dict)
+    decision: str = Field(..., min_length=1, max_length=20)
+    note: str = Field(default="", max_length=500)
+
+
+class FlowRepairProposalReviewRequest(BaseModel):
+    proposal: dict[str, Any] = Field(default_factory=dict)
+    decision: str = Field(..., min_length=1, max_length=20)
+    note: str = Field(default="", max_length=500)
+
+
+class FlowDiscoveryRequest(BaseModel):
+    max_pages: int = Field(default=6, ge=1, le=20)
+
+
+class FlowRehearsalRequest(BaseModel):
+    max_steps: int = Field(default=24, ge=1, le=80)
 
 
 class ClientStatusRequest(BaseModel):
@@ -120,6 +154,16 @@ async def crm_overview() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to load CRM overview.") from exc
 
 
+@router.get("/provider-usage")
+async def crm_provider_usage() -> dict[str, Any]:
+    """Return AI provider quota, cost, and local token usage status."""
+    try:
+        return {"provider_usage": provider_usage_status()}
+    except Exception as exc:
+        logger.error("CRM provider usage failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to load provider usage.") from exc
+
+
 @router.get("/clients")
 async def crm_clients() -> dict[str, list[dict[str, Any]]]:
     """Return all active CRM clients."""
@@ -146,6 +190,17 @@ async def crm_vertical_detail(vertical_key: str) -> dict[str, Any]:
         return {"vertical": admin_db.get_vertical_detail(vertical_key)}
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/installer")
+async def crm_universal_installer() -> dict[str, str]:
+    """Return the universal installer script used for automatic client onboarding."""
+    api_base_url = _public_widget_base_url()
+    return {
+        "script_tag": universal_install_script_tag(api_base_url=api_base_url),
+        "script_url": f"{api_base_url}/install.js",
+        "mode": "universal_auto_onboarding",
+    }
 
 
 @router.post("/clients", status_code=status.HTTP_201_CREATED)
@@ -181,6 +236,19 @@ async def crm_client_detail(site_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to load client.") from exc
 
 
+@router.get("/clients/{site_id}/operation-status")
+async def crm_client_operation_status(site_id: str) -> dict[str, Any]:
+    """Return backend-backed operation status for one client."""
+    try:
+        client = admin_db.get_client_detail(site_id)
+        return _client_operation_status(client)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM operation status failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to load operation status.") from exc
+
+
 @router.get("/clients/{site_id}/knowledge")
 async def crm_client_knowledge(site_id: str, limit: int = 50) -> dict[str, Any]:
     """Return generic knowledge rows for one client."""
@@ -197,6 +265,35 @@ async def crm_client_knowledge(site_id: str, limit: int = 50) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to load knowledge items.") from exc
 
 
+@router.get("/clients/{site_id}/isolation-audit")
+async def crm_client_isolation_audit(site_id: str) -> dict[str, Any]:
+    """Return explicit tenant/RAG isolation checks for one client."""
+    try:
+        from db.knowledge import knowledge_preview, knowledge_stats
+
+        client = admin_db.get_client_detail(site_id)
+        runtime_config = _public_runtime_config(site=site_id, api_base_url=_public_widget_base_url())
+        prompt_profile = admin_db.get_client_prompt_profile(site_id)
+        knowledge = {
+            "stats": knowledge_stats(site_id),
+            "items": knowledge_preview(site_id, 10),
+        }
+        return {
+            "audit": build_tenant_isolation_audit(
+                site_id=site_id,
+                client=client,
+                runtime_config=runtime_config,
+                prompt_profile=prompt_profile,
+                knowledge=knowledge,
+            )
+        }
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM isolation audit failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to run isolation audit.") from exc
+
+
 @router.get("/clients/{site_id}/adapter")
 async def crm_client_adapter(site_id: str) -> dict[str, Any]:
     """Return generated adapter runtime config and readable code for one client."""
@@ -211,6 +308,204 @@ async def crm_client_adapter(site_id: str) -> dict[str, Any]:
     except Exception as exc:
         logger.error("CRM adapter lookup failed for %s: %s", site_id, exc)
         raise HTTPException(status_code=500, detail="Failed to load adapter config.") from exc
+
+
+@router.patch("/clients/{site_id}/adapter/actions")
+async def crm_save_client_adapter_actions(site_id: str, req: AdapterActionsSaveRequest) -> dict[str, Any]:
+    """Replace the generated adapter action map with CRM-reviewed actions."""
+    try:
+        admin_db.update_client_adapter_actions(site_id, req.actions)
+        runtime_config = _public_runtime_config(site=site_id, api_base_url=_public_widget_base_url())
+        return {
+            "runtime_config": runtime_config,
+            "adapter_code": render_adapter_code(runtime_config),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM adapter action save failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to save adapter actions.") from exc
+
+
+@router.post("/clients/{site_id}/adapter/action-candidates/review")
+async def crm_review_client_adapter_action(site_id: str, req: AdapterActionReviewRequest) -> dict[str, Any]:
+    """Approve or reject one discovered adapter action candidate."""
+    try:
+        admin_db.review_client_action_candidate(
+            site_id,
+            req.candidate,
+            decision=req.decision,
+            action_name=req.action_name,
+            note=req.note,
+        )
+        runtime_config = _public_runtime_config(site=site_id, api_base_url=_public_widget_base_url())
+        return {
+            "runtime_config": runtime_config,
+            "adapter_code": render_adapter_code(runtime_config),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM adapter action review failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to review adapter action candidate.") from exc
+
+
+@router.post("/clients/{site_id}/adapter/action-proposals/refresh")
+async def crm_refresh_client_adapter_action_proposals(site_id: str) -> dict[str, Any]:
+    """Refresh CRM-reviewable adapter action repair proposals."""
+    try:
+        admin_db.refresh_client_action_proposals(site_id)
+        runtime_config = _public_runtime_config(site=site_id, api_base_url=_public_widget_base_url())
+        return {
+            "runtime_config": runtime_config,
+            "adapter_code": render_adapter_code(runtime_config),
+        }
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM adapter action proposal refresh failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to refresh adapter action proposals.") from exc
+
+
+@router.post("/clients/{site_id}/adapter/action-proposals/review")
+async def crm_review_client_adapter_action_proposal(
+    site_id: str,
+    req: AdapterActionProposalReviewRequest,
+) -> dict[str, Any]:
+    """Approve or reject one adapter action repair proposal."""
+    try:
+        admin_db.review_client_action_proposal(site_id, req.proposal, decision=req.decision, note=req.note)
+        runtime_config = _public_runtime_config(site=site_id, api_base_url=_public_widget_base_url())
+        return {
+            "runtime_config": runtime_config,
+            "adapter_code": render_adapter_code(runtime_config),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM adapter action proposal review failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to review adapter action proposal.") from exc
+
+
+@router.post("/clients/{site_id}/adapter/flow-repair-proposals/review")
+async def crm_review_client_flow_repair_proposal(
+    site_id: str,
+    req: FlowRepairProposalReviewRequest,
+) -> dict[str, Any]:
+    """Approve or reject one flow-level repair proposal."""
+    try:
+        admin_db.review_client_flow_repair_proposal(site_id, req.proposal, decision=req.decision, note=req.note)
+        runtime_config = _public_runtime_config(site=site_id, api_base_url=_public_widget_base_url())
+        return {
+            "runtime_config": runtime_config,
+            "adapter_code": render_adapter_code(runtime_config),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM flow repair proposal review failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to review flow repair proposal.") from exc
+
+
+@router.get("/clients/{site_id}/flows")
+async def crm_client_flows(site_id: str) -> dict[str, Any]:
+    """Return the latest server-side website flow graph for one client."""
+    try:
+        client = admin_db.get_client_detail(site_id)
+        vertical_config = client.get("vertical_config") if isinstance(client.get("vertical_config"), dict) else {}
+        flow = vertical_config.get("flow") if isinstance(vertical_config.get("flow"), dict) else {}
+        if not flow:
+            raise LookupError(f"No flow report exists for {site_id}.")
+        return {"flow": flow}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM flow lookup failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to load flow report.") from exc
+
+
+@router.post("/clients/{site_id}/flows/discover")
+async def crm_discover_client_flows(site_id: str, req: FlowDiscoveryRequest) -> dict[str, Any]:
+    """Run server-side browser flow discovery and persist the report."""
+    try:
+        client = admin_db.get_client_detail(site_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        flow = await _discover_and_save_client_flows(client, req.max_pages)
+        runtime_config = _public_runtime_config(site=site_id, api_base_url=_public_widget_base_url())
+        return {
+            "flow": flow,
+            "runtime_config": runtime_config,
+            "adapter_code": render_adapter_code(runtime_config),
+        }
+    except Exception as exc:
+        logger.error("CRM flow discovery failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to discover website flows.") from exc
+
+
+@router.get("/clients/{site_id}/flows/regression")
+async def crm_client_flow_regression(site_id: str) -> dict[str, Any]:
+    """Return the latest flow regression report for one client."""
+    try:
+        client = admin_db.get_client_detail(site_id)
+        vertical_config = client.get("vertical_config") if isinstance(client.get("vertical_config"), dict) else {}
+        regression = vertical_config.get("regression") if isinstance(vertical_config.get("regression"), dict) else {}
+        if not regression:
+            raise LookupError(f"No flow regression report exists for {site_id}.")
+        return {"regression": regression}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM flow regression lookup failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to load flow regression report.") from exc
+
+
+@router.get("/clients/{site_id}/flows/rehearsal")
+async def crm_client_flow_rehearsal(site_id: str) -> dict[str, Any]:
+    """Return the latest safe flow rehearsal report for one client."""
+    try:
+        client = admin_db.get_client_detail(site_id)
+        vertical_config = client.get("vertical_config") if isinstance(client.get("vertical_config"), dict) else {}
+        rehearsal = vertical_config.get("rehearsal") if isinstance(vertical_config.get("rehearsal"), dict) else {}
+        if not rehearsal:
+            raise LookupError(f"No flow rehearsal report exists for {site_id}.")
+        return {"rehearsal": rehearsal}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM flow rehearsal lookup failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to load flow rehearsal report.") from exc
+
+
+@router.post("/clients/{site_id}/flows/rehearse")
+async def crm_rehearse_client_flows(site_id: str, req: FlowRehearsalRequest) -> dict[str, Any]:
+    """Safely rehearse discovered flow targets and persist the report."""
+    try:
+        client = admin_db.get_client_detail(site_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        rehearsal = await _rehearse_and_save_client_flows(client, req.max_steps)
+        runtime_config = _public_runtime_config(site=site_id, api_base_url=_public_widget_base_url())
+        return {
+            "rehearsal": rehearsal,
+            "runtime_config": runtime_config,
+            "adapter_code": render_adapter_code(runtime_config),
+        }
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM flow rehearsal failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to rehearse website flows.") from exc
 
 
 @router.get("/clients/{site_id}/prompt-profile")
@@ -274,7 +569,7 @@ async def crm_client_vertical(site_id: str, req: ClientVerticalRequest) -> dict[
 
 @router.delete("/clients/{site_id}")
 async def crm_remove_client(site_id: str) -> dict[str, str]:
-    """Soft-delete a client without dropping its tenant schema."""
+    """Remove a client from the current roster without dropping tenant data."""
     try:
         admin_db.remove_client(site_id)
         return {"status": "ok"}
@@ -283,6 +578,24 @@ async def crm_remove_client(site_id: str) -> dict[str, str]:
     except Exception as exc:
         logger.error("CRM remove client failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to remove client.") from exc
+
+
+@router.post("/clients/{site_id}/activate")
+async def crm_activate_client(site_id: str) -> dict[str, Any]:
+    """Move a discovered client into the current roster without starting integration work."""
+    try:
+        client = admin_db.activate_client(site_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM activate client failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to activate client.") from exc
+
+    return {
+        "client": client,
+        "status": "activated",
+        "message": "Client moved to Current. Run Crawl now or Run setup when the source site is live.",
+    }
 
 
 @router.patch("/clients/{site_id}/status")
@@ -362,10 +675,76 @@ async def crm_trigger_client_crawl(site_id: str, background_tasks: BackgroundTas
         client = admin_db.get_client_detail(site_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if str(client.get("status") or "") == admin_db.CLIENT_STATUS_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Move this client to Current before starting a crawl.",
+        )
 
     admin_db.update_client_crawl_status(site_id, admin_db.CRAWL_STATUS_RUNNING, "Crawler queued.")
     background_tasks.add_task(_run_client_crawl, site_id, client["store_url"])
     return {"status": "ok", "message": "Crawler started in background."}
+
+
+@router.post("/clients/{site_id}/auto-integrate")
+async def crm_trigger_client_auto_integration(site_id: str, background_tasks: BackgroundTasks) -> dict[str, str]:
+    """Queue the non-destructive AI Hub setup pipeline for one client."""
+    try:
+        client = admin_db.get_client_detail(site_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if str(client.get("status") or "") == admin_db.CLIENT_STATUS_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Move this client to Current before starting setup.",
+        )
+
+    admin_db.update_client_crawl_status(site_id, admin_db.CRAWL_STATUS_RUNNING, "Setup run queued.")
+    background_tasks.add_task(
+        run_widget_initialization,
+        site_id,
+        str(client.get("store_url") or ""),
+        vertical_key=str(client.get("vertical_key") or admin_db.DEFAULT_CLIENT_VERTICAL_KEY),
+        run_crawl=True,
+        run_flow=True,
+        run_rehearsal=True,
+        crawl_max_pages=config.CRAWL_MAX_PAGES,
+        crawl_max_depth=config.CRAWL_MAX_DEPTH,
+        run_readiness=True,
+        run_smoke_tests=True,
+    )
+    return {
+        "status": "queued",
+        "message": "Setup run queued: crawl, flow discovery, rehearsal, regression, readiness scan, and assistant smoke tests.",
+    }
+
+
+@router.post("/clients/{site_id}/assistant-smoke-tests")
+async def crm_run_client_assistant_smoke_tests(site_id: str) -> dict[str, Any]:
+    """Run assistant prompt smoke tests without re-crawling or overwriting initialization evidence."""
+    try:
+        client = admin_db.get_client_detail(site_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if str(client.get("status") or "") == admin_db.CLIENT_STATUS_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Move this client to Current before running assistant smoke tests.",
+        )
+
+    report = run_assistant_smoke_tests(
+        site_id,
+        str(client.get("vertical_key") or admin_db.DEFAULT_CLIENT_VERTICAL_KEY),
+    )
+    updated_client = admin_db.save_client_assistant_smoke_report(site_id, report)
+    return {
+        "status": report.get("status", "unknown"),
+        "message": report.get("message", "Assistant smoke tests completed."),
+        "report": report,
+        "client": updated_client,
+    }
 
 
 @router.get("/settings")
@@ -432,11 +811,18 @@ async def crm_scan_site(site_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     try:
+        previous_client = client
+        await _discover_and_save_client_flows(client, max_pages=6, save_regression=False)
+        client = admin_db.get_client_detail(site_id)
+        await _rehearse_and_save_client_flows(client, max_steps=24, previous_client=previous_client)
+        client = admin_db.get_client_detail(site_id)
         from agent.scanner import scan_site
         report = await scan_site(
             client["store_url"],
             site_id,
             adapter_name=str(client.get("adapter_name") or ""),
+            vertical_key=str(client.get("vertical_key") or ""),
+            vertical_config=client.get("vertical_config") if isinstance(client.get("vertical_config"), dict) else {},
         )
         report_dict = report.to_dict()
         admin_db.save_readiness_report(site_id, report_dict)
@@ -483,6 +869,294 @@ async def crm_capabilities(site_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Capabilities lookup failed.") from exc
 
 
+def _client_operation_status(client: dict[str, Any]) -> dict[str, Any]:
+    site_id = str(client.get("site_id") or "")
+    vertical_config = _dict_value(client.get("vertical_config"))
+    return {
+        "site_id": site_id,
+        "generated_at": _utc_now(),
+        "operations": {
+            "crawl": _crawl_operation_status(client),
+            "readiness": _readiness_operation_status(client),
+            "integration": _integration_operation_status(client, vertical_config),
+        },
+    }
+
+
+def _crawl_operation_status(client: dict[str, Any]) -> dict[str, Any]:
+    site_id = str(client.get("site_id") or "")
+    raw_status = str(client.get("last_crawl_status") or admin_db.CRAWL_STATUS_NOT_STARTED).lower()
+    message = str(client.get("last_crawl_message") or "")
+    updated_at = str(client.get("last_crawl_at") or "")
+    report = admin_db.get_latest_crawl_report(site_id) or {}
+    status = {
+        admin_db.CRAWL_STATUS_RUNNING: "running",
+        admin_db.CRAWL_STATUS_OK: "complete",
+        admin_db.CRAWL_STATUS_ERROR: "failed",
+    }.get(raw_status, "pending")
+    stages = [
+        _operation_stage("crawl_queue", "Queueing crawl job", "pending", "Waiting for crawl request."),
+        _operation_stage("crawl_connect", "Connecting to website", "pending", "Waiting for crawler."),
+        _operation_stage("crawl_pages", "Reading pages and routes", "pending", "Waiting for crawler."),
+        _operation_stage("crawl_extract", "Extracting records and metadata", "pending", "Waiting for crawler."),
+        _operation_stage("crawl_store", "Updating knowledge store", "pending", "Waiting for crawler."),
+        _operation_stage("crawl_report", "Refreshing crawl report", "pending", "Waiting for crawler."),
+    ]
+    if status == "running":
+        stages[0] = _operation_stage("crawl_queue", "Queueing crawl job", "complete", "Crawler accepted the request.", completed_at=updated_at)
+        stages[1] = _operation_stage("crawl_connect", "Connecting to website", "running", message or "Crawler is connecting to the source website.", started_at=updated_at)
+    elif status == "complete":
+        pages = int(report.get("pages_visited") or 0)
+        products = int(report.get("product_count") or 0)
+        duration = float(report.get("duration_ms") or 0.0)
+        stages = [
+            _operation_stage("crawl_queue", "Queueing crawl job", "complete", "Crawler accepted the request.", completed_at=updated_at),
+            _operation_stage("crawl_connect", "Connecting to website", "complete", "Website connection completed.", completed_at=updated_at),
+            _operation_stage("crawl_pages", "Reading pages and routes", "complete", f"{pages} pages visited.", completed_at=updated_at),
+            _operation_stage("crawl_extract", "Extracting records and metadata", "complete", f"{products} records extracted.", completed_at=updated_at),
+            _operation_stage("crawl_store", "Updating knowledge store", "complete", "Knowledge/catalog data refreshed.", completed_at=updated_at),
+            _operation_stage("crawl_report", "Refreshing crawl report", "complete", "Crawl report saved.", completed_at=str(report.get("created_at") or updated_at), duration_ms=duration),
+        ]
+    elif status == "failed":
+        stages[0] = _operation_stage("crawl_queue", "Queueing crawl job", "complete", "Crawler accepted the request.", completed_at=updated_at)
+        stages[1] = _operation_stage("crawl_connect", "Connecting to website", "failed", message or "Crawler failed.", completed_at=updated_at)
+    return _operation(
+        "crawl",
+        "Crawler run",
+        status,
+        message or _operation_message(status, "Crawler"),
+        stages,
+        result_tab="crawl",
+        started_at=updated_at if raw_status == admin_db.CRAWL_STATUS_RUNNING else "",
+        completed_at=updated_at if status in {"complete", "failed"} else "",
+        logs=_stage_logs(stages),
+    )
+
+
+def _readiness_operation_status(client: dict[str, Any]) -> dict[str, Any]:
+    site_id = str(client.get("site_id") or "")
+    report = admin_db.get_readiness_report(site_id) or {}
+    scanned_at = str(report.get("scanned_at") or "")
+    capabilities = report.get("capabilities") if isinstance(report.get("capabilities"), list) else []
+    supported = sum(1 for item in capabilities if isinstance(item, dict) and item.get("supported"))
+    total = len(capabilities)
+    if not report:
+        return _operation(
+            "readiness",
+            "Readiness scan",
+            "pending",
+            "No readiness scan has been saved yet.",
+            [
+                _operation_stage("readiness_context", "Preparing client context", "pending", "Waiting for scan."),
+                _operation_stage("readiness_evidence", "Loading latest adapter evidence", "pending", "Waiting for scan."),
+                _operation_stage("readiness_scan", "Scanning website capabilities", "pending", "Waiting for scan."),
+                _operation_stage("readiness_compare", "Comparing domain action contract", "pending", "Waiting for scan."),
+                _operation_stage("readiness_save", "Saving readiness report", "pending", "Waiting for scan."),
+            ],
+            result_tab="readiness",
+        )
+    stages = [
+        _operation_stage("readiness_context", "Preparing client context", "complete", "Client context loaded.", completed_at=scanned_at),
+        _operation_stage("readiness_evidence", "Loading latest adapter evidence", "complete", "Adapter evidence loaded.", completed_at=scanned_at),
+        _operation_stage("readiness_scan", "Scanning website capabilities", "complete", f"{supported}/{total} checks supported.", completed_at=scanned_at),
+        _operation_stage("readiness_compare", "Comparing domain action contract", "complete", "Action contract compared.", completed_at=scanned_at),
+        _operation_stage("readiness_save", "Saving readiness report", "complete", "Readiness report saved.", completed_at=scanned_at),
+    ]
+    return _operation(
+        "readiness",
+        "Readiness scan",
+        "complete",
+        f"{supported}/{total} readiness checks supported.",
+        stages,
+        result_tab="readiness",
+        completed_at=scanned_at,
+        logs=_stage_logs(stages),
+    )
+
+
+def _integration_operation_status(client: dict[str, Any], vertical_config: dict[str, Any]) -> dict[str, Any]:
+    initialization = _dict_value(vertical_config.get("initialization"))
+    raw_stages = initialization.get("stages") if isinstance(initialization.get("stages"), list) else []
+    if not initialization:
+        stages = [
+            _operation_stage("integration_queue", "Queueing setup run", "pending", "Waiting for setup run."),
+            _operation_stage("crawl", "Crawling source website", "pending", "Waiting for setup run."),
+            _operation_stage("flow_discovery", "Discovering routes and actions", "pending", "Waiting for setup run."),
+            _operation_stage("flow_rehearsal", "Validating adapter behavior", "pending", "Waiting for setup run."),
+            _operation_stage("assistant_smoke_tests", "Running prompt checks", "pending", "Waiting for setup run."),
+            _operation_stage("integration_save", "Saving evidence", "pending", "Waiting for setup run."),
+        ]
+        return _operation(
+            "integration",
+            "Setup run",
+            "pending",
+            "No setup run has been saved yet.",
+            stages,
+            result_tab="integration",
+        )
+    stages = [_integration_stage_from_saved(stage) for stage in raw_stages if isinstance(stage, dict)]
+    if not stages:
+        stages = [_operation_stage("integration_queue", "Queueing setup run", "running", "Setup run accepted.")]
+    if all(stage["status"] != "running" for stage in stages):
+        stages.append(_operation_stage("integration_save", "Saving evidence", "complete", "Setup evidence saved.", completed_at=str(initialization.get("completed_at") or "")))
+    status = _normalize_operation_status(str(initialization.get("status") or "unknown"), stages)
+    return _operation(
+        "integration",
+        "Setup run",
+        status,
+        str(initialization.get("error") or "") or _operation_message(status, "Setup run"),
+        stages,
+        result_tab="integration",
+        started_at=str(initialization.get("started_at") or ""),
+        completed_at=str(initialization.get("completed_at") or ""),
+        duration_ms=float(initialization.get("duration_ms") or 0.0),
+        logs=_stage_logs(stages),
+    )
+
+
+def _integration_stage_from_saved(stage: dict[str, Any]) -> dict[str, Any]:
+    name = str(stage.get("name") or "stage")
+    return _operation_stage(
+        name,
+        _integration_stage_label(name),
+        _normalize_stage_status(str(stage.get("status") or "unknown")),
+        str(stage.get("message") or ""),
+        started_at=str(stage.get("started_at") or ""),
+        completed_at=str(stage.get("completed_at") or ""),
+        duration_ms=float(stage.get("duration_ms") or 0.0),
+        detail={key: value for key, value in stage.items() if key not in {"name", "status", "message", "started_at", "completed_at", "duration_ms"}},
+    )
+
+
+def _integration_stage_label(name: str) -> str:
+    return {
+        "crawl": "Crawling source website",
+        "flow_discovery": "Discovering routes and actions",
+        "flow_rehearsal": "Validating adapter behavior",
+        "flow_regression": "Comparing flow changes",
+        "readiness_scan": "Scanning readiness",
+        "assistant_smoke_tests": "Running prompt checks",
+        "integration_save": "Saving evidence",
+        "integration_queue": "Queueing setup run",
+    }.get(name, name.replace("_", " ").title())
+
+
+def _normalize_stage_status(status: str) -> str:
+    normalized = status.lower()
+    if normalized in {"ok", "complete", "completed", "success", "passed"}:
+        return "complete"
+    if normalized in {"failed", "error"}:
+        return "failed"
+    if normalized == "running":
+        return "running"
+    if normalized == "skipped":
+        return "skipped"
+    return "pending"
+
+
+def _normalize_operation_status(raw_status: str, stages: list[dict[str, Any]]) -> str:
+    normalized = raw_status.lower()
+    if any(stage["status"] == "running" for stage in stages) or normalized == "running":
+        return "running"
+    if any(stage["status"] == "failed" for stage in stages) or normalized in {"failed", "error"}:
+        return "failed"
+    if stages and all(stage["status"] in {"complete", "skipped"} for stage in stages):
+        return "complete"
+    if normalized in {"ok", "complete", "completed", "success"}:
+        return "complete"
+    return "pending"
+
+
+def _operation(
+    kind: str,
+    label: str,
+    status: str,
+    message: str,
+    stages: list[dict[str, Any]],
+    *,
+    result_tab: str,
+    started_at: str = "",
+    completed_at: str = "",
+    duration_ms: float = 0.0,
+    logs: list[str] | None = None,
+) -> dict[str, Any]:
+    progress = _operation_progress(stages)
+    return {
+        "kind": kind,
+        "label": label,
+        "status": status,
+        "message": message,
+        "progress": progress,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "duration_ms": max(0.0, float(duration_ms or 0.0)),
+        "result_tab": result_tab,
+        "stages": stages,
+        "logs": logs or [],
+    }
+
+
+def _operation_stage(
+    name: str,
+    label: str,
+    status: str,
+    message: str,
+    *,
+    started_at: str = "",
+    completed_at: str = "",
+    duration_ms: float = 0.0,
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "label": label,
+        "status": status,
+        "message": message,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "duration_ms": max(0.0, float(duration_ms or 0.0)),
+        "detail": detail or {},
+    }
+
+
+def _operation_progress(stages: list[dict[str, Any]]) -> int:
+    if not stages:
+        return 0
+    complete_weight = sum(1 for stage in stages if stage.get("status") in {"complete", "skipped"})
+    running_weight = 0.5 if any(stage.get("status") == "running" for stage in stages) else 0
+    return min(100, int(((complete_weight + running_weight) / len(stages)) * 100))
+
+
+def _operation_message(status: str, label: str) -> str:
+    if status == "running":
+        return f"{label} is running."
+    if status == "complete":
+        return f"{label} completed."
+    if status == "failed":
+        return f"{label} failed."
+    return f"{label} has not started."
+
+
+def _stage_logs(stages: list[dict[str, Any]]) -> list[str]:
+    logs: list[str] = []
+    for stage in stages:
+        status = str(stage.get("status") or "unknown")
+        label = str(stage.get("label") or stage.get("name") or "Stage")
+        message = str(stage.get("message") or "")
+        logs.append(f"{label}: {status}{f' - {message}' if message else ''}")
+    return logs
+
+
+def _dict_value(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _run_client_crawl(site_id: str, store_url: str) -> None:
     """Execute a client crawl and persist the outcome for CRM status."""
     try:
@@ -498,3 +1172,71 @@ def _run_client_crawl(site_id: str, store_url: str) -> None:
     except Exception as exc:
         logger.error("CRM crawler failed for %s: %s", site_id, exc)
         admin_db.update_client_crawl_status(site_id, admin_db.CRAWL_STATUS_ERROR, str(exc))
+
+
+async def _discover_and_save_client_flows(
+    client: dict[str, Any],
+    max_pages: int,
+    *,
+    save_regression: bool = True,
+) -> dict[str, Any]:
+    from agent.flow_discovery import discover_site_flows
+
+    flow_report = await discover_site_flows(
+        str(client.get("store_url") or ""),
+        str(client.get("site_id") or ""),
+        vertical_key=str(client.get("vertical_key") or ""),
+        max_pages=max_pages,
+    )
+    flow_dict = flow_report.to_dict()
+    admin_db.save_client_flow_report(str(client.get("site_id") or ""), flow_dict)
+    if save_regression:
+        _compare_and_save_client_flow_regression(client, flow_dict, {})
+    return flow_dict
+
+
+async def _rehearse_and_save_client_flows(
+    client: dict[str, Any],
+    max_steps: int,
+    *,
+    previous_client: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from agent.flow_rehearsal import rehearse_site_flows
+
+    vertical_config = client.get("vertical_config") if isinstance(client.get("vertical_config"), dict) else {}
+    flow_report = vertical_config.get("flow") if isinstance(vertical_config.get("flow"), dict) else {}
+    if not flow_report:
+        raise LookupError(f"No flow report exists for {client.get('site_id')}.")
+    rehearsal_report = await rehearse_site_flows(
+        str(client.get("store_url") or ""),
+        str(client.get("site_id") or ""),
+        flow_report,
+        max_steps=max_steps,
+    )
+    rehearsal_dict = rehearsal_report.to_dict()
+    admin_db.save_client_rehearsal_report(str(client.get("site_id") or ""), rehearsal_dict)
+    _compare_and_save_client_flow_regression(previous_client or client, flow_report, rehearsal_dict)
+    return rehearsal_dict
+
+
+def _compare_and_save_client_flow_regression(
+    previous_client: dict[str, Any],
+    current_flow: dict[str, Any],
+    current_rehearsal: dict[str, Any],
+) -> dict[str, Any]:
+    from agent.flow_regression import build_flow_regression_report
+
+    previous_config = previous_client.get("vertical_config") if isinstance(previous_client.get("vertical_config"), dict) else {}
+    previous_flow = previous_config.get("flow") if isinstance(previous_config.get("flow"), dict) else {}
+    previous_rehearsal = previous_config.get("rehearsal") if isinstance(previous_config.get("rehearsal"), dict) else {}
+    regression_report = build_flow_regression_report(
+        previous_flow,
+        current_flow,
+        previous_rehearsal=previous_rehearsal,
+        current_rehearsal=current_rehearsal,
+        site_id=str(previous_client.get("site_id") or current_flow.get("site_id") or ""),
+        site_url=str(previous_client.get("store_url") or current_flow.get("site_url") or ""),
+    )
+    regression_dict = regression_report.to_dict()
+    admin_db.save_client_regression_report(str(previous_client.get("site_id") or current_flow.get("site_id") or ""), regression_dict)
+    return regression_dict

@@ -21,5 +21,12 @@ VERTICAL = VerticalDefinition(
     ),
     entity_types=("knowledge_item", "service", "article", "faq", "policy_page", "contact"),
     readiness_checks=("knowledge", "sources", "contact", "policies", "lead_capture"),
-    action_types=("SHOW_ENTITIES", "NAVIGATE_TO", "CAPTURE_LEAD", "HANDOFF_TO_HUMAN"),
+    action_types=(
+        "SHOW_ENTITIES",
+        "SORT_ENTITIES",
+        "NAVIGATE_TO",
+        "REQUEST_CALLBACK",
+        "CAPTURE_LEAD",
+        "HANDOFF_TO_HUMAN",
+    ),
 )

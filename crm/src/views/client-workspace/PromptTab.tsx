@@ -69,6 +69,8 @@ export function PromptTab({ client, vertical }: PromptTabProps) {
     () => activeVersion?.allowed_actions?.filter(Boolean).slice(0, 18) ?? [],
     [activeVersion],
   );
+  const flowPrompts = useMemo(() => promptSuggestions(client.vertical_config), [client.vertical_config]);
+  const intakeQuestions = useMemo(() => salesIntakeQuestions(client.vertical_config), [client.vertical_config]);
 
   async function saveDraft(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -122,6 +124,18 @@ export function PromptTab({ client, vertical }: PromptTabProps) {
     } finally {
       setSaving(false);
     }
+  }
+
+  function applyPromptSuggestion(prompt: string) {
+    const cleanPrompt = prompt.trim();
+    if (!cleanPrompt) return;
+    if (developerRules.includes(cleanPrompt)) {
+      setMessage('Prompt suggestion is already in developer rules.');
+      return;
+    }
+    const prefix = developerRules.trim() ? `${developerRules.trim()}\n` : '';
+    setDeveloperRules(`${prefix}Customer prompt coverage: ${cleanPrompt}`);
+    setMessage('Prompt suggestion added to developer rules. Save or publish to apply it.');
   }
 
   return (
@@ -201,6 +215,40 @@ export function PromptTab({ client, vertical }: PromptTabProps) {
               <EmptyState text="Allowed actions appear after the first prompt version is created." />
             )}
           </Panel>
+          <Panel title="Discovered prompts">
+            {flowPrompts.length ? (
+              <div className="grid gap-2">
+                {flowPrompts.map((prompt) => (
+                  <div key={prompt} className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-line bg-soft p-2 text-sm">
+                    <span>{prompt}</span>
+                    <Button type="button" size="sm" variant="secondary" icon={CheckCircle2} onClick={() => applyPromptSuggestion(prompt)}>
+                      Use
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState text="Prompt suggestions appear after flow discovery runs." />
+            )}
+          </Panel>
+          <Panel title="Sales intake">
+            {intakeQuestions.length ? (
+              <div className="grid gap-2">
+                {intakeQuestions.map((item) => (
+                  <div key={item.key} className="rounded-md border border-line bg-soft p-2 text-sm">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <strong>{item.label}</strong>
+                      {item.required ? <StatusPill value="required" /> : null}
+                    </div>
+                    <p className="mt-1 text-muted">{item.question}</p>
+                    {item.why ? <small>{item.why}</small> : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState text="Intake questions appear after vertical discovery runs." />
+            )}
+          </Panel>
           <Panel title="Safety frame">
             <div className="prompt-safety-list">
               <SafetyLine text="Use retrieved source data only." />
@@ -257,4 +305,40 @@ function SafetyLine({ text }: { text: string }) {
       <span>{text}</span>
     </div>
   );
+}
+
+function promptSuggestions(verticalConfig: Record<string, unknown> | undefined) {
+  const flow = verticalConfig?.flow;
+  if (!flow || typeof flow !== 'object') return [];
+  const prompts = (flow as Record<string, unknown>).prompt_suggestions;
+  return Array.isArray(prompts) ? prompts.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 10) : [];
+}
+
+interface SalesIntakeQuestion {
+  key: string;
+  label: string;
+  question: string;
+  why: string;
+  required: boolean;
+}
+
+function salesIntakeQuestions(verticalConfig: Record<string, unknown> | undefined): SalesIntakeQuestion[] {
+  const rows = verticalConfig?.intake_questions;
+  if (!Array.isArray(rows)) return [];
+  return rows.map(salesIntakeQuestion).filter((item): item is SalesIntakeQuestion => Boolean(item)).slice(0, 8);
+}
+
+function salesIntakeQuestion(value: unknown): SalesIntakeQuestion | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  const key = String(row.key || '').trim();
+  const question = String(row.question || '').trim();
+  if (!key || !question) return null;
+  return {
+    key,
+    label: String(row.label || key).trim(),
+    question,
+    why: String(row.why || '').trim(),
+    required: row.required === true,
+  };
 }

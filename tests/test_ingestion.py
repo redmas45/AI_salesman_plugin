@@ -6,6 +6,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent import ingestion
+from agent.verticals.registry import DEFAULT_VERTICAL_KEY
 
 
 class _CatalogResponse:
@@ -31,6 +32,29 @@ class _CatalogClient:
         if not self.payloads:
             return _CatalogResponse({"data": [], "meta": {"page": len(self.urls), "total_pages": len(self.urls)}})
         return _CatalogResponse(self.payloads.pop(0))
+
+
+class _Cp1252Stdout:
+    encoding = "cp1252"
+
+    def __init__(self):
+        self.output = []
+
+    def write(self, value):
+        value.encode(self.encoding)
+        self.output.append(value)
+
+    def flush(self):
+        return None
+
+
+def test_safe_console_print_replaces_unencodable_crawler_text(monkeypatch):
+    fake_stdout = _Cp1252Stdout()
+    monkeypatch.setattr(ingestion.sys, "stdout", fake_stdout)
+
+    ingestion._safe_console_print("Health plan 🏥")
+
+    assert "Health plan ?" in "".join(fake_stdout.output)
 
 
 def test_sanitize_site_id_normalizes_urlish_input():
@@ -78,11 +102,98 @@ def test_catalog_endpoints_include_common_platform_routes():
     endpoints = ingestion._catalog_endpoints_for("https://shop.example.test/start")
 
     assert "https://shop.example.test/api/products" in endpoints
+    assert "https://shop.example.test/api/policies" in endpoints
     assert "https://shop.example.test/api/products.json" in endpoints
     assert "https://shop.example.test/products.json" in endpoints
     assert "https://shop.example.test/collections/all/products.json" in endpoints
     assert "https://shop.example.test/wp-json/wc/store/products?per_page=100" in endpoints
     assert len(endpoints) == len(set(endpoints))
+
+
+def test_catalog_seed_candidates_include_docker_host_alias_for_localhost():
+    candidates = ingestion._catalog_seed_candidates("http://127.0.0.1:5183/insurance/health")
+
+    assert candidates == [
+        "http://127.0.0.1:5183/insurance/health",
+        "http://host.docker.internal:5183/insurance/health",
+    ]
+
+
+def test_policy_api_catalog_normalization_preserves_plan_details():
+    product = ingestion._normalize_api_catalog_product(
+        {
+            "id": "H001",
+            "category_id": "health",
+            "name": "IndividualCare Plan",
+            "insurer": "InsureMax Health",
+            "type": "Individual",
+            "premium_monthly": 899,
+            "premium_annual": 9999,
+            "sum_insured": 500000,
+            "features": ["5 Lakh cover", "Cashless at 6000+ hospitals"],
+            "rating": 4.5,
+            "review_count": 2341,
+            "claim_process": "Cashless / Reimbursement",
+            "waiting_period": "30 days general, 2 years pre-existing",
+            "renewability": "Lifelong",
+            "tax_benefit": "Section 80D",
+            "age_min": 18,
+            "age_max": 65,
+        },
+        "https://policy.example.test/api/policies",
+    )
+
+    assert product["name"] == "IndividualCare Plan"
+    assert product["brand"] == "InsureMax Health"
+    assert product["category"] == "Health Insurance"
+    assert product["price"] == 899
+    assert product["original_price"] == 9999
+    assert product["rating"] == 4.5
+    assert product["review_count"] == 2341
+    assert "Cashless at 6000+ hospitals" in product["description"]
+    assert "age 18 to 65" in product["description"]
+    assert "Health Insurance" in product["tags"]
+    assert product["policy_json"]["age_min"] == 18
+    assert product["policy_json"]["age_max"] == 65
+    assert product["policy_json"]["sum_insured"] == 500000
+    assert product["pricing_json"]["premium_monthly"] == 899
+    assert "regulated_insurance" in product["risk_tags"]
+    assert "health_cover" in product["risk_tags"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_policy_api_catalog_endpoint_reads_wrapped_policy_rows():
+    client = _CatalogClient(
+        [
+            {
+                "data": [
+                    {
+                        "id": "H001",
+                        "category_id": "health",
+                        "name": "IndividualCare Plan",
+                        "insurer": "InsureMax Health",
+                        "type": "Individual",
+                        "premium_monthly": 899,
+                        "premium_annual": 9999,
+                        "sum_insured": 500000,
+                        "features": ["Cashless hospitalization", "Claim support"],
+                        "claim_process": "Cashless / Reimbursement",
+                        "waiting_period": "30 days general",
+                    }
+                ]
+            }
+        ]
+    )
+
+    products = await ingestion._fetch_catalog_endpoint_pages(
+        client,
+        "https://policy.example.test/api/policies",
+    )
+
+    assert client.urls == ["https://policy.example.test/api/policies"]
+    assert [product["name"] for product in products] == ["IndividualCare Plan"]
+    assert products[0]["category"] == "Health Insurance"
+    assert products[0]["policy_json"]["claim_process"] == "Cashless / Reimbursement"
 
 
 def test_generic_api_products_endpoint_uses_aikart_pagination_params():
@@ -392,10 +503,35 @@ def test_sitemap_locations_are_ranked_toward_product_pages():
     </urlset>
     """
 
-    ranked = ingestion._ranked_unique_urls(ingestion._extract_sitemap_locations(xml))
+    ranked = ingestion._ranked_unique_urls(ingestion._extract_sitemap_locations(xml), vertical_key="ecommerce")
 
     assert ranked[0] == "https://shop.example.test/products/nova-cap"
     assert ranked[-1] == "https://shop.example.test/about"
+
+
+def test_crawler_vertical_fallback_is_generic(monkeypatch):
+    def fail_lookup(site_id: str) -> str:
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr("db.clients.get_client_vertical_key", fail_lookup)
+
+    assert ingestion._crawl_vertical_key("unknown_site") == DEFAULT_VERTICAL_KEY
+
+
+def test_default_html_candidate_extraction_is_not_ecommerce_biased():
+    html = """
+    <html><body>
+      <p>
+        Roofing consultation, construction site visit, project estimate,
+        renovation planning, contractor support, and concrete repair services.
+      </p>
+    </body></html>
+    """
+
+    rows = ingestion._build_candidates_from_html("https://builder.example.test/services", html)
+
+    assert rows
+    assert rows[0]["category"] != "Products"
 
 
 def test_crawl_url_filter_skips_cart_without_blocking_cartoon_products():

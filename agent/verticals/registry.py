@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from agent.verticals.automotive import VERTICAL as AUTOMOTIVE
+from agent.verticals.construction import VERTICAL as CONSTRUCTION
 from agent.verticals.ecommerce import VERTICAL as ECOMMERCE
 from agent.verticals.education import VERTICAL as EDUCATION
 from agent.verticals.events_ticketing import VERTICAL as EVENTS_TICKETING
@@ -19,7 +20,7 @@ from agent.verticals.real_estate import VERTICAL as REAL_ESTATE
 from agent.verticals.travel import VERTICAL as TRAVEL
 from agent.verticals.base import VerticalDefinition
 
-DEFAULT_VERTICAL_KEY = "ecommerce"
+DEFAULT_VERTICAL_KEY = "generic"
 FALLBACK_VERTICAL_KEY = "generic"
 
 _VERTICALS: tuple[VerticalDefinition, ...] = (
@@ -35,6 +36,7 @@ _VERTICALS: tuple[VerticalDefinition, ...] = (
     LEGAL_SERVICES,
     JOBS_RECRUITING,
     EVENTS_TICKETING,
+    CONSTRUCTION,
     GENERIC,
 )
 _VERTICAL_BY_KEY = {vertical.key: vertical for vertical in _VERTICALS}

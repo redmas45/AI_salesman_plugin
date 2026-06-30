@@ -22,5 +22,12 @@ VERTICAL = VerticalDefinition(
     ),
     entity_types=("doctor", "clinic", "specialty", "service_line", "lab_test", "health_article"),
     readiness_checks=("providers", "specialties", "appointments", "locations", "privacy", "emergency_notice"),
-    action_types=("SHOW_ENTITIES", "REQUEST_APPOINTMENT", "CAPTURE_LEAD", "HANDOFF_TO_CLINIC"),
+    action_types=(
+        "SHOW_ENTITIES",
+        "SORT_ENTITIES",
+        "CHECK_APPOINTMENT_AVAILABILITY",
+        "REQUEST_APPOINTMENT",
+        "CAPTURE_LEAD",
+        "HANDOFF_TO_CLINIC",
+    ),
 )

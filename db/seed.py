@@ -11,6 +11,8 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+DEFAULT_SEED_SITE_IDS = ("site_1", "site_2", "site_3", "site_4")
+
 def format_category_name(slug: str) -> str:
     mapping = {
         "beauty": "Beauty",
@@ -91,7 +93,7 @@ def seed(site_ids=None):
     from agent.ingestion import _stable_id, _vectorize
 
     if site_ids is None:
-        site_ids = ["site_1", "site_2", "site_3", "site_4", "ai_kart"]
+        site_ids = list(DEFAULT_SEED_SITE_IDS)
 
     json_path = Path(__file__).parent.parent / "data" / "products.json"
     if not json_path.exists():

@@ -1,4 +1,18 @@
 import { ACTIONS, ACTION_PARAMS } from "../constants";
+import { showHandoffOverlay } from "../handoffOverlay";
+import { labelsForAction } from "./actionLabels";
+import { missingRequiredParams, stopForMissingParams } from "./actionParams";
+import { runDomSequence } from "./domSequence";
+import { activateElement, enterText, submitFormElement } from "./eventDriver";
+import { fillFormFields } from "./formFiller";
+import { resolveProductActionPath } from "./productNavigation";
+import {
+  clean,
+  findClickableTarget,
+  findFieldTarget,
+  findFormTarget,
+  queryElement,
+} from "./targetResolver";
 
 const DEFAULT_NAVIGATION_ROUTES = Object.freeze({
   cart: "/cart",
@@ -8,15 +22,6 @@ const DEFAULT_NAVIGATION_ROUTES = Object.freeze({
   shop: "/shop",
 });
 
-const ACTION_BUTTON_LABELS = Object.freeze({
-  [ACTIONS.ADD_TO_CART]: ["add to cart", "add cart", "buy now"],
-  [ACTIONS.CHECKOUT]: ["checkout", "place order", "buy now"],
-  START_BOOKING: ["book now", "reserve", "check availability"],
-  START_QUOTE: ["get quote", "request quote", "start quote"],
-  REQUEST_APPOINTMENT: ["book appointment", "request appointment", "schedule"],
-  CAPTURE_LEAD: ["contact", "submit", "send"],
-});
-
 const SEARCH_INPUT_SELECTORS = Object.freeze([
   "input[type='search']",
   "input[name='q']",
@@ -24,11 +29,21 @@ const SEARCH_INPUT_SELECTORS = Object.freeze([
   "input[placeholder*='Search' i]",
 ]);
 
-const BUTTON_SELECTOR = "button, a, input[type='button'], input[type='submit']";
+const PRODUCT_SPECIFIC_DOM_ACTIONS = new Set([
+  ACTIONS.ADD_TO_CART,
+  ACTIONS.REMOVE_FROM_CART,
+  ACTIONS.UPDATE_CART_QUANTITY,
+]);
 
-function clean(value) {
-  return String(value || "").trim();
-}
+const AUTO_SUBMIT_ACTIONS = new Set([
+  "FILTER_PRODUCTS",
+  "FILTER_ENTITIES",
+  "SEARCH_AVAILABILITY",
+  "CHECK_AVAILABILITY",
+  "CHECK_DELIVERY_AVAILABILITY",
+  "MATCH_JOBS",
+  "SET_LOCATION",
+]);
 
 function normalizeAction(action) {
   const params = action?.params || action?.parameters || {};
@@ -44,15 +59,32 @@ export async function executeConfiguredAction(action, runtimeConfig) {
   const normalizedAction = normalizeAction(action);
   const actionConfig = runtimeConfig?.adapter?.actions?.[normalizedAction.action];
   if (!actionConfig || typeof actionConfig !== "object") return false;
+  if (await isProductSpecificActionOnDifferentPage(normalizedAction)) return false;
 
   if (actionConfig.type === "navigate") {
     return navigateToPath(actionConfig.path);
   }
   if (actionConfig.type === "click") {
-    return clickSelector(actionConfig.selector);
+    if (await shouldNavigateToActionPage(normalizedAction, actionConfig)) return true;
+    return clickConfiguredAction(normalizedAction.action, actionConfig);
   }
   if (actionConfig.type === "form") {
-    return submitConfiguredForm(actionConfig, normalizedAction.parameters);
+    if (await shouldNavigateToActionPage(normalizedAction, actionConfig)) return true;
+    return submitConfiguredForm(normalizedAction.action, actionConfig, normalizedAction.parameters);
+  }
+  if (actionConfig.type === "sequence") {
+    if (await shouldNavigateToActionPage(normalizedAction, actionConfig)) return true;
+    const missingParams = missingRequiredParams(actionConfig, normalizedAction.parameters);
+    if (missingParams.length) return stopForMissingParams(missingParams);
+    return runDomSequence(actionConfig.steps, normalizedAction.parameters, runtimeConfig, actionConfig);
+  }
+  if (actionConfig.type === "handoff") {
+    return showHandoffOverlay(normalizedAction.action, {
+      ...normalizedAction.parameters,
+      path: actionConfig.path,
+      message: actionConfig.message,
+      reason: actionConfig.reason,
+    });
   }
   return false;
 }
@@ -65,37 +97,41 @@ export async function executeDomFallback(action, runtimeConfig) {
   if (normalizedAction.action === ACTIONS.FILTER_PRODUCTS) {
     return submitSearch(normalizedAction.parameters?.[ACTION_PARAMS.SEARCH_QUERY]);
   }
+  if (normalizedAction.action === ACTIONS.RUN_DOM_SEQUENCE) {
+    return runDomSequence(normalizedAction.parameters?.steps, normalizedAction.parameters, runtimeConfig);
+  }
   if (normalizedAction.action === ACTIONS.CHECKOUT) {
     return navigateToNamedPage("checkout", runtimeConfig) || clickByActionLabel(normalizedAction.action);
   }
-  if (normalizedAction.action === ACTIONS.ADD_TO_CART && !isCurrentProductAction(normalizedAction)) {
+  if (normalizedAction.action === ACTIONS.ADD_TO_CART && !(await isCurrentProductAction(normalizedAction))) {
     return false;
   }
   return clickByActionLabel(normalizedAction.action);
 }
 
-export function readPageContext() {
-  return {
-    title: document.title || "",
-    url: window.location.href,
-    path: window.location.pathname,
-    platformHints: platformHints(),
-    productId: readProductId(),
-  };
-}
+function submitConfiguredForm(actionName, actionConfig, params) {
+  const missingParams = missingRequiredParams(actionConfig, params);
+  if (missingParams.length) return stopForMissingParams(missingParams);
 
-function submitConfiguredForm(actionConfig, params) {
-  const form = queryElement(actionConfig.form);
-  const input = queryElement(actionConfig.input);
-  if (!input) return false;
+  const target = findFormTarget({
+    ...actionConfig,
+    labels: labelsForAction(actionName, actionConfig),
+  });
+  const form = target.form;
+  const input = target.input;
+  const fillResult = fillFormFields(form, params, {
+    fallbackInput: input,
+    fieldSchema: actionConfig.field_schema,
+  });
 
-  setNativeValue(input, clean(params?.query || params?.search_query || params?.q));
-  dispatchInputEvents(input);
-  if (form && typeof form.requestSubmit === "function") {
-    form.requestSubmit();
-    return true;
+  const fallbackQuery = clean(params?.query || params?.search_query || params?.q);
+  if (fillResult.filled === 0 && input && fallbackQuery) {
+    enterText(input, fallbackQuery);
   }
-  return clickSelector(actionConfig.submit);
+  if (fillResult.total > 0 && fillResult.filled === 0 && !input) return false;
+  if (!shouldSubmitForm(actionName, actionConfig)) return true;
+  if (submitFormElement(form)) return true;
+  return clickElement(target.submit) || clickConfiguredAction(actionName, { selector: actionConfig.submit });
 }
 
 function navigateToNamedPage(page, runtimeConfig) {
@@ -107,6 +143,33 @@ function navigateToNamedPage(page, runtimeConfig) {
   return navigateToPath(routeMap[pageKey] || `/${pageKey}`);
 }
 
+function navigateToActionPage(actionConfig) {
+  const pagePath = sameOriginPath(actionConfig?.page_path || actionConfig?.pagePath || actionConfig?.source_path || actionConfig?.sourcePath);
+  if (!pagePath || pagePath === currentPagePath()) return false;
+  return navigateToPath(pagePath);
+}
+
+async function shouldNavigateToActionPage(action, actionConfig) {
+  if (await isCurrentProductSpecificAction(action)) return false;
+  return navigateToActionPage(actionConfig);
+}
+
+function currentPagePath() {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+function sameOriginPath(path) {
+  const target = clean(path);
+  if (!target || /^https?:\/\//i.test(target) || target.startsWith("javascript:")) return "";
+  try {
+    const url = new URL(target, window.location.origin);
+    if (url.origin !== window.location.origin) return "";
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch (_err) {
+    return "";
+  }
+}
+
 function submitSearch(query) {
   const searchQuery = clean(query);
   if (!searchQuery) return false;
@@ -114,44 +177,48 @@ function submitSearch(query) {
   for (const selector of SEARCH_INPUT_SELECTORS) {
     const input = queryElement(selector);
     if (!input) continue;
-    setNativeValue(input, searchQuery);
-    dispatchInputEvents(input);
+    enterText(input, searchQuery);
     return submitNearestForm(input);
   }
-  return false;
+  const input = findFieldTarget({ labels: ["search", "find", "query", "keyword"] });
+  if (!input) return false;
+  enterText(input, searchQuery);
+  return submitNearestForm(input);
+}
+
+function shouldSubmitForm(actionName, actionConfig) {
+  const submitMode = clean(actionConfig.submit_mode || actionConfig.submitMode).toLowerCase();
+  if (submitMode === "submit" || submitMode === "auto_submit") return true;
+  if (submitMode === "fill_only" || submitMode === "prepare_only") return false;
+  if (actionConfig.auto_submit === true) return true;
+  return AUTO_SUBMIT_ACTIONS.has(clean(actionName).toUpperCase());
 }
 
 function submitNearestForm(input) {
   const form = input.closest("form");
-  if (form && typeof form.requestSubmit === "function") {
-    form.requestSubmit();
-    return true;
-  }
+  if (submitFormElement(form)) return true;
   const submitButton = form?.querySelector("button[type='submit'], input[type='submit']");
-  if (submitButton) {
-    submitButton.click();
-    return true;
-  }
+  if (activateElement(submitButton)) return true;
   input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   return true;
 }
 
 function clickByActionLabel(actionName) {
-  const labels = ACTION_BUTTON_LABELS[actionName] || [];
-  for (const label of labels) {
-    const element = findClickableByText(label);
-    if (!element) continue;
-    element.click();
-    return true;
-  }
-  return false;
+  return clickElement(findClickableTarget({ labels: labelsForAction(actionName) }));
 }
 
-function clickSelector(selector) {
-  const element = queryElement(selector);
-  if (!element) return false;
-  element.click();
-  return true;
+function clickConfiguredAction(actionName, actionConfig) {
+  const element = findClickableTarget({
+    selector: actionConfig.selector,
+    label: actionConfig.label,
+    text: actionConfig.text,
+    labels: labelsForAction(actionName, actionConfig),
+  });
+  return clickElement(element);
+}
+
+function clickElement(element) {
+  return activateElement(element);
 }
 
 function navigateToPath(path) {
@@ -161,56 +228,41 @@ function navigateToPath(path) {
   return true;
 }
 
-function queryElement(selector) {
-  if (!selector || typeof selector !== "string") return null;
-  try {
-    return document.querySelector(selector);
-  } catch (_err) {
-    return null;
-  }
+async function isCurrentProductAction(action) {
+  const targetProductId = clean(action.parameters?.[ACTION_PARAMS.PRODUCT_ID]);
+  const currentProductId = readProductId();
+  if (!targetProductId) return true;
+  if (currentProductId && currentProductId === targetProductId) return true;
+
+  const targetPath = await resolveProductActionPath(targetProductId);
+  return Boolean(targetPath && samePath(targetPath, currentPagePath()));
 }
 
-function findClickableByText(label) {
-  const expected = clean(label).toLowerCase();
-  if (!expected) return null;
-
-  for (const element of document.querySelectorAll(BUTTON_SELECTOR)) {
-    const text = clean(element.innerText || element.value || element.getAttribute("aria-label")).toLowerCase();
-    if (text.includes(expected)) return element;
-  }
-  return null;
+async function isProductSpecificActionOnDifferentPage(action) {
+  const actionName = clean(action.action).toUpperCase();
+  if (!PRODUCT_SPECIFIC_DOM_ACTIONS.has(actionName)) return false;
+  return !(await isCurrentProductAction(action));
 }
 
-function setNativeValue(input, value) {
-  const prototype = Object.getPrototypeOf(input);
-  const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
-  if (descriptor?.set) {
-    descriptor.set.call(input, value);
-    return;
-  }
-  input.value = value;
-}
-
-function dispatchInputEvents(input) {
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  input.dispatchEvent(new Event("change", { bubbles: true }));
+async function isCurrentProductSpecificAction(action) {
+  const actionName = clean(action.action).toUpperCase();
+  return PRODUCT_SPECIFIC_DOM_ACTIONS.has(actionName) && (await isCurrentProductAction(action));
 }
 
 function readProductId() {
   const element = document.querySelector("[data-product-id], [data-product], [itemprop='sku']");
-  return clean(element?.getAttribute("data-product-id") || element?.getAttribute("data-product") || element?.textContent);
+  return clean(element?.getAttribute("data-product-id") || element?.getAttribute("data-product") || element?.textContent) || productIdFromPath();
 }
 
-function isCurrentProductAction(action) {
-  const targetProductId = clean(action.parameters?.[ACTION_PARAMS.PRODUCT_ID]);
-  const currentProductId = readProductId();
-  if (!targetProductId) return true;
-  return Boolean(currentProductId && currentProductId === targetProductId);
+function productIdFromPath() {
+  const match = window.location.pathname.match(/\/product\/([^/?#]+)/i);
+  return match ? decodeURIComponent(match[1]) : "";
 }
 
-function platformHints() {
-  return {
-    shopify: Boolean(window.Shopify || document.querySelector('script[src*="cdn.shopify.com"]')),
-    woocommerce: Boolean(document.body?.classList?.contains("woocommerce") || window.wc_add_to_cart_params),
+function samePath(left, right) {
+  const normalize = (value) => {
+    const path = sameOriginPath(value);
+    return path.replace(/\/+$/, "") || "/";
   };
+  return normalize(left) === normalize(right);
 }

@@ -21,4 +21,5 @@ export const insuranceVertical: CrmVerticalDefinition = {
   ],
   entityTypes: ['insurance_plan', 'insurer', 'coverage_feature', 'claim_flow', 'document_requirement'],
   readinessChecks: ['plans', 'quote_flow', 'claims', 'renewals', 'disclosures', 'lead_capture'],
+  actionTypes: ['SHOW_ENTITIES', 'COMPARE_ENTITIES', 'SORT_ENTITIES', 'START_QUOTE', 'CAPTURE_LEAD', 'HANDOFF_TO_AGENT'],
 };

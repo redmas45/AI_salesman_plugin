@@ -1,5 +1,5 @@
 import { config } from "./config";
-import { executeActions } from "./actions";
+import { executeActions } from "./actionExecutor";
 import {
   API_PATHS,
   AUDIO,
@@ -10,6 +10,8 @@ import {
 } from "./constants";
 
 const MAX_WS_RETRIES = 3;
+const RUNTIME_GLOBAL = "AIHubAdapterRuntime";
+const ADAPTER_GLOBAL = "AIHubAdapter";
 
 function wsUrlFromApiBase(apiUrl, siteId) {
   const url = new URL(API_PATHS.SHOP_WS, apiUrl);
@@ -72,13 +74,17 @@ class HttpTransport {
     if (conversationHistory && conversationHistory.length > 0) {
       formData.append("conversation_history", JSON.stringify(conversationHistory));
     }
+    const pageContext = currentPageContext();
+    if (pageContext) {
+      formData.append("page_context", JSON.stringify(pageContext));
+    }
 
     const res = await fetch(`${config.apiUrl}${API_PATHS.SHOP}`, {
       method: HTTP_METHODS.POST,
       body: formData,
     });
 
-    if (!res.ok) throw new Error("ShopBot API request failed");
+    if (!res.ok) throw new Error("AI Hub API request failed");
 
     const data = await res.json();
     if (data.transcript) callbacks.onUserMessage?.(data.transcript);
@@ -96,7 +102,7 @@ class HttpTransport {
   }
 }
 
-class ShopbotWebSocketTransport {
+class VoiceWebSocketTransport {
   constructor() {
     this.ws = null;
     this.connected = false;
@@ -186,7 +192,12 @@ class ShopbotWebSocketTransport {
   }
 
   sendConfig(conversationHistory = []) {
-    this.sendJson({ type: WS_MESSAGES.CONFIG, history: conversationHistory || [], session_id: config.sessionId });
+    this.sendJson({
+      type: WS_MESSAGES.CONFIG,
+      history: conversationHistory || [],
+      session_id: config.sessionId,
+      page_context: currentPageContext(),
+    });
   }
 
   sendJson(payload) {
@@ -281,7 +292,7 @@ class ShopbotWebSocketTransport {
   }
 
   handleTransportError(err) {
-    console.error("ShopBot WebSocket transport failed", err);
+    console.error("AI Hub WebSocket transport failed", err);
     const callbacks = this.callbacks;
     if (callbacks) {
       this.completeWithError(callbacks, String(err));
@@ -290,7 +301,7 @@ class ShopbotWebSocketTransport {
 }
 
 const httpTransport = new HttpTransport();
-const wsTransport = new ShopbotWebSocketTransport();
+const wsTransport = new VoiceWebSocketTransport();
 
 export async function processAudio(blob, elements, callbacks, conversationHistory = []) {
   try {
@@ -311,4 +322,16 @@ function playAudioBase64(b64) {
   const audioSrc = AUDIO.DATA_WAV_PREFIX + b64;
   const audio = new Audio(audioSrc);
   audio.play().catch((e) => console.error("Audio playback failed", e));
+}
+
+function currentPageContext() {
+  const runtime = window[RUNTIME_GLOBAL];
+  const adapter = window[ADAPTER_GLOBAL];
+  try {
+    if (typeof runtime?.getContext === "function") return runtime.getContext();
+    if (typeof adapter?.getContext === "function") return adapter.getContext();
+  } catch (err) {
+    console.warn("[AI Hub Widget] Page context collection failed:", err);
+  }
+  return null;
 }

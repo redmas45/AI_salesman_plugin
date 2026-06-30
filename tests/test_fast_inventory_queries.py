@@ -3,6 +3,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+ECOMMERCE_TEST_SITE_ID = "ecommerce_site"
+
 
 def test_inventory_type_count_uses_catalog_without_llm(monkeypatch):
     from agent import orchestrator
@@ -14,6 +16,7 @@ def test_inventory_type_count_uses_catalog_without_llm(monkeypatch):
     ]
 
     monkeypatch.setattr(orchestrator, "get_all_products", lambda site_id, limit=1000: products)
+    monkeypatch.setattr(orchestrator, "_is_ecommerce_site", lambda site_id: True)
     monkeypatch.setattr(
         orchestrator.llm,
         "generate_response",
@@ -22,7 +25,7 @@ def test_inventory_type_count_uses_catalog_without_llm(monkeypatch):
 
     events = list(
         orchestrator.run_stream(
-            site_id="ai_kart",
+            site_id=ECOMMERCE_TEST_SITE_ID,
             text_input="How many types of caps do you have?",
             skip_tts=True,
         )
@@ -52,6 +55,7 @@ def test_inventory_type_missing_uses_real_categories_without_llm(monkeypatch):
     ]
 
     monkeypatch.setattr(orchestrator, "get_all_products", lambda site_id, limit=1000: products)
+    monkeypatch.setattr(orchestrator, "_is_ecommerce_site", lambda site_id: True)
     monkeypatch.setattr(
         orchestrator.llm,
         "generate_response",
@@ -60,7 +64,7 @@ def test_inventory_type_missing_uses_real_categories_without_llm(monkeypatch):
 
     events = list(
         orchestrator.run_stream(
-            site_id="ai_kart",
+            site_id=ECOMMERCE_TEST_SITE_ID,
             text_input="How many types of card do you have?",
             skip_tts=True,
         )

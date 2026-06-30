@@ -22,5 +22,5 @@ VERTICAL = VerticalDefinition(
     ),
     entity_types=("legal_service", "lawyer", "practice_area", "document_template", "jurisdiction"),
     readiness_checks=("services", "attorneys", "jurisdictions", "consultation", "disclaimers", "pricing"),
-    action_types=("SHOW_ENTITIES", "START_INTAKE", "REQUEST_CONSULTATION", "CAPTURE_LEAD", "HANDOFF_TO_LAWYER"),
+    action_types=("SHOW_ENTITIES", "SORT_ENTITIES", "START_INTAKE", "REQUEST_CONSULTATION", "CAPTURE_LEAD", "HANDOFF_TO_LAWYER"),
 )

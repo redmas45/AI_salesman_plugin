@@ -21,5 +21,13 @@ VERTICAL = VerticalDefinition(
     ),
     entity_types=("vehicle_listing", "vehicle_model", "trim", "dealer", "finance_offer", "test_drive_slot"),
     readiness_checks=("vehicles", "specs", "dealer_contact", "test_drive", "finance", "freshness"),
-    action_types=("SHOW_ENTITIES", "COMPARE_ENTITIES", "REQUEST_TEST_DRIVE", "RUN_CALCULATOR", "CAPTURE_LEAD"),
+    action_types=(
+        "SHOW_ENTITIES",
+        "COMPARE_ENTITIES",
+        "SORT_ENTITIES",
+        "REQUEST_TEST_DRIVE",
+        "RUN_CALCULATOR",
+        "CONTACT_AGENT",
+        "CAPTURE_LEAD",
+    ),
 )

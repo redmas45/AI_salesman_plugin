@@ -1,31 +1,45 @@
-import { useState } from 'react';
-import { Activity, Gauge, BarChart3, MessageSquare, Users, Database, AlertTriangle } from 'lucide-react';
-import type { AnalyticsResponse, SeriesRow, RankRow, UsageEvent } from '../types';
+import { useState, type CSSProperties } from 'react';
+import { Activity, Gauge, MessageSquare, Users, Database, AlertTriangle, type LucideIcon } from 'lucide-react';
+import type { AnalyticsResponse, SeriesRow, RankRow, UsageEvent, AnalyticsSectionId } from '../types';
 import { Button } from '../components/ui/Button';
 import { Panel } from '../components/ui/Panel';
 import { EmptyState } from '../components/ui/EmptyState';
 import { RangeControl } from '../components/shared/RangeControl';
-import { ActivityList } from '../components/shared/ActivityList';
 import { number, shortTime } from '../utils/format';
 import { rangeLabel } from '../utils/range';
-import { type LucideIcon } from 'lucide-react';
+import type { ClientWorkspaceTabId } from '../verticals/types';
+
+type HealthSignalKind = 'transport' | 'status' | 'latency';
+
+interface HealthSignalSelection {
+  kind: HealthSignalKind;
+  title: string;
+  label: string;
+  count: number;
+}
 
 export interface AnalyticsViewProps {
   analytics: AnalyticsResponse | null;
   range: string;
+  activeSection: AnalyticsSectionId;
   onRangeChange: (range: string) => void;
   onGenerateSummary: () => void;
+  onOpenClient: (siteId: string, initialTab?: ClientWorkspaceTabId) => void;
 }
 
 export function AnalyticsView({
   analytics,
   range,
+  activeSection,
   onRangeChange,
   onGenerateSummary,
+  onOpenClient,
 }: AnalyticsViewProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'quality' | 'details'>('overview');
+  const [selectedHealthSignal, setSelectedHealthSignal] = useState<HealthSignalSelection | null>(null);
 
   if (!analytics) return <AnalyticsSkeleton />;
+
+  const activeHealthSignal = selectedHealthSignal ?? defaultHealthSignal(analytics);
 
   return (
     <div className="grid gap-4">
@@ -33,7 +47,7 @@ export function AnalyticsView({
         <div>
           <h2 className="text-base font-semibold">Analytics</h2>
           <p className="mt-1 text-sm text-muted">
-            Demand, voice performance, product signals, and service quality for {rangeLabel(range)}.
+            Demand, voice performance, knowledge signals, and service quality for {rangeLabel(range)}.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -44,58 +58,175 @@ export function AnalyticsView({
         </div>
       </section>
 
-      <nav className="client-tabs" aria-label="Analytics sections">
-        <button className={`client-tab-btn ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => setActiveTab('overview')} type="button">
-          <Activity size={15} aria-hidden="true" />
-          <span>Overview</span>
-        </button>
-        <button className={`client-tab-btn ${activeTab === 'quality' ? 'active' : ''}`} onClick={() => setActiveTab('quality')} type="button">
-          <Gauge size={15} aria-hidden="true" />
-          <span>Quality & Health</span>
-        </button>
-        <button className={`client-tab-btn ${activeTab === 'details' ? 'active' : ''}`} onClick={() => setActiveTab('details')} type="button">
-          <BarChart3 size={15} aria-hidden="true" />
-          <span>Details</span>
-        </button>
-      </nav>
-
-      {activeTab === 'overview' && (
-        <div className="tab-content fade-in">
+      {activeSection === 'overview' && (
+        <section
+          id={analyticsSectionPanelId('overview')}
+          className="tab-content fade-in"
+          role="region"
+          aria-label={analyticsSectionLabel('overview')}
+        >
           <AnalyticsMetricGrid analytics={analytics} />
           <div className="grid gap-4 2xl:grid-cols-[1.35fr_0.65fr]">
             <AnalyticsTrendChart rows={analytics.series} peakDay={analytics.peak_day} />
             <OperationsPanel analytics={analytics} />
           </div>
           <SummaryCard text={analytics.summary} source={analytics.summary_source} />
-        </div>
+        </section>
       )}
 
-      {activeTab === 'quality' && (
-        <div className="tab-content fade-in">
-          <div className="grid gap-4 xl:grid-cols-[0.8fr_1.2fr]">
+      {activeSection === 'quality' && (
+        <section
+          id={analyticsSectionPanelId('quality')}
+          className="tab-content fade-in"
+          role="region"
+          aria-label={analyticsSectionLabel('quality')}
+        >
+          <div className="analytics-health-layout">
             <Panel title="Transport and response health">
-              <div className="grid gap-4 md:grid-cols-3">
-                <DistributionRows title="Transport" rows={analytics.transport_mix ?? []} />
-                <DistributionRows title="Status" rows={analytics.status_mix ?? []} />
-                <DistributionRows title="Latency" rows={analytics.latency_buckets ?? []} />
-              </div>
+              <HealthSignalBoard
+                analytics={analytics}
+                activeHealthSignal={activeHealthSignal}
+                onSelect={setSelectedHealthSignal}
+                onOpenClient={onOpenClient}
+              />
             </Panel>
-            <RecentActivityPanel items={analytics.recent_events ?? []} />
+            <RecentActivityPanel items={analytics.recent_events ?? []} onOpenClient={onOpenClient} />
           </div>
-        </div>
+        </section>
       )}
 
-      {activeTab === 'details' && (
-        <div className="tab-content fade-in">
+      {activeSection === 'details' && (
+        <section
+          id={analyticsSectionPanelId('details')}
+          className="tab-content fade-in"
+          role="region"
+          aria-label={analyticsSectionLabel('details')}
+        >
           <div className="grid gap-4 xl:grid-cols-3">
-            <RankPanel title="Catalog-backed demand" rows={analytics.top_products} />
+            <RankPanel title="Knowledge-backed demand" rows={analytics.top_products} />
             <RankPanel title="Intent mix" rows={analytics.top_intents} />
             <RankPanel title="Client/site mix" rows={analytics.site_mix ?? []} />
           </div>
-        </div>
+        </section>
       )}
     </div>
   );
+}
+
+function HealthSignalBoard({
+  analytics,
+  activeHealthSignal,
+  onSelect,
+  onOpenClient,
+}: {
+  analytics: AnalyticsResponse;
+  activeHealthSignal: HealthSignalSelection | null;
+  onSelect: (signal: HealthSignalSelection) => void;
+  onOpenClient: (siteId: string, initialTab?: ClientWorkspaceTabId) => void;
+}) {
+  const statusSignal = firstSignal('status', 'Status', analytics.status_mix ?? []);
+  const transportSignal = firstSignal('transport', 'Transport', analytics.transport_mix ?? []);
+  const latencySignal = firstSignal('latency', 'Latency', analytics.latency_buckets ?? []);
+  return (
+    <div className="analytics-health-board">
+      <div className="health-signal-overview" aria-label="Health signal summary">
+        <HealthSignalSummaryButton
+          label="Status"
+          signal={statusSignal}
+          detail={statusSignal ? 'Largest response status bucket' : 'No status rows yet'}
+          activeSignal={activeHealthSignal}
+          onSelect={onSelect}
+        />
+        <HealthSignalSummaryButton
+          label="Transport"
+          signal={transportSignal}
+          detail={transportSignal ? 'Most common delivery channel' : 'No transport rows yet'}
+          activeSignal={activeHealthSignal}
+          onSelect={onSelect}
+        />
+        <HealthSignalSummaryButton
+          label="Latency"
+          signal={latencySignal}
+          detail={latencySignal ? 'Largest response-time band' : 'No latency rows yet'}
+          activeSignal={activeHealthSignal}
+          onSelect={onSelect}
+        />
+      </div>
+      <div className="transport-health-stack">
+        <DistributionRows
+          kind="transport"
+          title="Transport"
+          rows={analytics.transport_mix ?? []}
+          activeSignal={activeHealthSignal}
+          onSelect={onSelect}
+        />
+        <DistributionRows
+          kind="status"
+          title="Status"
+          rows={analytics.status_mix ?? []}
+          activeSignal={activeHealthSignal}
+          onSelect={onSelect}
+        />
+        <DistributionRows
+          kind="latency"
+          title="Latency"
+          rows={analytics.latency_buckets ?? []}
+          activeSignal={activeHealthSignal}
+          onSelect={onSelect}
+        />
+      </div>
+      <FocusedHealthSignal signal={activeHealthSignal} analytics={analytics} onOpenClient={onOpenClient} />
+    </div>
+  );
+}
+
+function HealthSignalSummaryButton({
+  label,
+  signal,
+  detail,
+  activeSignal,
+  onSelect,
+}: {
+  label: string;
+  signal: HealthSignalSelection | null;
+  detail: string;
+  activeSignal: HealthSignalSelection | null;
+  onSelect: (signal: HealthSignalSelection) => void;
+}) {
+  const active = Boolean(signal && activeSignal?.kind === signal.kind && activeSignal.label === signal.label);
+  return (
+    <button
+      className={`health-signal-summary-card ${active ? 'active' : ''}`}
+      type="button"
+      disabled={!signal}
+      aria-pressed={active}
+      onClick={() => signal && onSelect(signal)}
+    >
+      <span>{label}</span>
+      <strong>{signal ? signal.label : 'No data'}</strong>
+      <small>{signal ? `${number(signal.count)} turns` : detail}</small>
+      {signal ? <em>{detail}</em> : null}
+    </button>
+  );
+}
+
+function firstSignal(kind: HealthSignalKind, title: string, rows: RankRow[]): HealthSignalSelection | null {
+  const first = rows[0];
+  if (!first) return null;
+  return { kind, title, label: first.label, count: first.count };
+}
+
+function analyticsSectionLabel(sectionId: AnalyticsSectionId) {
+  const labels: Record<AnalyticsSectionId, string> = {
+    overview: 'Analytics overview',
+    quality: 'Analytics quality and health',
+    details: 'Analytics details',
+  };
+  return labels[sectionId];
+}
+
+function analyticsSectionPanelId(sectionId: AnalyticsSectionId) {
+  return `analytics-section-${sectionId}`;
 }
 
 function KpiCard({
@@ -149,9 +280,6 @@ function AnalyticsTrendChart({ rows, peakDay }: { rows: SeriesRow[]; peakDay?: S
         <div className="analytics-trend">
           {visibleRows.map((row) => (
             <div key={row.date} className="trend-column" title={`${row.date}: ${number(row.turns)} turns, ${number(row.tokens)} tokens`}>
-              <span className="trend-tooltip">
-                {row.date}: {number(row.turns)} turns, {number(row.tokens)} tokens
-              </span>
               <span className="trend-token" style={{ bottom: `${Math.max(8, (row.tokens / maxTokens) * 88)}%` }} />
               <span className="trend-bar" style={{ height: `${Math.max(8, (row.turns / maxTurns) * 100)}%` }} />
               <small>{row.date.slice(5)}</small>
@@ -204,21 +332,63 @@ function KeyValue({ label, value }: { label: string; value: string | number | nu
   );
 }
 
-function DistributionRows({ title, rows }: { title: string; rows: RankRow[] }) {
+function DistributionRows({
+  kind,
+  title,
+  rows,
+  activeSignal,
+  onSelect,
+}: {
+  kind?: HealthSignalKind;
+  title: string;
+  rows: RankRow[];
+  activeSignal?: HealthSignalSelection | null;
+  onSelect?: (signal: HealthSignalSelection) => void;
+}) {
   const max = Math.max(...rows.map((row) => row.count), 1);
   return (
-    <div className="grid gap-3">
-      <h3 className="text-xs font-semibold uppercase text-muted">{title}</h3>
+    <div className="distribution-group">
+      <h3>{title}</h3>
       {rows.length ? (
-        rows.map((row) => (
-          <div key={`${title}-${row.label}`} className="flex items-center gap-3 text-xs">
-            <span className="flex-[1] min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-ink">{row.label}</span>
-            <div className="flex-[1.5] h-[8px] rounded-full bg-soft overflow-hidden">
-              <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.max(2, (row.count / max) * 100)}%` }} />
-            </div>
-            <b className="w-[42px] text-right text-[11px] text-muted">{number(row.count)}</b>
-          </div>
-        ))
+        rows.map((row) => {
+          const interactive = Boolean(kind && onSelect);
+          const active = Boolean(activeSignal && activeSignal.kind === kind && activeSignal.label === row.label);
+          const rowStyle = { '--bar-width': `${Math.max(2, (row.count / max) * 100)}%` } as CSSProperties;
+          const rowContent = (
+            <>
+              <span className="distribution-row-label">{row.label}</span>
+              <div className="distribution-row-track">
+                <span />
+              </div>
+              <b>{number(row.count)}</b>
+            </>
+          );
+          if (!interactive) {
+            return (
+              <div
+                key={`${title}-${row.label}`}
+                className="distribution-row-button distribution-row-static"
+                title={`${title}: ${row.label} - ${number(row.count)}`}
+                style={rowStyle}
+              >
+                {rowContent}
+              </div>
+            );
+          }
+          return (
+            <button
+              key={`${title}-${row.label}`}
+              className={`distribution-row-button ${active ? 'active' : ''}`}
+              type="button"
+              aria-pressed={active}
+              title={`${title}: ${row.label} - ${number(row.count)}`}
+              onClick={() => onSelect?.({ kind: kind!, title, label: row.label, count: row.count })}
+              style={rowStyle}
+            >
+              {rowContent}
+            </button>
+          );
+        })
       ) : (
         <EmptyState text="No data." />
       )}
@@ -226,11 +396,119 @@ function DistributionRows({ title, rows }: { title: string; rows: RankRow[] }) {
   );
 }
 
-function RecentActivityPanel({ items, onClick }: { items: UsageEvent[]; onClick?: () => void }) {
+function FocusedHealthSignal({
+  signal,
+  analytics,
+  onOpenClient,
+}: {
+  signal: HealthSignalSelection | null;
+  analytics: AnalyticsResponse;
+  onOpenClient: (siteId: string, initialTab?: ClientWorkspaceTabId) => void;
+}) {
+  if (!signal) {
+    return (
+      <div className="focused-health-signal">
+        <span>Focused signal</span>
+        <strong>No signal selected</strong>
+        <p>Select a transport, status, or latency row above to inspect matching recent turns.</p>
+      </div>
+    );
+  }
+  const events = matchingHealthEvents(signal, analytics.recent_events ?? []);
+  const total = Math.max(analytics.metrics.turns || 0, signal.count);
+  const share = total ? Math.round((signal.count / total) * 100) : 0;
   return (
-    <Panel title="Recent activity" onClick={onClick}>
-      <ActivityList items={items.slice(0, 6)} />
+    <div className="focused-health-signal">
+      <span>Focused signal</span>
+      <strong>{signal.title}: {signal.label}</strong>
+      <p>
+        {number(signal.count)} matching turns in this range, about {number(share)}% of total demand.
+        {events.length ? ` ${number(events.length)} recent matching event${events.length === 1 ? '' : 's'} loaded below.` : ' No matching recent event is currently loaded.'}
+      </p>
+      {events.length ? (
+        <div className="focused-health-events">
+          {events.slice(0, 3).map((event) => (
+            <button
+              key={`${event.session_id}-${event.created_at}`}
+              type="button"
+              onClick={() => onOpenClient(event.site_id, 'activity')}
+            >
+              <span>{shortTime(event.created_at)} - {event.site_id}</span>
+              <strong>{event.intent || 'unknown intent'}</strong>
+              <small>{event.status} / {event.transport} / {number(event.latency_ms)} ms</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function defaultHealthSignal(analytics: AnalyticsResponse): HealthSignalSelection | null {
+  const firstStatus = analytics.status_mix?.[0];
+  if (firstStatus) return { kind: 'status', title: 'Status', label: firstStatus.label, count: firstStatus.count };
+  const firstTransport = analytics.transport_mix?.[0];
+  if (firstTransport) return { kind: 'transport', title: 'Transport', label: firstTransport.label, count: firstTransport.count };
+  const firstLatency = analytics.latency_buckets?.[0];
+  if (firstLatency) return { kind: 'latency', title: 'Latency', label: firstLatency.label, count: firstLatency.count };
+  return null;
+}
+
+function matchingHealthEvents(signal: HealthSignalSelection, events: UsageEvent[]) {
+  return events.filter((event) => {
+    if (signal.kind === 'transport') return event.transport === signal.label;
+    if (signal.kind === 'status') return event.status === signal.label;
+    return latencyBucketLabel(event.latency_ms) === signal.label;
+  });
+}
+
+function latencyBucketLabel(latencyMs: number) {
+  if (!latencyMs || latencyMs <= 0) return 'No timing';
+  if (latencyMs < 1000) return 'Under 1s';
+  if (latencyMs <= 3000) return '1s to 3s';
+  return 'Over 3s';
+}
+
+function RecentActivityPanel({
+  items,
+  onOpenClient,
+}: {
+  items: UsageEvent[];
+  onOpenClient: (siteId: string, initialTab?: ClientWorkspaceTabId) => void;
+}) {
+  return (
+    <Panel title="Recent activity">
+      <HealthEventList items={items.slice(0, 8)} onOpenClient={onOpenClient} />
     </Panel>
+  );
+}
+
+function HealthEventList({
+  items,
+  onOpenClient,
+}: {
+  items: UsageEvent[];
+  onOpenClient: (siteId: string, initialTab?: ClientWorkspaceTabId) => void;
+}) {
+  if (!items.length) return <EmptyState text="No recent health events are loaded for this range." />;
+  return (
+    <div className="health-event-list">
+      {items.map((event, index) => (
+        <button
+          key={`${event.created_at}-${event.session_id}-${index}`}
+          className="health-event-row"
+          type="button"
+          onClick={() => onOpenClient(event.site_id, 'activity')}
+        >
+          <span>
+            <strong>{event.site_id}</strong>
+            <small>{shortTime(event.created_at)}</small>
+          </span>
+          <b>{event.intent || 'unknown'}</b>
+          <em>{event.status} / {event.transport} / {number(event.latency_ms)} ms</em>
+        </button>
+      ))}
+    </div>
   );
 }
 

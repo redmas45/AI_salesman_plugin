@@ -21,5 +21,5 @@ VERTICAL = VerticalDefinition(
     ),
     entity_types=("destination", "hotel", "room", "flight", "package", "activity", "itinerary"),
     readiness_checks=("inventory", "availability", "booking_handoff", "policies", "lead_capture"),
-    action_types=("SHOW_ENTITIES", "SEARCH_AVAILABILITY", "BUILD_ITINERARY", "START_BOOKING", "CAPTURE_LEAD"),
+    action_types=("SHOW_ENTITIES", "SORT_ENTITIES", "SEARCH_AVAILABILITY", "BUILD_ITINERARY", "START_BOOKING", "CAPTURE_LEAD"),
 )

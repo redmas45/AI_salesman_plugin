@@ -12,6 +12,7 @@ from agent.guardrails import (
     validate_input,
     validate_output,
 )
+import agent.guardrails as guardrails
 from db.database import init_tenant_schema
 from db.seed import seed
 
@@ -237,3 +238,124 @@ class TestOutputGuardrails:
         )
         result = validate_output(resp, site_id="site_1")
         assert result["ui_actions"] == []
+
+    def test_run_dom_sequence_accepts_safe_steps(self):
+        resp = self._make_response(
+            ui_actions=[
+                {
+                    "action": "RUN_DOM_SEQUENCE",
+                    "params": {
+                        "steps": [
+                            {"op": "fill", "selector": "input[name='q']", "param": "query"},
+                            {"op": "click", "label": "Search"},
+                            {"op": "navigate", "path": "/contact?source=ai"},
+                        ]
+                    },
+                }
+            ]
+        )
+        result = validate_output(resp, site_id="site_1")
+
+        assert result["ui_actions"] == [
+            {
+                "action": "RUN_DOM_SEQUENCE",
+                "params": {
+                    "steps": [
+                        {"op": "fill", "param": "query", "selector": "input[name='q']"},
+                        {"op": "click", "label": "Search"},
+                        {"op": "navigate", "path": "/contact?source=ai"},
+                    ]
+                },
+            }
+        ]
+
+    def test_run_dom_sequence_rejects_external_navigation(self):
+        resp = self._make_response(
+            ui_actions=[
+                {
+                    "action": "RUN_DOM_SEQUENCE",
+                    "params": {"steps": [{"op": "navigate", "path": "https://evil.example"}]},
+                }
+            ]
+        )
+        result = validate_output(resp, site_id="site_1")
+
+        assert result["ui_actions"] == []
+
+    def test_run_dom_sequence_caps_wait_and_step_count(self):
+        resp = self._make_response(
+            ui_actions=[
+                {
+                    "action": "RUN_DOM_SEQUENCE",
+                    "params": {"steps": [{"op": "wait", "ms": 999999} for _ in range(40)]},
+                }
+            ]
+        )
+        result = validate_output(resp, site_id="site_1")
+        steps = result["ui_actions"][0]["params"]["steps"]
+
+        assert len(steps) == 30
+        assert steps[0] == {"op": "wait", "ms": 5000}
+
+    def test_dynamic_navigation_allows_generated_adapter_routes(self, monkeypatch):
+        monkeypatch.setattr(
+            guardrails,
+            "_client_vertical_config",
+            lambda site_id: {"routes": {"services": "/services", "quote": "/get-quote"}},
+        )
+        resp = self._make_response(
+            ui_actions=[
+                {"action": "NAVIGATE_TO", "params": {"page": "services"}},
+                {"action": "NAVIGATE_TO", "params": {"page": "/get-quote"}},
+            ]
+        )
+
+        result = validate_output(resp, site_id="builder_demo")
+
+        assert result["ui_actions"] == [
+            {"action": "NAVIGATE_TO", "params": {"page": "services"}},
+            {"action": "NAVIGATE_TO", "params": {"page": "get-quote"}},
+        ]
+
+    def test_configured_form_action_keeps_only_contract_params(self, monkeypatch):
+        monkeypatch.setattr(
+            guardrails,
+            "_client_vertical_config",
+            lambda site_id: {
+                "actions": {
+                    "REQUEST_ESTIMATE": {
+                        "type": "sequence",
+                        "fields": ["phone", "budget"],
+                        "steps": [{"op": "fill", "param": "message"}],
+                    }
+                }
+            },
+        )
+        resp = self._make_response(
+            ui_actions=[
+                {
+                    "action": "REQUEST_ESTIMATE",
+                    "params": {
+                        "phone": "9999999999",
+                        "budget": 250000,
+                        "message": "Need a site visit",
+                        "selector": "button.evil",
+                        "__proto__": "pollute",
+                        "nested": {"bad": True},
+                    },
+                }
+            ]
+        )
+
+        result = validate_output(resp, site_id="builder_demo")
+
+        assert result["ui_actions"] == [
+            {
+                "action": "REQUEST_ESTIMATE",
+                "params": {
+                    "phone": "9999999999",
+                    "budget": 250000,
+                    "message": "Need a site visit",
+                },
+            }
+        ]

@@ -1,7 +1,12 @@
+import { resolveSiteId, trimTrailingSlash } from "./siteIdentity";
+
 const currentScript = document.currentScript;
 const embeddedApiUrl = "__AI_PUBLIC_API_URL__";
 const embeddedSiteId = "__AI_DEFAULT_SITE_ID__";
 const SESSION_STORAGE_PREFIX = "shopbot:session:";
+const DEFAULT_ASSISTANT_BRAND = "Maya";
+const DEFAULT_ASSISTANT_TITLE = "AI Salesperson";
+const DEFAULT_SPEECH_VOICE_PREFERENCE = "female";
 
 function clean(value) {
   return String(value || "").trim();
@@ -17,37 +22,23 @@ function scriptUrl() {
   }
 }
 
-function resolveSiteId(url) {
-  return (
-    clean(currentScript?.getAttribute("data-site-id")) ||
-    clean(url?.searchParams.get("site")) ||
-    clean(url?.searchParams.get("site_id")) ||
-    clean(url?.searchParams.get("shop")) ||
-    (embeddedSiteId.startsWith("__AI_") ? "" : embeddedSiteId) ||
-    "site_1"
-  );
-}
-
 function resolveApiUrl(url) {
   const fromAttribute = clean(currentScript?.getAttribute("data-api-url"));
-  if (fromAttribute) return fromAttribute.replace(/\/+$/, "");
+  if (fromAttribute) return trimTrailingSlash(fromAttribute);
 
   if (!embeddedApiUrl.startsWith("__AI_")) {
-    return embeddedApiUrl.replace(/\/+$/, "");
+    return trimTrailingSlash(embeddedApiUrl);
   }
 
   if (url?.origin) {
     const pathname = url.pathname.replace(/\/shopbot(?:-widget)?\.js$/, "");
-    return `${url.origin}${pathname}`.replace(/\/+$/, "");
+    return trimTrailingSlash(`${url.origin}${pathname}`);
   }
 
-  return window.location.origin.replace(/\/+$/, "");
+  return trimTrailingSlash(window.location.origin);
 }
 
 function resolveSessionId(siteId) {
-  const configuredSessionId = clean(window.ShopBotConfig?.sessionId);
-  if (configuredSessionId) return configuredSessionId.slice(0, 120);
-
   const key = `${SESSION_STORAGE_PREFIX}${siteId}`;
   try {
     const currentValue = window.sessionStorage.getItem(key);
@@ -66,7 +57,7 @@ function createSessionId(siteId) {
 }
 
 const srcUrl = scriptUrl();
-const siteId = resolveSiteId(srcUrl);
+const siteId = resolveSiteId(currentScript, srcUrl, embeddedSiteId);
 
 export const config = {
   siteId,
@@ -76,5 +67,8 @@ export const config = {
   apiUrl: resolveApiUrl(srcUrl),
   useWebSocket: clean(currentScript?.getAttribute("data-use-websocket")).toLowerCase() !== "false",
   autoGreet: clean(currentScript?.getAttribute("data-auto-greet")).toLowerCase() !== "false",
-  brandName: clean(currentScript?.getAttribute("data-brand")) || "AI-KART",
+  brandName: clean(currentScript?.getAttribute("data-brand")) || DEFAULT_ASSISTANT_BRAND,
+  assistantTitle: clean(currentScript?.getAttribute("data-assistant-title")) || DEFAULT_ASSISTANT_TITLE,
+  speechVoiceName: clean(currentScript?.getAttribute("data-speech-voice")),
+  speechVoicePreference: clean(currentScript?.getAttribute("data-speech-voice-preference")) || DEFAULT_SPEECH_VOICE_PREFERENCE,
 };

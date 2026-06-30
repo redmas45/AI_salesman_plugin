@@ -16,6 +16,7 @@ import type { ClientWorkspaceTabDefinition, ClientWorkspaceTabId } from './types
 
 const TAB_ICONS: Record<ClientWorkspaceTabId, LucideIcon> = {
   overview: ShieldCheck,
+  integration: ClipboardCheck,
   readiness: ShieldCheck,
   catalog: PackageOpen,
   crawl: Gauge,

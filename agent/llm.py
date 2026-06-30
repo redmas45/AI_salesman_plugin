@@ -20,7 +20,10 @@ from tenacity import (
 
 import config
 from agent.prompt import build_system_prompt, format_products_for_prompt
+from agent.page_context import format_page_context, sanitize_page_context
 from agent.prompts.generic import build_generic_system_prompt, format_knowledge_for_prompt
+from agent.provider_status import record_provider_failure, record_provider_success
+from agent.verticals.registry import DEFAULT_VERTICAL_KEY
 from db.clients import get_client_vertical_key
 
 logger = logging.getLogger(__name__)
@@ -47,6 +50,15 @@ DEFAULT_RESPONSE: dict[str, Any] = {
     "response_text": "I'm sorry, I couldn't process that request. Please try again.",
     "intent": "unknown",
     "confidence": 0.0,
+    "ui_actions": [],
+}
+QUOTA_EXHAUSTED_RESPONSE: dict[str, Any] = {
+    "response_text": (
+        "Maya is temporarily unavailable because the AI service is out of capacity. "
+        "Please try again later."
+    ),
+    "intent": "llm_quota_exhausted",
+    "confidence": 1.0,
     "ui_actions": [],
 }
 
@@ -106,6 +118,7 @@ def generate_response(
     price_constraints: dict | None = None,
     cart_context: str = "",
     profile_context: str = "",
+    page_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Generate the next AI response, JSON-formatted, including UI actions.
@@ -122,10 +135,18 @@ def generate_response(
     Returns:
         Parsed dict with keys: response_text, intent, confidence, ui_actions.
     """
-    vertical_key = get_client_vertical_key(site_id)
+    vertical_key = _runtime_vertical_key(site_id)
+    safe_page_context = sanitize_page_context(page_context)
+    page_context_text = format_page_context(safe_page_context)
     if vertical_key == "ecommerce":
         product_context = format_products_for_prompt(retrieved_products, price_constraints)
-        system_prompt = build_system_prompt(site_id, product_context, cart_context, profile_context)
+        system_prompt = build_system_prompt(
+            site_id,
+            product_context,
+            cart_context,
+            profile_context,
+            page_context_text,
+        )
     else:
         knowledge_context = format_knowledge_for_prompt(retrieved_products)
         system_prompt = build_generic_system_prompt(
@@ -133,6 +154,7 @@ def generate_response(
             vertical_key=vertical_key,
             knowledge_context=knowledge_context,
             profile_context=profile_context,
+            page_context=page_context_text,
         )
 
     logger.info(
@@ -159,6 +181,7 @@ def generate_response(
         raw = _call_llm(system_prompt, messages)
         logger.debug("LLM | raw response: %s", raw[:300])
         result = _parse_response(raw)
+        record_provider_success("openai")
         logger.info(
             "LLM | intent=%s confidence=%.2f actions=%d",
             result.get("intent"),
@@ -169,6 +192,10 @@ def generate_response(
 
     except LLM_RETRY_ERRORS as exc:
         logger.error("LLM | Failed after retries: %s", exc)
+        if _is_quota_exhausted_error(exc):
+            record_provider_failure("openai", exc, category="quota_exhausted")
+            return QUOTA_EXHAUSTED_RESPONSE.copy()
+        record_provider_failure("openai", exc, category="error")
         return DEFAULT_RESPONSE.copy()
 
 
@@ -194,6 +221,23 @@ def _parse_response(raw: str) -> dict[str, Any]:
         logger.error("LLM | Failed to parse JSON: %s", exc)
         return DEFAULT_RESPONSE.copy()
 
+
+def _is_quota_exhausted_error(exc: BaseException) -> bool:
+    """Detect provider quota/billing exhaustion without depending on one SDK shape."""
+    fields = [
+        getattr(exc, "code", ""),
+        getattr(exc, "type", ""),
+        getattr(exc, "status_code", ""),
+        getattr(exc, "body", ""),
+        str(exc),
+    ]
+    text = " ".join(str(field or "") for field in fields).lower()
+    return bool(
+        "insufficient_quota" in text
+        or "quota" in text and "exceeded" in text
+        or "billing" in text and ("quota" in text or "plan" in text)
+    )
+
 def _sanitize_history(history: list[dict]) -> list[dict[str, str]]:
     """Ensure history messages only have allowed keys."""
     sanitized: list[dict[str, str]] = []
@@ -206,3 +250,11 @@ def _sanitize_history(history: list[dict]) -> list[dict[str, str]]:
             continue
         sanitized.append({"role": role, "content": content[: config.MAX_TRANSCRIPT_CHARS]})
     return sanitized
+
+
+def _runtime_vertical_key(site_id: str) -> str:
+    try:
+        return get_client_vertical_key(site_id)
+    except (LookupError, RuntimeError, ValueError, TypeError, KeyError) as exc:
+        logger.warning("LLM | vertical lookup failed for %s: %s", site_id, exc)
+        return DEFAULT_VERTICAL_KEY

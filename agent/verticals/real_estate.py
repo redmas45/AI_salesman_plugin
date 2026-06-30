@@ -21,5 +21,13 @@ VERTICAL = VerticalDefinition(
     ),
     entity_types=("property_listing", "development_project", "agent", "locality", "amenity"),
     readiness_checks=("listings", "location", "lead_flow", "maps", "freshness", "compliance"),
-    action_types=("SHOW_ENTITIES", "COMPARE_ENTITIES", "REQUEST_VIEWING", "CONTACT_AGENT", "CAPTURE_LEAD"),
+    action_types=(
+        "SHOW_ENTITIES",
+        "COMPARE_ENTITIES",
+        "SORT_ENTITIES",
+        "RUN_AFFORDABILITY_CALCULATOR",
+        "REQUEST_VIEWING",
+        "CONTACT_AGENT",
+        "CAPTURE_LEAD",
+    ),
 )

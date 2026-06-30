@@ -13,6 +13,7 @@ import html
 import json
 import logging
 import re
+import sys
 import xml.etree.ElementTree as ET
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -24,10 +25,27 @@ from urllib.parse import parse_qsl, urlencode, urldefrag, urljoin, urlparse, url
 
 import httpx
 
+from agent.local_urls import local_runtime_url_candidates
 from agent.rag import _embed, _product_to_text
+from agent.verticals.discovery_profiles import (
+    discovery_paths_for,
+    get_discovery_profile,
+    high_value_url_keywords_for,
+    knowledge_entity_type_for,
+)
+from agent.verticals.registry import DEFAULT_VERTICAL_KEY
 from db.database import get_db, init_tenant_schema, upsert_variants
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_console_print(message: str) -> None:
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe_message = str(message).encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(safe_message)
 
 PRICE_RE = re.compile(r"(?:₹|rs\.?|inr|\$)\s*([0-9]+(?:[.,][0-9]{1,2})?)", re.IGNORECASE)
 SPACES_RE = re.compile(r"\s+")
@@ -41,26 +59,9 @@ NEXT_DATA_SCRIPT_RE = re.compile(
     r"<script[^>]*id=[\"']__NEXT_DATA__[\"'][^>]*>(.*?)</script>",
     flags=re.IGNORECASE | re.DOTALL,
 )
-COMMON_DISCOVERY_PATHS = (
-    "/shop",
-    "/store",
-    "/products",
-    "/product",
-    "/catalog",
-    "/catalogue",
-    "/collections",
-    "/collections/all",
-    "/category",
-    "/categories",
-    "/inventory",
-    "/items",
-    "/all-products",
-    "/shop-all",
-    "/store/products",
-    "/search",
-)
 CATALOG_ENDPOINT_PATHS = (
     "/api/products",
+    "/api/policies",
     "/api/products.json",
     "/products.json",
     "/collections/all/products.json",
@@ -72,21 +73,6 @@ SHOPIFY_CATALOG_MAX_PAGES = 20
 WOO_CATALOG_MAX_PAGES = 20
 GENERIC_API_CATALOG_PAGE_SIZE = 96
 GENERIC_API_CATALOG_MAX_PAGES = 100
-HIGH_VALUE_URL_KEYWORDS = (
-    "product",
-    "products",
-    "shop",
-    "store",
-    "catalog",
-    "catalogue",
-    "collection",
-    "collections",
-    "category",
-    "categories",
-    "inventory",
-    "item",
-    "sku",
-)
 PRODUCT_URL_KEYWORDS = (
     "/product/",
     "/products/",
@@ -104,7 +90,6 @@ LOW_VALUE_URL_KEYWORDS = (
     "/contact",
     "/privacy",
     "/terms",
-    "/policy",
     "/support",
     "/faq",
 )
@@ -710,7 +695,7 @@ def _normalize_embedded_json_product(raw: dict[str, Any], source_url: str) -> di
         signal_score += 1
     if any(raw.get(key) not in (None, "") for key in ("id", "product_id", "sku", "handle", "_id")):
         signal_score += 1
-    if url_value and any(token in str(url_value).lower() for token in HIGH_VALUE_URL_KEYWORDS):
+    if url_value and any(token in str(url_value).lower() for token in high_value_url_keywords_for("ecommerce")):
         signal_score += 1
     if any(key in raw for key in ("variants", "offers", "prices", "inventory", "stock", "stock_quantity")):
         signal_score += 1
@@ -889,6 +874,9 @@ def _normalize_product_row(row: dict[str, Any], fallback_category: str, source_u
 
 def _normalize_api_catalog_product(raw: dict[str, Any], api_url: str) -> dict[str, Any] | None:
     """Normalize the storefront's JSON catalog product shape for RAG ingestion."""
+    if _looks_like_insurance_policy_api(raw):
+        return _normalize_policy_catalog_product(raw, api_url)
+
     categories = raw.get("categories") if isinstance(raw.get("categories"), list) else []
     category = _first(raw.get("category"), categories[0] if categories else None, "Products")
     stock = raw.get("stock")
@@ -920,6 +908,150 @@ def _normalize_api_catalog_product(raw: dict[str, Any], api_url: str) -> dict[st
     )
 
 
+def _looks_like_insurance_policy_api(raw: dict[str, Any]) -> bool:
+    return any(
+        key in raw
+        for key in (
+            "premium_monthly",
+            "premium_annual",
+            "sum_insured",
+            "insurer",
+            "claim_process",
+            "waiting_period",
+        )
+    )
+
+
+def _normalize_policy_catalog_product(raw: dict[str, Any], api_url: str) -> dict[str, Any] | None:
+    category_id = _clean_text(raw.get("category_id"))
+    category = _insurance_category_label(category_id)
+    monthly_premium = _to_float(raw.get("premium_monthly"))
+    annual_premium = _to_float(raw.get("premium_annual"))
+    price = monthly_premium or annual_premium
+    tags = _policy_catalog_tags(raw, category)
+    normalized = _normalize_product_row(
+        {
+            "id": _first(raw.get("id"), raw.get("policy_id")),
+            "name": _first(raw.get("name"), raw.get("title")),
+            "description": _policy_catalog_description(raw, category),
+            "category": category,
+            "brand": _first(raw.get("insurer"), raw.get("brand"), "Insurance Provider"),
+            "price": price,
+            "original_price": annual_premium or price,
+            "stock": 100,
+            "tags": tags,
+            "rating": raw.get("rating"),
+            "review_count": raw.get("review_count"),
+            "is_active": 1,
+        },
+        fallback_category=category or "Insurance Plans",
+        source_url=api_url,
+    )
+    if not normalized:
+        return None
+    normalized["policy_json"] = _policy_catalog_policy_payload(raw, category)
+    normalized["risk_tags"] = _policy_catalog_risk_tags(raw, category)
+    normalized["pricing_json"] = {
+        "premium_monthly": monthly_premium,
+        "premium_annual": annual_premium,
+        "currency": "INR",
+    }
+    return normalized
+
+
+def _insurance_category_label(category_id: str) -> str:
+    labels = {
+        "health": "Health Insurance",
+        "life": "Life Insurance",
+        "motor": "Motor Insurance",
+        "travel": "Travel Insurance",
+        "home": "Home Insurance",
+        "business": "Business Insurance",
+    }
+    return labels.get(category_id.lower(), "Insurance Plans")
+
+
+def _policy_catalog_description(raw: dict[str, Any], category: str) -> str:
+    features = _to_tags(raw.get("features"))
+    parts = [
+        _clean_text(raw.get("name")),
+        category,
+        _clean_text(raw.get("type")),
+        _clean_text(raw.get("insurer")),
+        f"monthly premium INR {_to_float(raw.get('premium_monthly')):g}" if _to_float(raw.get("premium_monthly")) else "",
+        f"annual premium INR {_to_float(raw.get('premium_annual')):g}" if _to_float(raw.get("premium_annual")) else "",
+        f"sum insured INR {_to_float(raw.get('sum_insured')):g}" if _to_float(raw.get("sum_insured")) else "",
+        f"age {_clean_text(raw.get('age_min'))} to {_clean_text(raw.get('age_max'))}" if raw.get("age_min") or raw.get("age_max") else "",
+        f"waiting period {_clean_text(raw.get('waiting_period'))}" if raw.get("waiting_period") else "",
+        f"claim process {_clean_text(raw.get('claim_process'))}" if raw.get("claim_process") else "",
+        f"renewability {_clean_text(raw.get('renewability'))}" if raw.get("renewability") else "",
+        f"tax benefit {_clean_text(raw.get('tax_benefit'))}" if raw.get("tax_benefit") else "",
+        "Features: " + "; ".join(features[:8]) if features else "",
+    ]
+    return ". ".join(part for part in parts if part)
+
+
+def _policy_catalog_tags(raw: dict[str, Any], category: str) -> list[str]:
+    tags = [
+        "insurance",
+        "policy",
+        "plan",
+        category,
+        raw.get("category_id"),
+        raw.get("type"),
+        raw.get("insurer"),
+        "premium",
+        "coverage",
+        "claim",
+    ]
+    features = _to_tags(raw.get("features"))
+    tags.extend(features[:10])
+    if raw.get("age_min") or raw.get("age_max"):
+        tags.append(f"age {raw.get('age_min') or ''} {raw.get('age_max') or ''}".strip())
+    return [str(tag).strip() for tag in tags if str(tag or "").strip()]
+
+
+def _policy_catalog_policy_payload(raw: dict[str, Any], category: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "category": category,
+        "category_id": _clean_text(raw.get("category_id")),
+        "policy_type": _clean_text(raw.get("type")),
+        "sum_insured": _to_float(raw.get("sum_insured")),
+        "age_min": _optional_int(raw.get("age_min")),
+        "age_max": _optional_int(raw.get("age_max")),
+        "claim_process": _clean_text(raw.get("claim_process")),
+        "waiting_period": _clean_text(raw.get("waiting_period")),
+        "renewability": _clean_text(raw.get("renewability")),
+        "tax_benefit": _clean_text(raw.get("tax_benefit")),
+    }
+    return {key: value for key, value in payload.items() if value not in ("", None, 0.0)}
+
+
+def _policy_catalog_risk_tags(raw: dict[str, Any], category: str) -> list[str]:
+    tags = ["regulated_insurance", "insurance_plan"]
+    category_text = f"{category} {_clean_text(raw.get('category_id'))}".lower()
+    if "health" in category_text:
+        tags.append("health_cover")
+    if "life" in category_text:
+        tags.append("life_cover")
+    if "motor" in category_text:
+        tags.append("motor_cover")
+    if raw.get("claim_process"):
+        tags.append("claim_process_available")
+    if raw.get("waiting_period"):
+        tags.append("waiting_period_applies")
+    return sorted(set(tags))
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
 def _site_base_url(seed_url: str) -> str:
     parsed = urlparse(seed_url)
     scheme = parsed.scheme or "https"
@@ -934,6 +1066,10 @@ def _catalog_endpoints_for(seed_url: str) -> list[str]:
     base = _site_base_url(seed_url)
     urls = [urljoin(base, path) for path in CATALOG_ENDPOINT_PATHS]
     return list(dict.fromkeys(urls))
+
+
+def _catalog_seed_candidates(seed_url: str) -> list[str]:
+    return local_runtime_url_candidates(seed_url) or [seed_url]
 
 
 def _normalize_catalog_payload(payload: Any, api_url: str, *, merge_same_name: bool = True) -> list[dict[str, Any]]:
@@ -978,12 +1114,13 @@ def _normalize_catalog_payload(payload: Any, api_url: str, *, merge_same_name: b
 async def _fetch_api_catalog_products(seed_url: str, timeout: int) -> list[dict[str, Any]]:
     """Fetch common public commerce catalog endpoints before rendering HTML."""
     async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
-        for api_url in _catalog_endpoints_for(seed_url):
-            deduped = await _fetch_catalog_endpoint_pages(client, api_url)
-            if deduped:
-                logger.info("API catalog at %s returned %d products.", api_url, len(deduped))
-                return deduped
-            logger.warning("API catalog at %s did not contain a usable product list.", api_url)
+        for candidate_seed_url in _catalog_seed_candidates(seed_url):
+            for api_url in _catalog_endpoints_for(candidate_seed_url):
+                deduped = await _fetch_catalog_endpoint_pages(client, api_url)
+                if deduped:
+                    logger.info("API catalog at %s returned %d products.", api_url, len(deduped))
+                    return deduped
+                logger.warning("API catalog at %s did not contain a usable product list.", api_url)
 
     return []
 
@@ -1136,7 +1273,9 @@ class _HtmlHarvest(HTMLParser):
             self._buffers[idx].append(text)
 
 
-def _extract_jsonld_products(html_text: str, source_url: str) -> list[dict[str, Any]]:
+def _extract_jsonld_products(html_text: str, source_url: str, vertical_key: str = DEFAULT_VERTICAL_KEY) -> list[dict[str, Any]]:
+    profile = get_discovery_profile(vertical_key)
+    profile_types = {item.lower() for item in profile.jsonld_types}
     raw_json = re.findall(
         r"<script[^>]*type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
         html_text,
@@ -1155,8 +1294,13 @@ def _extract_jsonld_products(html_text: str, source_url: str) -> list[dict[str, 
             item = queue.pop()
             if not isinstance(item, dict):
                 continue
-            if item.get("@type") == "Product":
+            item_types = _jsonld_type_texts(item.get("@type"))
+            if "product" in item_types and profile.key == "ecommerce":
                 row = _normalize_jsonld_item(item, source_url)
+                if row:
+                    results.append(row)
+            elif item_types & profile_types:
+                row = _normalize_generic_jsonld_item(item, source_url, vertical_key=profile.key)
                 if row:
                     results.append(row)
 
@@ -1166,6 +1310,27 @@ def _extract_jsonld_products(html_text: str, source_url: str) -> list[dict[str, 
             elif isinstance(graph, dict):
                 queue.append(graph)
     return results
+
+
+def _jsonld_type_text(value: Any) -> str:
+    if isinstance(value, list):
+        return _clean_text(_first(*value, default=""))
+    return _clean_text(value)
+
+
+def _jsonld_type_texts(value: Any) -> set[str]:
+    if isinstance(value, list):
+        values = value
+    else:
+        values = [value]
+    result: set[str] = set()
+    for item in values:
+        text = _clean_text(item)
+        if not text:
+            continue
+        result.add(text)
+        result.add(text.rsplit("/", 1)[-1])
+    return {item.lower() for item in result if item}
 
 
 def _normalize_jsonld_item(raw: dict[str, Any], source_url: str) -> dict[str, Any] | None:
@@ -1218,6 +1383,52 @@ def _normalize_jsonld_item(raw: dict[str, Any], source_url: str) -> dict[str, An
     )
 
 
+def _normalize_generic_jsonld_item(
+    raw: dict[str, Any],
+    source_url: str,
+    *,
+    vertical_key: str,
+) -> dict[str, Any] | None:
+    profile = get_discovery_profile(vertical_key)
+    name = _clean_text(_first(raw.get("name"), raw.get("headline"), raw.get("serviceType"), raw.get("title"), default=""))
+    if not name:
+        return None
+
+    description = _clean_text(_first(raw.get("description"), raw.get("summary"), default=name))
+    provider = raw.get("provider") or raw.get("brand") or raw.get("seller") or raw.get("organizer")
+    if isinstance(provider, dict):
+        provider = provider.get("name")
+
+    offers = raw.get("offers") or {}
+    if isinstance(offers, list) and offers:
+        offers = offers[0]
+    if not isinstance(offers, dict):
+        offers = {}
+
+    tags = _to_tags(_first(raw.get("keywords"), raw.get("areaServed"), raw.get("serviceType"), raw.get("@type"), default=[]))
+    for tag in profile.text_signals[:4]:
+        if tag not in tags:
+            tags.append(tag)
+
+    return _normalize_product_row(
+        {
+            "id": _first(raw.get("identifier"), raw.get("sku"), _stable_id(source_url, name, description)),
+            "name": name,
+            "brand": _first(provider, profile.provider_label),
+            "category": _first(raw.get("category"), profile.category_label),
+            "description": description,
+            "price": _first(offers.get("price"), offers.get("lowPrice"), 0),
+            "original_price": _first(offers.get("highPrice"), offers.get("price"), 0),
+            "image": _first(raw.get("image"), default=None),
+            "tags": tags,
+            "stock": 100,
+            "is_active": 1,
+        },
+        fallback_category=profile.category_label or "Knowledge",
+        source_url=source_url,
+    )
+
+
 def _derive_category_from_url(url: str) -> str:
     parsed = urlparse(url)
     parts = [p for p in parsed.path.split("/") if p]
@@ -1228,12 +1439,13 @@ def _derive_category_from_url(url: str) -> str:
     return "Products"
 
 
-def _build_candidates_from_html(url: str, html_text: str) -> list[dict[str, Any]]:
+def _build_candidates_from_html(url: str, html_text: str, vertical_key: str = DEFAULT_VERTICAL_KEY) -> list[dict[str, Any]]:
+    profile = get_discovery_profile(vertical_key)
     parser = _HtmlHarvest()
     parser.feed(html_text)
 
     all_products = []
-    all_products.extend(_extract_jsonld_products(html_text, url))
+    all_products.extend(_extract_jsonld_products(html_text, url, vertical_key=vertical_key))
     all_products.extend(_extract_nextjs_flight_products(html_text, url))
     all_products.extend(_extract_embedded_json_products(html_text, url))
 
@@ -1245,17 +1457,22 @@ def _build_candidates_from_html(url: str, html_text: str) -> list[dict[str, Any]
         lowered = text.lower()
         has_price_signal = _parse_price(text) > 0
         has_shop_signal = any(token in lowered for token in ("add to cart", "buy", "price", "₹", "rs", "inr", "$"))
-        if not has_price_signal and not has_shop_signal:
+        has_vertical_signal = _has_vertical_signal(text, url, vertical_key=profile.key)
+        if not has_price_signal and not has_shop_signal and not has_vertical_signal:
             continue
 
+        fallback_category = profile.category_label if has_vertical_signal else category_hint
+        matched_signals = _matched_vertical_signals(text, url, vertical_key=profile.key)
         row = _normalize_product_row(
             {
-                "name": text.split(".")[0][:90],
+                "name": _candidate_title_from_block(text, vertical_key=vertical_key),
                 "description": text,
-                "category": category_hint,
+                "category": fallback_category,
+                "brand": profile.provider_label if has_vertical_signal else "Unknown Brand",
                 "price": _parse_price(text),
+                "tags": matched_signals if has_vertical_signal else [],
             },
-            fallback_category=category_hint,
+            fallback_category=fallback_category,
             source_url=url,
         )
         if row:
@@ -1267,6 +1484,32 @@ def _build_candidates_from_html(url: str, html_text: str) -> list[dict[str, Any]
             unique[int(item["id"])] = item
 
     return _dedupe_products(list(unique.values()))
+
+
+def _has_vertical_signal(text: str, url: str, *, vertical_key: str) -> bool:
+    if vertical_key == "ecommerce":
+        return False
+    matched = _matched_vertical_signals(text, url, vertical_key=vertical_key)
+    return len(matched) >= 2 or any(token in url.lower() for token in high_value_url_keywords_for(vertical_key))
+
+
+def _matched_vertical_signals(text: str, url: str, *, vertical_key: str) -> list[str]:
+    profile = get_discovery_profile(vertical_key)
+    lowered = f"{text} {url}".lower()
+    return [token for token in profile.text_signals if token in lowered]
+
+
+def _candidate_title_from_block(text: str, vertical_key: str = DEFAULT_VERTICAL_KEY) -> str:
+    clean = _clean_text(text)
+    if vertical_key == "ecommerce":
+        return clean.split(".")[0][:90]
+
+    for separator in (".", ":", "|", "-", ","):
+        first = clean.split(separator)[0].strip()
+        if 8 <= len(first) <= 90:
+            return first
+    words = clean.split()
+    return " ".join(words[:10])[:90]
 
 
 def _candidate_score(product: dict[str, Any]) -> tuple[int, int, int, int, int]:
@@ -1348,13 +1591,13 @@ def _is_allowed_crawl_url(url: str, allowed_host: str) -> bool:
     return True
 
 
-def _url_priority(url: str) -> int:
+def _url_priority(url: str, vertical_key: str = DEFAULT_VERTICAL_KEY) -> int:
     parsed = urlparse(url)
     target = f"{parsed.path.lower()}?{parsed.query.lower()}"
     score = 0
     if any(token in target for token in PRODUCT_URL_KEYWORDS):
         score += 100
-    if any(token in target for token in HIGH_VALUE_URL_KEYWORDS):
+    if any(token in target for token in high_value_url_keywords_for(vertical_key)):
         score += 50
     if "page=" in target or "paged=" in target:
         score += 10
@@ -1363,7 +1606,7 @@ def _url_priority(url: str) -> int:
     return score
 
 
-def _ranked_unique_urls(urls: list[str]) -> list[str]:
+def _ranked_unique_urls(urls: list[str], vertical_key: str = DEFAULT_VERTICAL_KEY) -> list[str]:
     unique: list[str] = []
     seen: set[str] = set()
     for url in urls:
@@ -1371,12 +1614,12 @@ def _ranked_unique_urls(urls: list[str]) -> list[str]:
         if clean and clean not in seen:
             seen.add(clean)
             unique.append(clean)
-    return sorted(unique, key=lambda item: (-_url_priority(item), len(urlparse(item).path), item))
+    return sorted(unique, key=lambda item: (-_url_priority(item, vertical_key), len(urlparse(item).path), item))
 
 
-def _common_discovery_urls(seed_url: str) -> list[str]:
+def _common_discovery_urls(seed_url: str, vertical_key: str) -> list[str]:
     base = _site_base_url(seed_url)
-    return [urljoin(base, path) for path in COMMON_DISCOVERY_PATHS]
+    return [urljoin(base, path) for path in discovery_paths_for(vertical_key)]
 
 
 def _extract_sitemap_locations(xml_text: str) -> list[str]:
@@ -1425,6 +1668,7 @@ async def _fetch_sitemap_tree(
     *,
     max_urls: int,
     seen_sitemaps: set[str],
+    vertical_key: str,
 ) -> list[str]:
     sitemap_url = urldefrag(sitemap_url)[0]
     if sitemap_url in seen_sitemaps or len(seen_sitemaps) >= 25:
@@ -1457,6 +1701,7 @@ async def _fetch_sitemap_tree(
                 allowed_host,
                 max_urls=max_urls - len(urls),
                 seen_sitemaps=seen_sitemaps,
+                vertical_key=vertical_key,
             )
             urls.extend(nested)
             continue
@@ -1466,7 +1711,7 @@ async def _fetch_sitemap_tree(
     return urls[:max_urls]
 
 
-async def _discover_sitemap_urls(seed_url: str, timeout: int, max_urls: int) -> list[str]:
+async def _discover_sitemap_urls(seed_url: str, timeout: int, max_urls: int, vertical_key: str = DEFAULT_VERTICAL_KEY) -> list[str]:
     allowed_host = urlparse(seed_url).netloc.lower()
     base = _site_base_url(seed_url)
     sitemap_candidates = [urljoin(base, "/sitemap.xml")]
@@ -1491,20 +1736,21 @@ async def _discover_sitemap_urls(seed_url: str, timeout: int, max_urls: int) -> 
                     allowed_host,
                     max_urls=max_urls - len(urls),
                     seen_sitemaps=seen_sitemaps,
+                    vertical_key=vertical_key,
                 )
             )
 
-    return _ranked_unique_urls(urls)[:max_urls]
+    return _ranked_unique_urls(urls, vertical_key=vertical_key)[:max_urls]
 
 
-async def _discover_crawl_entrypoints(seed_url: str, timeout: int, max_urls: int) -> list[str]:
+async def _discover_crawl_entrypoints(seed_url: str, timeout: int, max_urls: int, vertical_key: str = DEFAULT_VERTICAL_KEY) -> list[str]:
     allowed_host = urlparse(seed_url).netloc.lower()
-    sitemap_urls = await _discover_sitemap_urls(seed_url, timeout, max_urls=max_urls)
+    sitemap_urls = await _discover_sitemap_urls(seed_url, timeout, max_urls=max_urls, vertical_key=vertical_key)
     candidates = [seed_url]
     candidates.extend(sitemap_urls)
-    candidates.extend(_common_discovery_urls(seed_url))
+    candidates.extend(_common_discovery_urls(seed_url, vertical_key))
     candidates = [url for url in candidates if _is_allowed_crawl_url(url, allowed_host)]
-    return _ranked_unique_urls(candidates)[:max_urls]
+    return _ranked_unique_urls(candidates, vertical_key=vertical_key)[:max_urls]
 
 
 def _ensure_category(conn, category_name: str, site_id: str) -> int:
@@ -1567,6 +1813,7 @@ def _persist_catalog(
     reconcile_missing: bool,
     source_name: str,
     crawl_report: dict[str, Any] | None = None,
+    vertical_key: str = DEFAULT_VERTICAL_KEY,
 ) -> int:
     init_tenant_schema(site_id)
 
@@ -1730,7 +1977,7 @@ def _persist_catalog(
         variant_count += upsert_variants(site_id, product_id, variants)
 
     vectorized = _vectorize(site_id)
-    knowledge_vectorized = _sync_catalog_knowledge(site_id, source_name)
+    knowledge_vectorized = _sync_catalog_knowledge(site_id, source_name, vertical_key=vertical_key)
     with get_db(site_id) as conn:
         conn.execute(
             """
@@ -1757,24 +2004,26 @@ def _persist_catalog(
         vectorized,
         knowledge_vectorized,
     )
-    print(
+    _safe_console_print(
         f"[{start_timestamp}] Catalog sync ({source_name}): {len(incoming_ids)} source products, "
         f"{changed} changed/new, {deactivated} deactivated, {variant_count} variants, "
         f"{vectorized} product vectors, {knowledge_vectorized} knowledge vectors"
     )
     if changed_names:
-        print(f"  -> Added/Changed: {', '.join(changed_names)}")
+        _safe_console_print(f"  -> Added/Changed: {', '.join(changed_names)}")
     if deactivated_names:
-        print(f"  -> Deactivated/Removed: {', '.join(deactivated_names)}")
+        _safe_console_print(f"  -> Deactivated/Removed: {', '.join(deactivated_names)}")
     return changed
 
 
-def _sync_catalog_knowledge(site_id: str, source_name: str) -> int:
+def _sync_catalog_knowledge(site_id: str, source_name: str, vertical_key: str = DEFAULT_VERTICAL_KEY) -> int:
     try:
         from db.knowledge import sync_products_to_knowledge
         from agent.retrieval.generic_rag import vectorize_missing_knowledge
 
-        sync_products_to_knowledge(site_id, source_name)
+        entity_type = knowledge_entity_type_for(vertical_key)
+        source_type = "product_catalog" if entity_type == "product" else "website_crawl"
+        sync_products_to_knowledge(site_id, source_name, entity_type=entity_type, source_type=source_type)
         return vectorize_missing_knowledge(site_id)
     except Exception as exc:
         logger.warning("Knowledge sync skipped for %s/%s: %s", site_id, source_name, exc)
@@ -1873,6 +2122,7 @@ async def async_web_crawl(
         raise ValueError("max_pages and max_depth must be positive.")
 
     resolved_site_id = sanitize_site_id(site_id or start_url)
+    vertical_key = _crawl_vertical_key(resolved_site_id)
     seed = urldefrag(start_url)[0]
     parsed_seed = urlparse(seed)
     if not parsed_seed.netloc:
@@ -1892,7 +2142,7 @@ async def async_web_crawl(
     stopped_by_limit = False
 
     if not api_catalog_products:
-        entrypoints = await _discover_crawl_entrypoints(seed, timeout, max_urls=max_pages * 3)
+        entrypoints = await _discover_crawl_entrypoints(seed, timeout, max_urls=max_pages * 3, vertical_key=vertical_key)
         if not entrypoints:
             entrypoints = [seed]
         queue: deque[tuple[str, int]] = deque((url, 0) for url in entrypoints)
@@ -1942,11 +2192,11 @@ async def async_web_crawl(
                         continue
                     discovered_links.append(next_url)
 
-                for next_url in _ranked_unique_urls(discovered_links):
+                for next_url in _ranked_unique_urls(discovered_links, vertical_key=vertical_key):
                     queued.add(next_url)
                     queue.append((next_url, depth + 1))
 
-                candidates = _build_candidates_from_html(page_url, text)
+                candidates = _build_candidates_from_html(page_url, text, vertical_key=vertical_key)
                 extracted_products.extend(candidates)
 
             if len(visited) >= max_pages:
@@ -1971,7 +2221,7 @@ async def async_web_crawl(
         stopped_by_limit=stopped_by_limit,
         duration_ms=(monotonic() - crawl_started) * 1000,
     )
-    print(
+    _safe_console_print(
         f"Crawler summary ({source_label}): visited {pages_seen} pages, "
         f"extracted {len(extracted_products)} raw candidates, deduped to {len(deduped_products)}."
     )
@@ -1992,9 +2242,20 @@ async def async_web_crawl(
         reconcile_missing=reconcile_missing,
         source_name=source_name,
         crawl_report=report.to_dict(),
+        vertical_key=vertical_key,
     )
     return resolved_site_id
 
 def sync_web_crawl(*args, **kwargs) -> str:
     import asyncio
     return asyncio.run(async_web_crawl(*args, **kwargs))
+
+
+def _crawl_vertical_key(site_id: str) -> str:
+    try:
+        from db.clients import get_client_vertical_key
+
+        return get_client_vertical_key(site_id)
+    except Exception as exc:
+        logger.debug("Crawler vertical lookup failed for %s: %s", site_id, exc)
+        return DEFAULT_VERTICAL_KEY

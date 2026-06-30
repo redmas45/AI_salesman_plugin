@@ -18,6 +18,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 import psycopg
 
 from agent import orchestrator
+from agent.page_context import sanitize_page_context
 from api.turn_logging import print_turn_summary, turn_timer
 from db import admin as admin_db
 import config
@@ -58,6 +59,7 @@ class WebSocketShopSession:
         self.session_id = _safe_session_id(session_id, self.site_id)
         self.history: list[dict[str, str]] = []
         self.audio_chunks: list[bytes] = []
+        self.page_context: dict[str, Any] = {}
 
     async def run(self) -> None:
         await self.websocket.accept()
@@ -74,6 +76,7 @@ class WebSocketShopSession:
 
                 if message_type == WS_TYPE_CONFIG:
                     self.history = _sanitize_history(payload.get("history", []))
+                    self.page_context = sanitize_page_context(payload.get("page_context"))
                     if payload.get("session_id"):
                         self.session_id = _safe_session_id(str(payload.get("session_id")), self.site_id)
                     await self.send({"type": WS_TYPE_CONFIGURED, "history_size": len(self.history)})
@@ -142,6 +145,7 @@ class WebSocketShopSession:
                     audio_filename=DEFAULT_AUDIO_FILENAME,
                     skip_tts=False,
                     conversation_history=self.history,
+                    page_context=self.page_context,
                 ):
                     asyncio.run_coroutine_threadsafe(queue.put(event), loop).result()
             except RECOVERABLE_WS_ERRORS as exc:  # pragma: no cover - defensive bridge

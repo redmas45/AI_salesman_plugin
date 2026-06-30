@@ -22,5 +22,14 @@ VERTICAL = VerticalDefinition(
     ),
     entity_types=("financial_product", "loan_product", "rate_table", "calculator", "disclosure", "advisor"),
     readiness_checks=("products", "rates", "calculators", "disclosures", "application_flow", "lead_capture"),
-    action_types=("SHOW_ENTITIES", "COMPARE_ENTITIES", "RUN_CALCULATOR", "CAPTURE_LEAD", "HANDOFF_TO_ADVISOR"),
+    action_types=(
+        "SHOW_ENTITIES",
+        "COMPARE_ENTITIES",
+        "SORT_ENTITIES",
+        "RUN_CALCULATOR",
+        "RUN_AFFORDABILITY_CALCULATOR",
+        "START_APPLICATION",
+        "CAPTURE_LEAD",
+        "HANDOFF_TO_ADVISOR",
+    ),
 )

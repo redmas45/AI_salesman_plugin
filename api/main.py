@@ -1,75 +1,43 @@
-"""
-FastAPI application — Voice Shopping Agent API.
-
-Endpoints:
-  POST /v1/shop          Main pipeline: audio/text → ui_actions + voice response
-  GET  /v1/products      List all products (for frontend sync)
-  GET  /health           Health check
-"""
+"""FastAPI application for the AI Hub runtime API."""
 
 import asyncio
 import base64
 import binascii
 import concurrent.futures
-import datetime
 import functools
-import io
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Optional
 from urllib.parse import urlparse
-from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import psycopg
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import config
 from agent import orchestrator
+from agent.page_context import parse_page_context
 from api import client_panel as client_panel_api
 from api import crm as crm_api
 from api.middleware import RateLimitMiddleware, RequestTracingMiddleware, SecurityHeadersMiddleware
 from api.routes import clients as clients_router
 from api.routes import analytics as analytics_router
+from api.routes import ecommerce as ecommerce_router
 from api.routes import settings as settings_router
 from api.turn_logging import print_turn_summary, turn_timer
 from api.ws_shop import ws_shop_handler
 from db import admin as admin_db
 
 from api.models import (
-    AddToCartRequest,
-    CartItemResponse,
-    CheckoutRequest,
-    ProductResponse,
+    KnowledgeItemResponse,
     ShopResponse,
-    VariantResponse,
-)
-from db.database import (
-    InvalidProductIdError,
-    ProductNotFoundError,
-    add_to_cart,
-    catalog_source_preview,
-    catalog_source_stats,
-    catalog_sync_history,
-    clear_cart,
-    coerce_product_id,
-    get_all_products,
-    get_cart_items,
-    get_product_variants,
-    get_user_profile,
-    tenant_catalog_preview,
-    tenant_catalog_stats,
-    remove_from_cart,
-    update_user_profile,
 )
 
 # Module-level logger — file handler is added inside lifespan() AFTER
@@ -83,29 +51,18 @@ DEFAULT_AUDIO_FILENAME = "audio.wav"
 CRAWLER_SOURCE_NAME = "custom_url_crawler"
 CRAWLER_POLL_INTERVAL_SECONDS = 120
 MAX_CONVERSATION_HISTORY_TURNS = 12
+MAX_PUBLIC_KNOWLEDGE_IDS = 30
+MAX_PUBLIC_KNOWLEDGE_ID_LENGTH = 180
+MAX_PUBLIC_KNOWLEDGE_TEXT_CHARS = 1200
 HTTP_UNPROCESSABLE_INPUT = status.HTTP_422_UNPROCESSABLE_CONTENT
-CHECKOUT_EMPTY_VALUES = {"", "N/A", "Not Provided"}
-CHECKOUT_DEFAULT_VALUE = "Not Provided"
-INVOICE_BRAND_NAME = "AI-KART"
-INVOICE_TITLE = "PREMIUM INVOICE"
-INVOICE_FILENAME = "bill.pdf"
-INVOICE_CURRENCY = "INR"
-INVOICE_HEADER_COLOR = "#2c3e50"
-INVOICE_TEXT_COLOR = "#34495e"
-INVOICE_ACCENT_COLOR = "#1abc9c"
-INVOICE_MUTED_COLOR = "#95a5a6"
-INVOICE_TABLE_BACKGROUND = "#f8f9fa"
-INVOICE_TABLE_GRID = "#dee2e6"
-INVOICE_PAGE_MARGIN = 60
-INVOICE_BORDER_MARGIN = 30
-INVOICE_HEADER_HEIGHT = 100
-INVOICE_HEADER_TOP_OFFSET = 130
-INVOICE_TITLE_FONT_SIZE = 36
-INVOICE_SUBTITLE_FONT_SIZE = 14
-INVOICE_TABLE_COL_WIDTHS = [240, 90, 50, 110]
-INVOICE_TOP_MARGIN = 150
 CRM_SOURCE_DIR = Path(__file__).parent.parent / "crm"
 CRM_STATIC_DIR = CRM_SOURCE_DIR / "dist"
+CLIENT_PANEL_SOURCE_DIR = Path(
+    os.getenv("CLIENT_PANEL_SOURCE_DIR", str(Path(__file__).parent.parent.parent / "client_panel"))
+).expanduser()
+CLIENT_PANEL_STATIC_DIR = Path(
+    os.getenv("CLIENT_PANEL_STATIC_DIR", str(CLIENT_PANEL_SOURCE_DIR / "dist"))
+).expanduser()
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -117,11 +74,22 @@ class NoCacheStaticFiles(StaticFiles):
         return response
 
 
+class SpaStaticFiles(NoCacheStaticFiles):
+    async def get_response(self, path: str, scope: Any) -> Response:
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == status.HTTP_404_NOT_FOUND and "." not in Path(path).name:
+                return await super().get_response("index.html", scope)
+            raise
+
+
 @dataclass(frozen=True)
 class ShoppingTurnPayload:
     audio_bytes: bytes | None
     audio_filename: str
     conversation_history: list[dict[str, str]]
+    page_context: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -133,30 +101,31 @@ class TurnLogState:
     status: str = "ok"
 
 
-@dataclass(frozen=True)
-class CheckoutProfile:
-    address: str
-    payment_method: str
-
-
 # Startup / Shutdown
-
-
-import asyncio
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialise database, seed data, and register pgvector on startup."""
-    logger.info("Starting Voice Shopping Agent API...")
+    import sys
+    print("\n" + "="*60, flush=True)
+    print(" ⏳ INITIALIZING AI MODELS (May take 1-3 minutes on first boot)", flush=True)
+    print("    Downloading/Loading embedding weights from HuggingFace...", flush=True)
+    print("="*60 + "\n", flush=True)
+    
+    logger.info("Starting AI Hub Runtime API...")
     
     # Preload RAG embedder and index into memory
     from agent import rag
     rag.preload()
-    admin_db.ensure_default_client()
+    if config.ENSURE_DEFAULT_CLIENT_ON_STARTUP:
+        admin_db.ensure_default_client()
+    else:
+        admin_db.init_admin_schema()
+        logger.info("Default client startup seed disabled; keeping existing client list unchanged.")
 
-    from agent.ingestion import sync_web_crawl
-    
     async def run_crawl_once(target_url: str, site_id: str, *, initial: bool = False) -> None:
+        from agent.ingestion import sync_web_crawl
+
         phase = "startup" if initial else "periodic"
         logger.info("Starting %s crawl for %s...", phase, target_url)
         try:
@@ -188,25 +157,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     startup_site_id = config.CURRENT_SITE_ID or config.DEFAULT_SITE_ID
     if startup_target_url and config.CRAWL_ON_STARTUP:
         await run_crawl_once(startup_target_url, startup_site_id, initial=True)
+    elif config.CRAWL_ON_STARTUP:
+        logger.info("Startup crawl enabled but CURRENT_URL is empty; skipping crawl.")
+    else:
+        logger.info("Startup crawl disabled.")
 
     crawler_task = None
-    if config.CRAWL_PERIODIC_ENABLED:
+    if config.CRAWL_PERIODIC_ENABLED and config.CURRENT_URL:
         crawler_task = asyncio.create_task(periodic_crawl())
+    elif config.CRAWL_PERIODIC_ENABLED:
+        logger.info("Periodic crawl enabled but CURRENT_URL is empty; skipping crawler task.")
+    else:
+        logger.info("Periodic crawl disabled.")
 
     logger.info("Startup complete. API ready.")
     yield
 
     if crawler_task:
         crawler_task.cancel()
-    logger.info("Shutting down Voice Shopping Agent API.")
+    logger.info("Shutting down AI Hub Runtime API.")
 
 
 
 # App
 
 app = FastAPI(
-    title="Voice Shopping Agent API",
-    description="Voice-enabled AI shopping assistant powered by OpenAI.",
+    title="AI Hub Runtime API",
+    description="Voice-enabled AI assistant runtime for independently hosted client websites.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -239,15 +216,47 @@ def _allowed_cors_origins() -> list[str]:
         candidates.extend(
             [
                 "http://127.0.0.1:5173",
-                "http://127.0.0.1:5175",
+                "http://127.0.0.1:5174",
                 "http://127.0.0.1:5176",
+                "http://127.0.0.1:8585",
                 "http://localhost:5173",
-                "http://localhost:5175",
+                "http://localhost:5174",
                 "http://localhost:5176",
+                "http://localhost:8585",
             ]
         )
 
     return list(dict.fromkeys(origin for origin in (_origin_from_url(value) for value in candidates) if origin))
+
+
+PUBLIC_WIDGET_CORS_PATHS = {
+    "/install.js",
+    "/shopbot.js",
+    "/shopbot-widget.js",
+    "/shopbot-adapter.js",
+    "/shopbot-frame",
+    "/v1/shop",
+    "/v1/shop/stream",
+    "/v1/ws/shop",
+    "/ws/chat",
+}
+
+
+def _is_public_widget_cors_path(path: str) -> bool:
+    clean_path = "/" + str(path or "").strip("/")
+    return clean_path in PUBLIC_WIDGET_CORS_PATHS or clean_path.startswith("/v1/widget/")
+
+
+def _public_widget_cors_headers(request: Request) -> dict[str, str]:
+    origin = request.headers.get("origin", "")
+    requested_headers = request.headers.get("access-control-request-headers", "Accept, Content-Type")
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": requested_headers,
+        "Access-Control-Max-Age": "600",
+        "Vary": "Origin",
+    }
 
 
 app.add_middleware(
@@ -261,10 +270,28 @@ app.add_middleware(
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestTracingMiddleware)
+
+
+@app.middleware("http")
+async def public_widget_cors_middleware(request: Request, call_next):
+    """Allow installed widgets on any website to reach public widget endpoints."""
+    origin = request.headers.get("origin")
+    if origin and _is_public_widget_cors_path(request.url.path):
+        headers = _public_widget_cors_headers(request)
+        if request.method == "OPTIONS":
+            return Response(status_code=204, headers=headers)
+        response = await call_next(request)
+        for key, value in headers.items():
+            response.headers[key] = value
+        return response
+    return await call_next(request)
+
+
 app.include_router(crm_api.router)
 app.include_router(client_panel_api.router)
 app.include_router(clients_router.router)
 app.include_router(analytics_router.router)
+app.include_router(ecommerce_router.router)
 app.include_router(settings_router.router)
 
 
@@ -275,22 +302,38 @@ async def redirect_crm_root(request: Request) -> RedirectResponse:
     return RedirectResponse(url=f"{prefix}/crm/")
 
 
+@app.get("/client-panel", include_in_schema=False)
+async def redirect_client_panel_root(request: Request) -> RedirectResponse:
+    """Redirect the bare client-panel path to the static app root."""
+    prefix = request.headers.get("x-forwarded-prefix", "").rstrip("/")
+    return RedirectResponse(url=f"{prefix}/client-panel/")
+
+
 if CRM_STATIC_DIR.exists():
     app.mount(
         "/crm",
-        NoCacheStaticFiles(directory=CRM_STATIC_DIR, html=True),
+        SpaStaticFiles(directory=CRM_STATIC_DIR, html=True),
         name="crm",
+    )
+
+
+if CLIENT_PANEL_STATIC_DIR.exists():
+    app.mount(
+        "/client-panel",
+        SpaStaticFiles(directory=CLIENT_PANEL_STATIC_DIR, html=True),
+        name="client_panel",
     )
 
 
 # Endpoints
 
 
-async def _build_shopping_turn_payload(
+async def _build_runtime_turn_payload(
     *,
     audio: UploadFile | None,
     text: str | None,
     conversation_history: str | None,
+    page_context: str | None = None,
 ) -> ShoppingTurnPayload:
     if audio is None and not (text and text.strip()):
         raise HTTPException(
@@ -303,6 +346,7 @@ async def _build_shopping_turn_payload(
             audio_bytes=None,
             audio_filename=DEFAULT_AUDIO_FILENAME,
             conversation_history=_parse_conversation_history(conversation_history),
+            page_context=parse_page_context(page_context),
         )
 
     audio_bytes = await audio.read()
@@ -316,6 +360,7 @@ async def _build_shopping_turn_payload(
         audio_bytes=audio_bytes,
         audio_filename=audio.filename or DEFAULT_AUDIO_FILENAME,
         conversation_history=_parse_conversation_history(conversation_history),
+        page_context=parse_page_context(page_context),
     )
 
 
@@ -364,6 +409,7 @@ def _stream_shop_events(
             audio_filename=payload.audio_filename,
             skip_tts=skip_tts,
             conversation_history=payload.conversation_history,
+            page_context=payload.page_context,
         ):
             state = _update_turn_log_state(state, event)
             yield f"data: {json.dumps(event)}\n\n"
@@ -502,7 +548,7 @@ def _raise_if_quota_exceeded(site_id: str, session_id: str) -> None:
         ) from exc
 
 
-@app.post("/v1/shop", response_model=ShopResponse, tags=["Shopping Agent"])
+@app.post("/v1/shop", response_model=ShopResponse, tags=["AI Runtime"])
 async def shop(
     site_id: str = Form(config.DEFAULT_SITE_ID, description="Site ID for multi-tenancy"),
     audio: Optional[UploadFile] = File(
@@ -515,27 +561,27 @@ async def shop(
     conversation_history: Optional[str] = Form(
         None, description="JSON array of prior conversation turns"
     ),
+    page_context: Optional[str] = Form(
+        None, description="JSON object with privacy-safe browser page context"
+    ),
     session_id: str = Form("", description="Browser conversation session ID"),
 ) -> ShopResponse:
     """
-    **Main endpoint.** Send customer audio or text → receive UI actions + voice response.
-
-    - **audio**: Upload a recorded audio clip of the customer's voice.
-    - **text**: Alternatively, send plain text (useful for debugging).
-    - **skip_tts**: Set to `true` to skip speech synthesis (faster, text-only response).
+    **Main endpoint.** Send customer audio or text and receive website actions plus a voice response.
 
     Returns:
-    - `transcript` — what the customer said
-    - `response_text` — what ShopBot says back
-    - `ui_actions` — list of website control commands for the frontend
-    - `audio_b64` — base64-encoded WAV of the spoken response
+    - `transcript`: what the customer said
+    - `response_text`: assistant response text
+    - `ui_actions`: list of website control commands for the injected runtime
+    - `audio_b64`: base64-encoded WAV of the spoken response
     """
     _raise_if_client_disabled(site_id)
     _raise_if_quota_exceeded(site_id, session_id)
-    payload = await _build_shopping_turn_payload(
+    payload = await _build_runtime_turn_payload(
         audio=audio,
         text=text,
         conversation_history=conversation_history,
+        page_context=page_context,
     )
 
     started_at = turn_timer()
@@ -546,6 +592,7 @@ async def shop(
         audio_filename=payload.audio_filename,
         skip_tts=skip_tts,
         conversation_history=payload.conversation_history,
+        page_context=payload.page_context,
     )
     print_turn_summary(
         transport="legacy-http",
@@ -561,7 +608,7 @@ async def shop(
     return ShopResponse(**result)
 
 
-@app.post("/v1/shop/stream", tags=["Shopping Agent"])
+@app.post("/v1/shop/stream", tags=["AI Runtime"])
 async def shop_stream(
     site_id: str = Form(config.DEFAULT_SITE_ID, description="Site ID for multi-tenancy"),
     audio: Optional[UploadFile] = File(
@@ -574,17 +621,19 @@ async def shop_stream(
     conversation_history: Optional[str] = Form(
         None, description="JSON array of prior conversation turns"
     ),
+    page_context: Optional[str] = Form(
+        None, description="JSON object with privacy-safe browser page context"
+    ),
     session_id: str = Form("", description="Browser conversation session ID"),
 ) -> StreamingResponse:
-    """
-    **Streaming endpoint.** Send customer audio or text → receive SSE events for transcript, ui_actions, and audio.
-    """
+    """Stream transcript, response, UI action, metric, and audio events for one assistant turn."""
     _raise_if_client_disabled(site_id)
     _raise_if_quota_exceeded(site_id, session_id)
-    payload = await _build_shopping_turn_payload(
+    payload = await _build_runtime_turn_payload(
         audio=audio,
         text=text,
         conversation_history=conversation_history,
+        page_context=page_context,
     )
 
     return StreamingResponse(
@@ -616,7 +665,7 @@ async def websocket_shop(
 
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket) -> None:
-    """Bi-directional WebSocket for real-time voice shopping."""
+    """Bi-directional WebSocket for real-time voice assistant turns."""
     await websocket.accept()
     try:
         while True:
@@ -706,94 +755,54 @@ def _parse_conversation_history(raw_history: Optional[str]) -> list[dict[str, st
     return clean_history
 
 
-@app.get("/v1/products", response_model=list[ProductResponse], tags=["Products"])
-async def list_products(
-    site_id: str = config.DEFAULT_SITE_ID, category: Optional[str] = None, limit: int = 50, offset: int = 0
-) -> list[ProductResponse]:
-    """
-    Return active products in the catalog with pagination, optionally filtered by category.
-    The frontend uses this to build its product grid dynamically.
-    """
-    try:
-        if category:
-            from db.database import get_products_by_category
-
-            products = get_products_by_category(site_id, category, limit=limit)
-        else:
-            products = get_all_products(site_id, limit=limit, offset=offset)
-        return [ProductResponse(**p) for p in products]
-    except psycopg.Error as exc:
-        logger.error("GET /v1/products failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to fetch products.")
+def _parse_public_knowledge_ids(raw_ids: str) -> list[str]:
+    """Parse exact knowledge IDs for public widget lookups."""
+    seen: set[str] = set()
+    parsed_ids: list[str] = []
+    for raw_id in str(raw_ids or "").split(","):
+        item_id = raw_id.strip().strip('"')
+        if not item_id or item_id in seen:
+            continue
+        if len(item_id) > MAX_PUBLIC_KNOWLEDGE_ID_LENGTH:
+            continue
+        seen.add(item_id)
+        parsed_ids.append(item_id)
+        if len(parsed_ids) >= MAX_PUBLIC_KNOWLEDGE_IDS:
+            break
+    return parsed_ids
 
 
-@app.get("/v1/products/by-ids", response_model=list[ProductResponse], tags=["Products"])
-async def list_products_by_ids(ids: str, site_id: str = config.DEFAULT_SITE_ID) -> list[ProductResponse]:
-    """Fetch specific products by a comma-separated list of IDs."""
-    try:
-        id_list = []
-        for raw_id in ids.split(","):
-            raw_id = raw_id.strip().strip('"')
-            if raw_id:
-                try:
-                    id_list.append(coerce_product_id(raw_id))
-                except InvalidProductIdError:
-                    continue
-        from db.database import get_products_by_ids
-
-        products = get_products_by_ids(site_id, id_list)
-        return [ProductResponse(**p) for p in products]
-    except psycopg.Error as exc:
-        logger.error("GET /v1/products/by-ids failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to fetch products by IDs.")
+def _short_public_text(value: Any) -> str:
+    text = str(value or "").strip()
+    return text[:MAX_PUBLIC_KNOWLEDGE_TEXT_CHARS]
 
 
-@app.get("/v1/products/{product_id}/variants", response_model=list[VariantResponse], tags=["Products"])
-async def list_product_variants(
-    product_id: int,
-    site_id: str = config.DEFAULT_SITE_ID,
-) -> list[VariantResponse]:
-    """Return all known variants for one product."""
-    try:
-        variants = get_product_variants(site_id, product_id)
-        return [VariantResponse(**variant) for variant in variants]
-    except psycopg.Error as exc:
-        logger.error("GET /v1/products/{product_id}/variants failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to fetch product variants.")
+def _public_knowledge_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Return only browser-safe fields for a crawled knowledge item."""
+    return {
+        "id": str(item.get("id") or ""),
+        "external_id": str(item.get("external_id") or ""),
+        "entity_type": str(item.get("entity_type") or "knowledge_item"),
+        "title": _short_public_text(item.get("title") or item.get("name")),
+        "subtitle": _short_public_text(item.get("subtitle")),
+        "summary": _short_public_text(item.get("summary")),
+        "body": _short_public_text(item.get("body")),
+        "url": str(item.get("url") or ""),
+        "image_url": str(item.get("image_url") or ""),
+        "attributes": item.get("attributes") or {},
+        "pricing": item.get("pricing") or {},
+        "availability": item.get("availability") or {},
+        "location": item.get("location") or {},
+        "contact": item.get("contact") or {},
+        "policy": item.get("policy") or {},
+        "risk_tags": item.get("risk_tags") or [],
+    }
 
 
-@app.get("/v1/categories", tags=["Products"])
-async def list_categories(site_id: str = config.DEFAULT_SITE_ID) -> list[dict[str, str]]:
-    """Return all active category names and slugs from the database."""
-    try:
-        from db.database import get_db
-        with get_db(site_id) as conn:
-            rows = conn.execute("SELECT name, slug FROM categories ORDER BY name ASC").fetchall()
-            return [{"name": r["name"], "slug": r["slug"]} for r in rows]
-    except psycopg.Error as exc:
-        logger.error("GET /v1/categories failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to fetch categories.")
-
-
-@app.get("/v1/catalog/status", tags=["Products"])
-async def catalog_status(site_id: str = config.DEFAULT_SITE_ID) -> dict[str, Any]:
-    """Return catalog/RAG sync status for a tenant site."""
-    try:
-        source_stats = catalog_source_stats(site_id)
-        preview_source = source_stats[0]["source_name"] if source_stats else "custom_url_crawler"
-        return {
-            "site_id": site_id,
-            "catalog": tenant_catalog_stats(site_id),
-            "sources": source_stats,
-            "recent_sync_runs": catalog_sync_history(site_id, limit=8),
-            "catalog_preview": tenant_catalog_preview(site_id, limit=12),
-            "source_preview": catalog_source_preview(site_id, preview_source, limit=12)
-            if source_stats
-            else [],
-        }
-    except psycopg.Error as exc:
-        logger.error("GET /v1/catalog/status failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to fetch catalog status.")
+def _public_knowledge_items(items: list[dict[str, Any]], requested_ids: list[str]) -> list[dict[str, Any]]:
+    """Order public knowledge rows the same way the widget requested them."""
+    by_id = {str(item.get("id") or ""): _public_knowledge_item(item) for item in items}
+    return [by_id[item_id] for item_id in requested_ids if item_id in by_id]
 
 
 @app.get("/v1/knowledge", tags=["Knowledge"])
@@ -813,346 +822,20 @@ async def list_knowledge(site_id: str = config.DEFAULT_SITE_ID, limit: int = 50)
         raise HTTPException(status_code=500, detail="Failed to fetch knowledge items.") from exc
 
 
-@app.get("/v1/cart", response_model=list[CartItemResponse], tags=["Cart"])
-async def get_cart(site_id: str = config.DEFAULT_SITE_ID) -> list[CartItemResponse]:
-    """Return all items currently in the shopping cart."""
+@app.get("/v1/knowledge/by-ids", response_model=list[KnowledgeItemResponse], tags=["Knowledge"])
+async def list_knowledge_by_ids(ids: str, site_id: str = config.DEFAULT_SITE_ID) -> list[KnowledgeItemResponse]:
+    """Fetch public knowledge records by exact IDs for widget-side entity rendering."""
+    requested_ids = _parse_public_knowledge_ids(ids)
+    if not requested_ids:
+        return []
     try:
-        items = get_cart_items(site_id)
-        return [CartItemResponse(**item) for item in items]
+        from db.knowledge import get_knowledge_items_by_ids
+
+        items = get_knowledge_items_by_ids(site_id, requested_ids)
+        return [KnowledgeItemResponse(**item) for item in _public_knowledge_items(items, requested_ids)]
     except psycopg.Error as exc:
-        logger.error("GET /v1/cart failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to fetch cart.")
-
-
-@app.post("/v1/cart/add", tags=["Cart"])
-async def api_add_to_cart(req: AddToCartRequest) -> dict[str, Any]:
-    """Add a product to the cart."""
-    try:
-        cart_id = add_to_cart(req.site_id, req.product_id, req.quantity)
-        return {"status": "ok", "cart_id": cart_id}
-    except InvalidProductIdError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except ProductNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except psycopg.Error as exc:
-        logger.error("POST /v1/cart/add failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to add to cart.")
-
-
-@app.post("/v1/cart/update", tags=["Cart"])
-async def api_update_cart(req: AddToCartRequest) -> dict[str, str]:
-    """Update the quantity of a product in the cart."""
-    try:
-        from db.database import update_cart_quantity
-
-        success = update_cart_quantity(req.site_id, req.product_id, req.quantity)
-        if not success:
-            raise HTTPException(status_code=404, detail="Product not found in cart.")
-        return {"status": "ok"}
-    except HTTPException:
-        raise
-    except psycopg.Error as exc:
-        logger.error("POST /v1/cart/update failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to update cart.")
-
-
-@app.delete("/v1/cart/{cart_id}", tags=["Cart"])
-async def api_remove_from_cart(cart_id: int, site_id: str = config.DEFAULT_SITE_ID) -> dict[str, str]:
-    """Remove a product from the cart."""
-    try:
-        success = remove_from_cart(site_id, cart_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Item not found in cart.")
-        return {"status": "ok"}
-    except HTTPException:
-        raise
-    except psycopg.Error as exc:
-        logger.error("DELETE /v1/cart/{cart_id} failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to remove from cart.")
-
-
-@app.delete("/v1/cart", tags=["Cart"])
-async def api_clear_cart(site_id: str = config.DEFAULT_SITE_ID) -> dict[str, str]:
-    """Clear the entire shopping cart."""
-    try:
-        clear_cart(site_id)
-        return {"status": "ok"}
-    except psycopg.Error as exc:
-        logger.error("DELETE /v1/cart failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to clear cart.")
-
-
-def _checkout_items(req: CheckoutRequest) -> list[dict[str, Any]]:
-    if not req.items:
-        return get_cart_items(req.site_id)
-    return [
-        {
-            "id": item.id,
-            "name": item.name,
-            "price": item.price,
-            "quantity": item.quantity,
-        }
-        for item in req.items
-    ]
-
-
-def _provided_checkout_value(value: str | None) -> bool:
-    return bool(value and value.strip() not in CHECKOUT_EMPTY_VALUES)
-
-
-def _resolve_checkout_field(candidate: str | None, stored_value: Any) -> str:
-    if _provided_checkout_value(candidate):
-        return str(candidate).strip()
-    stored_text = str(stored_value or "").strip()
-    if stored_text and stored_text not in CHECKOUT_EMPTY_VALUES:
-        return stored_text
-    return CHECKOUT_DEFAULT_VALUE
-
-
-def _resolve_checkout_profile(req: CheckoutRequest) -> CheckoutProfile:
-    profile = get_user_profile(req.site_id)
-    return CheckoutProfile(
-        address=_resolve_checkout_field(req.address, profile.get("address")),
-        payment_method=_resolve_checkout_field(
-            req.payment_method,
-            profile.get("payment_method"),
-        ),
-    )
-
-
-def _draw_invoice_page(canvas: Any, _doc: Any) -> None:
-    canvas.saveState()
-    canvas.setStrokeColor(colors.HexColor(INVOICE_HEADER_COLOR))
-    canvas.setLineWidth(2)
-    canvas.rect(
-        INVOICE_BORDER_MARGIN,
-        INVOICE_BORDER_MARGIN,
-        letter[0] - (INVOICE_BORDER_MARGIN * 2),
-        letter[1] - (INVOICE_BORDER_MARGIN * 2),
-    )
-    canvas.setFillColor(colors.HexColor(INVOICE_HEADER_COLOR))
-    canvas.rect(
-        INVOICE_BORDER_MARGIN,
-        letter[1] - INVOICE_HEADER_TOP_OFFSET,
-        letter[0] - (INVOICE_BORDER_MARGIN * 2),
-        INVOICE_HEADER_HEIGHT,
-        fill=1,
-        stroke=0,
-    )
-    canvas.setFont("Helvetica-Bold", INVOICE_TITLE_FONT_SIZE)
-    canvas.setFillColor(colors.white)
-    canvas.drawString(INVOICE_PAGE_MARGIN, letter[1] - 85, INVOICE_BRAND_NAME)
-    canvas.setFont("Helvetica", INVOICE_SUBTITLE_FONT_SIZE)
-    canvas.drawString(INVOICE_PAGE_MARGIN, letter[1] - 110, INVOICE_TITLE)
-    canvas.restoreState()
-
-
-def _invoice_metadata_elements(styles: dict[str, Any]) -> list[Any]:
-    now = datetime.datetime.now()
-    meta_style = ParagraphStyle(
-        "Meta",
-        parent=styles["Normal"],
-        fontSize=11,
-        textColor=colors.HexColor(INVOICE_TEXT_COLOR),
-        alignment=2,
-    )
-    metadata = f"<b>Date:</b> {now:%B %d, %Y}<br/><b>Invoice #:</b> INV-{int(now.timestamp())}"
-    return [Paragraph(metadata, meta_style), Spacer(1, 20)]
-
-
-def _invoice_customer_elements(styles: dict[str, Any], profile: CheckoutProfile) -> list[Any]:
-    info_style = ParagraphStyle(
-        "Info",
-        parent=styles["Normal"],
-        fontSize=12,
-        leading=16,
-        textColor=colors.HexColor(INVOICE_HEADER_COLOR),
-    )
-    customer_html = (
-        f"<b>Billed To:</b><br/>{escape(profile.address)}<br/><br/>"
-        f"<b>Payment Method:</b><br/>{escape(profile.payment_method)}"
-    )
-    return [Paragraph(customer_html, info_style), Spacer(1, 30)]
-
-
-def _short_invoice_item_name(name: Any) -> str:
-    item_name = str(name or "")
-    return item_name[:50] + ("..." if len(item_name) > 50 else "")
-
-
-def _format_invoice_money(value: float) -> str:
-    return f"{INVOICE_CURRENCY} {value:.2f}"
-
-
-def _invoice_table_data(items: list[dict[str, Any]]) -> list[list[str]]:
-    rows = [["Description", "Unit Price", "Qty", "Total"]]
-    total_amount = 0.0
-    for item in items:
-        item_price = float(item["price"])
-        item_quantity = int(item["quantity"])
-        item_total = item_price * item_quantity
-        total_amount += item_total
-        rows.append(
-            [
-                _short_invoice_item_name(item["name"]),
-                _format_invoice_money(item_price),
-                str(item_quantity),
-                _format_invoice_money(item_total),
-            ]
-        )
-    rows.extend(
-        [
-            ["", "", "Subtotal:", _format_invoice_money(total_amount)],
-            ["", "", "Tax (0%):", _format_invoice_money(0.0)],
-            ["", "", "Grand Total:", _format_invoice_money(total_amount)],
-        ]
-    )
-    return rows
-
-
-def _invoice_table_style() -> TableStyle:
-    return TableStyle(
-        [
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(INVOICE_HEADER_COLOR)),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 12),
-            ("BOTTOMPADDING", (0, 0), (-1, 0), 12),
-            ("TOPPADDING", (0, 0), (-1, 0), 12),
-            ("BACKGROUND", (0, 1), (-1, -4), colors.HexColor(INVOICE_TABLE_BACKGROUND)),
-            ("GRID", (0, 0), (-1, -4), 1, colors.HexColor(INVOICE_TABLE_GRID)),
-            ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-            ("FONTSIZE", (0, 1), (-1, -1), 11),
-            ("BOTTOMPADDING", (0, 1), (-1, -1), 10),
-            ("TOPPADDING", (0, 1), (-1, -1), 10),
-            ("FONTNAME", (2, -3), (3, -1), "Helvetica-Bold"),
-            ("TEXTCOLOR", (2, -1), (3, -1), colors.HexColor(INVOICE_ACCENT_COLOR)),
-            ("FONTSIZE", (2, -1), (3, -1), 13),
-            ("LINEABOVE", (2, -3), (3, -3), 1, colors.HexColor(INVOICE_HEADER_COLOR)),
-            ("LINEABOVE", (2, -1), (3, -1), 2, colors.HexColor(INVOICE_HEADER_COLOR)),
-        ]
-    )
-
-
-def _invoice_items_element(items: list[dict[str, Any]]) -> Table:
-    table = Table(_invoice_table_data(items), colWidths=INVOICE_TABLE_COL_WIDTHS)
-    table.setStyle(_invoice_table_style())
-    return table
-
-
-def _invoice_footer_elements(styles: dict[str, Any]) -> list[Any]:
-    footer_style = ParagraphStyle(
-        "Footer",
-        parent=styles["Normal"],
-        alignment=1,
-        textColor=colors.HexColor(INVOICE_MUTED_COLOR),
-        fontSize=10,
-        fontName="Helvetica-Oblique",
-    )
-    footer = f"Thank you for choosing {INVOICE_BRAND_NAME}.<br/>This is an automatically generated receipt."
-    return [Spacer(1, 60), Paragraph(footer, footer_style)]
-
-
-def _invoice_elements(items: list[dict[str, Any]], profile: CheckoutProfile) -> list[Any]:
-    styles = getSampleStyleSheet()
-    return [
-        *_invoice_metadata_elements(styles),
-        *_invoice_customer_elements(styles, profile),
-        _invoice_items_element(items),
-        *_invoice_footer_elements(styles),
-    ]
-
-
-def _build_invoice_pdf(items: list[dict[str, Any]], profile: CheckoutProfile) -> bytes:
-    buffer = io.BytesIO()
-    document = SimpleDocTemplate(
-        buffer,
-        pagesize=letter,
-        rightMargin=INVOICE_PAGE_MARGIN,
-        leftMargin=INVOICE_PAGE_MARGIN,
-        topMargin=INVOICE_TOP_MARGIN,
-        bottomMargin=INVOICE_PAGE_MARGIN,
-    )
-    document.build(
-        _invoice_elements(items, profile),
-        onFirstPage=_draw_invoice_page,
-        onLaterPages=_draw_invoice_page,
-    )
-    return buffer.getvalue()
-
-
-def _invoice_response(pdf_bytes: bytes) -> Response:
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={INVOICE_FILENAME}"},
-    )
-
-
-@app.post("/v1/cart/checkout", tags=["Cart"])
-async def api_checkout_cart(req: CheckoutRequest) -> Response:
-    """Generate a PDF bill and clear the cart."""
-    try:
-        items = _checkout_items(req)
-        if not items:
-            raise HTTPException(status_code=400, detail="Cart is empty.")
-
-        profile = _resolve_checkout_profile(req)
-        update_user_profile(req.site_id, profile.address, profile.payment_method)
-        pdf_bytes = _build_invoice_pdf(items, profile)
-        from db.database import checkout_cart
-
-        checkout_cart(req.site_id)
-        return _invoice_response(pdf_bytes)
-
-    except HTTPException:
-        raise
-    except (KeyError, TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="Invalid checkout item data.") from exc
-    except psycopg.Error as exc:
-        logger.error("POST /v1/cart/checkout failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to process checkout.") from exc
-
-
-def vectorize_site_catalog(site_id: str) -> None:
-    logger.info("Background Vectorization started for site %s...", site_id)
-    try:
-        from db.database import get_db
-        from agent.rag import _embed, _product_to_text
-        from db.knowledge import sync_products_to_knowledge
-        from agent.retrieval.generic_rag import vectorize_missing_knowledge
-        
-        with get_db(site_id) as conn:
-            rows = conn.execute(
-                "SELECT p.*, c.name AS category_name FROM products p JOIN categories c ON p.category_id = c.id WHERE p.embedding IS NULL"
-            ).fetchall()
-
-            if not rows:
-                logger.info("No products need vectorization for site %s", site_id)
-            else:
-                logger.info("Vectorizing %d products for site %s...", len(rows), site_id)
-                texts = []
-                for row in rows:
-                    texts.append(_product_to_text(dict(row)))
-
-                embeddings = _embed(texts)
-
-                for i, row in enumerate(rows):
-                    conn.execute(
-                        "UPDATE products SET embedding = %s WHERE id = %s",
-                        (embeddings[i], row["id"])
-                    )
-                logger.info("Vectorization complete for site %s.", site_id)
-
-        sync_products_to_knowledge(site_id, "manual_vectorize")
-        knowledge_count = vectorize_missing_knowledge(site_id)
-        logger.info("Knowledge vectorization complete for site %s: %d rows.", site_id, knowledge_count)
-    except (psycopg.Error, RuntimeError) as exc:
-        logger.error("Background Vectorization failed for site %s: %s", site_id, exc)
+        logger.error("GET /v1/knowledge/by-ids failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to fetch knowledge items by IDs.") from exc
 
 
 if __name__ == "__main__":

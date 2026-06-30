@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 import psycopg
 from psycopg.rows import dict_row
 
@@ -14,8 +16,8 @@ CREATE TABLE IF NOT EXISTS hub_clients (
     store_url TEXT NOT NULL,
     allowed_origin TEXT NOT NULL,
     deploy_mode TEXT NOT NULL DEFAULT 'public-ip',
-    plan TEXT NOT NULL DEFAULT 'Commerce plan',
-    vertical_key TEXT NOT NULL DEFAULT 'ecommerce',
+    plan TEXT NOT NULL DEFAULT 'Generic AI plan',
+    vertical_key TEXT NOT NULL DEFAULT 'generic',
     vertical_config_json TEXT NOT NULL DEFAULT '{}',
     risk_level TEXT NOT NULL DEFAULT 'low',
     locale TEXT NOT NULL DEFAULT 'en-IN',
@@ -29,6 +31,8 @@ CREATE TABLE IF NOT EXISTS hub_clients (
     last_crawl_status TEXT NOT NULL DEFAULT 'not_started',
     last_crawl_message TEXT NOT NULL DEFAULT '',
     last_crawl_at TIMESTAMPTZ,
+    last_setup_at TIMESTAMPTZ,
+    needs_setup BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -66,6 +70,17 @@ CREATE TABLE IF NOT EXISTS hub_conversation_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_hub_conversation_sessions_last_seen
     ON hub_conversation_sessions(site_id, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS hub_provider_events (
+    id BIGSERIAL PRIMARY KEY,
+    provider TEXT NOT NULL,
+    category TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_hub_provider_events_created
+    ON hub_provider_events(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS hub_settings (
     key TEXT PRIMARY KEY,
@@ -130,7 +145,7 @@ ALTER TABLE hub_clients
 ALTER TABLE hub_clients
     ADD COLUMN IF NOT EXISTS panel_password_hash TEXT NOT NULL DEFAULT '';
 ALTER TABLE hub_clients
-    ADD COLUMN IF NOT EXISTS vertical_key TEXT NOT NULL DEFAULT 'ecommerce';
+    ADD COLUMN IF NOT EXISTS vertical_key TEXT NOT NULL DEFAULT 'generic';
 ALTER TABLE hub_clients
     ADD COLUMN IF NOT EXISTS vertical_config_json TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE hub_clients
@@ -141,6 +156,16 @@ ALTER TABLE hub_clients
     ADD COLUMN IF NOT EXISTS prompt_profile_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE hub_clients
     ADD COLUMN IF NOT EXISTS compliance_mode TEXT NOT NULL DEFAULT 'standard';
+ALTER TABLE hub_clients
+    ADD COLUMN IF NOT EXISTS last_crawl_status TEXT NOT NULL DEFAULT 'not_started';
+ALTER TABLE hub_clients
+    ADD COLUMN IF NOT EXISTS last_crawl_message TEXT NOT NULL DEFAULT '';
+ALTER TABLE hub_clients
+    ADD COLUMN IF NOT EXISTS last_crawl_at TIMESTAMPTZ;
+ALTER TABLE hub_clients
+    ADD COLUMN IF NOT EXISTS last_setup_at TIMESTAMPTZ;
+ALTER TABLE hub_clients
+    ADD COLUMN IF NOT EXISTS needs_setup BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE hub_usage_events
     ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE hub_usage_events
@@ -172,6 +197,9 @@ CREATE TABLE IF NOT EXISTS site_selectors (
 );
 """
 
+_admin_schema_lock = threading.Lock()
+_admin_schema_initialized = False
+
 
 def _connect() -> psycopg.Connection:
     """Create a new database connection with dictionary rows."""
@@ -180,6 +208,14 @@ def _connect() -> psycopg.Connection:
 
 def init_admin_schema() -> None:
     """Create CRM-owned public tables if they do not already exist."""
-    with _connect() as conn:
-        conn.execute(ADMIN_SCHEMA_SQL)
-        conn.commit()
+    global _admin_schema_initialized
+    if _admin_schema_initialized:
+        return
+
+    with _admin_schema_lock:
+        if _admin_schema_initialized:
+            return
+        with _connect() as conn:
+            conn.execute(ADMIN_SCHEMA_SQL)
+            conn.commit()
+        _admin_schema_initialized = True

@@ -1,4 +1,5 @@
 import { automotiveVertical } from './automotive';
+import { constructionVertical } from './construction';
 import { ecommerceVertical } from './ecommerce';
 import { educationVertical } from './education';
 import { eventsTicketingVertical } from './eventsTicketing';
@@ -13,8 +14,9 @@ import { realEstateVertical } from './realEstate';
 import { travelVertical } from './travel';
 import type { CrmVerticalDefinition } from './types';
 
-export const DEFAULT_CRM_VERTICAL_KEY = 'ecommerce';
+export const DEFAULT_CRM_VERTICAL_KEY = 'generic';
 export const CRM_VERTICALS: CrmVerticalDefinition[] = [
+  genericVertical,
   ecommerceVertical,
   insuranceVertical,
   travelVertical,
@@ -27,7 +29,7 @@ export const CRM_VERTICALS: CrmVerticalDefinition[] = [
   legalServicesVertical,
   jobsRecruitingVertical,
   eventsTicketingVertical,
-  genericVertical,
+  constructionVertical,
 ];
 
 const VERTICALS_BY_KEY = new Map(CRM_VERTICALS.map((vertical) => [vertical.key, vertical]));

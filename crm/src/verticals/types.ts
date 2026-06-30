@@ -2,6 +2,7 @@ import type { LucideIcon } from 'lucide-react';
 
 export type ClientWorkspaceTabId =
   | 'overview'
+  | 'integration'
   | 'readiness'
   | 'catalog'
   | 'crawl'
@@ -35,4 +36,5 @@ export interface CrmVerticalDefinition {
   clientTabs: ClientWorkspaceTabDefinition[];
   entityTypes: string[];
   readinessChecks: string[];
+  actionTypes?: string[];
 }

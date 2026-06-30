@@ -2,7 +2,7 @@
 set -eu
 
 hub_origin="${PUBLIC_API_URL:-http://143.198.5.97/aihub}"
-site_id="${CURRENT_SITE_ID:-ai_kart}"
+site_id="${CURRENT_SITE_ID:-site_1}"
 
 printf '\n'
 printf '============================================================\n'
