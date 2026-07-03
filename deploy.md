@@ -30,11 +30,10 @@ Do not expose public `:3002`. Port `3002` is only for Nginx on the same server.
 
 Use this only on a new server.
 
-### 1. SSH And Tmux
+### 1. SSH
 
 ```bash
 ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=6 ev@157.245.3.230
-tmux new -A -s aihub-deploy
 ```
 
 ### 2. Install Docker
@@ -261,8 +260,6 @@ Also check the cloud provider firewall/security group and allow inbound TCP `443
 Use this after first-time deployment is complete.
 
 ```bash
-tmux new -A -s aihub-deploy
-
 cd /var/www/AI_salesman_plugin
 git pull --ff-only
 
