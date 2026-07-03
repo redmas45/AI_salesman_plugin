@@ -126,32 +126,32 @@ Important reality: this is a strong automatic foundation, not a magic 100% autom
 
 ## Public Topology
 
-Current public-IP deployment:
+Current public-domain deployment:
 
 ```text
-AI-KART website: http://143.198.5.97/
-AI Hub CRM:      http://143.198.5.97/aihub/crm/
-AI Hub API:      http://143.198.5.97/aihub/
-Client Panel:    http://143.198.5.97/client-panel/ai_kart
+Public domain:   https://demo1.ergobite.com:3001
+Server IP:       157.245.3.230
+AI Hub CRM:      https://demo1.ergobite.com:3001/aihub/crm/
+AI Hub API:      https://demo1.ergobite.com:3001/aihub/
+Client Panel:    https://demo1.ergobite.com:3001/aihub/client_panel/<client_id>
 ```
 
-Shared Nginx routing is owned by AI-KART:
+Shared Nginx routing is owned by the host:
 
 ```text
-/                         -> AI-KART frontend on 127.0.0.1:5175
-/api/                     -> AI-KART backend on 127.0.0.1:8000
 /aihub/                   -> AI Hub Docker app on 127.0.0.1:5176
-/client-panel/<client_id> -> AI Hub-served Client Panel bundle from sibling client_panel/dist
+/aihub/client_panel/<client_id> -> AI Hub-served Client Panel bundle from sibling client_panel/dist
 ```
 
-Public route changes belong in `C:\Users\admin\Desktop\Vercel_website\aikart.md`, not in this repo.
+Demo websites can run on different domains. They should load the AI Hub install script from this public Hub domain.
+Public route changes belong in the host Nginx config, not in this repo.
 
 ## One-Line Install Contract
 
 Universal script shown in AI Hub CRM:
 
 ```html
-<script defer src="http://143.198.5.97/aihub/install.js"></script>
+<script defer src="https://demo1.ergobite.com:3001/aihub/install.js"></script>
 ```
 
 Generic deployed form:
@@ -464,14 +464,9 @@ DATABASE_URL=postgresql://shopbot:shopbot_password@db:5432/shopping_db
 Important Hub environment keys:
 
 ```env
-HUB_PUBLIC_URL=http://143.198.5.97/aihub
-PUBLIC_API_URL=http://143.198.5.97/aihub
-PUBLIC_STOREFRONT_ORIGIN=http://143.198.5.97
-CORS_ORIGINS=http://143.198.5.97
-CURRENT_SITE_ID=site_1
-DEFAULT_SITE_ID=site_1
-AI_DEFAULT_SITE_ID=site_1
-CURRENT_URL=
+HUB_PUBLIC_URL=https://demo1.ergobite.com:3001/aihub
+PUBLIC_API_URL=https://demo1.ergobite.com:3001/aihub
+CORS_ORIGINS=https://demo1.ergobite.com:3001
 CRAWL_ON_STARTUP=false
 CRAWL_PERIODIC_ENABLED=false
 ENSURE_DEFAULT_CLIENT_ON_STARTUP=false
@@ -482,19 +477,21 @@ CLIENT_PANEL_DEFAULT_PASSWORD=
 CLIENT_PANEL_TOKEN_SECRET=
 ```
 
+`CURRENT_SITE_ID`, `DEFAULT_SITE_ID`, `AI_DEFAULT_SITE_ID`, `CLIENT_STORE_URL`, `PUBLIC_STOREFRONT_ORIGIN`, and `CURRENT_URL` are client/demo-site settings. Do not set them for a Hub-only deployment unless you intentionally want a fixed fallback client or startup crawler target.
+
 ## Deployment
 
 Use:
 
 ```text
-aihub.md
+deploy.md
 ```
 
 High-level order:
 
-1. Deploy AI Hub from `/var/www/AI_salesman_plugin/aihub.md`.
-2. Deploy or reload AI-KART shared Nginx from `/var/www/Vercel_website/aikart.md`.
-3. Build the Client Panel bundle in `/var/www/client_panel`; AI Hub serves that `dist` at `/client-panel`.
+1. Deploy AI Hub from `/var/www/AI_salesman_plugin/deploy.md`.
+2. Deploy or reload the host Nginx config for `/aihub/`.
+3. Build the Client Panel bundle in `/var/www/client_panel`; AI Hub serves that `dist` at `/aihub/client_panel/<client_id>`.
 4. Open CRM and confirm the client workspace, Setup workspace, adapter tab, prompt tab, client-panel link, and crawl status.
 
 Production AI Hub runs in Docker Compose:
@@ -531,7 +528,7 @@ Client Panel:
 
 ```powershell
 cd C:\Users\admin\Desktop\client_panel
-$env:VITE_CLIENT_PANEL_BASE_PATH="/client-panel/"
+$env:VITE_CLIENT_PANEL_BASE_PATH="/client_panel/"
 $env:VITE_AI_HUB_API_BASE=""
 npm run build
 ```
@@ -676,7 +673,7 @@ Shared Nginx route is missing or stale. Apply Vercel_website/aikart.md.
 CRM shows old assets:
 
 ```text
-Rebuild the Docker app with --no-cache using aihub.md, then hard refresh the browser.
+Rebuild the Docker app using deploy.md, then hard refresh the browser.
 ```
 
 Client Panel login fails:
@@ -761,8 +758,8 @@ Policy:  http://127.0.0.1:5183/
 Client panel links are hosted by AI Hub, for example:
 
 ```text
-http://127.0.0.1:5176/client-panel/ai_kart
-http://127.0.0.1:5176/client-panel/policy_website
+http://127.0.0.1:5176/client_panel/site_1
+http://127.0.0.1:5176/client_panel/site_2
 ```
 
 `CLIENT_PANEL_DEFAULT_PASSWORD` is only a fallback for clients that do not already

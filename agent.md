@@ -1,6 +1,6 @@
 # AI Salesman Plugin - Current Handoff
 
-Last updated: 2026-07-03 12:15 IST
+Last updated: 2026-07-03 12:45 IST
 
 This file is the working handoff only. Keep README as the product document. Keep this file short, current, and focused on what the next engineer/session needs.
 
@@ -101,6 +101,18 @@ Next refactor should split `db/clients.py` into client repository, audit service
 8. Typed API client next step
    - Shared TS contracts exist for action names/statuses.
    - Still add generated/OpenAPI typed API client for CRM DTOs, runtime config, usage rows, conversation rows, and capability reports.
+
+9. Whole-codebase modular refactor
+   - Current LOC review shows the codebase is still too monolithic and hard to maintain.
+   - Later refactor must split oversized Python/TS/CSS files into domain modules with clear classes, services, repositories, functions, and typed interfaces.
+   - Python priority: use OOP where it creates real ownership boundaries, especially for orchestration, ingestion, client persistence, security/auth, and product/knowledge retrieval.
+   - Keep behavior universal and covered by regression tests during the refactor; do not rewrite by demo-site patching.
+
+10. Stronger tenant and install-script security
+   - Client panel is password protected, but later security work must ensure a client can only open its own panel/data.
+   - Add stronger tenant authorization on every client-panel API call, not only UI routing.
+   - Protect the one-line install script from being copied to unauthorized websites. Candidate solutions to evaluate: per-client signed install tokens, allowed-origin/domain allowlists, server-side origin enforcement, short-lived signed widget config, install-script key rotation/revocation, abuse rate limits, audit logging, and CRM warnings for unknown origins.
+   - The final design must support independent client websites hosted on different domains while keeping AI Hub as the central CRM.
 
 ## Useful Local Commands
 

@@ -1,6 +1,6 @@
 export function clientPanelHref(siteId: string) {
   const pathPrefix = hubPathPrefix();
-  const path = `${pathPrefix}/client-panel/${encodeURIComponent(siteId)}`;
+  const path = `${pathPrefix}/client_panel/${encodeURIComponent(siteId)}`;
   if (typeof window === 'undefined') return path;
   const { hostname, port, protocol } = window.location;
   if (window.location.pathname.includes('/crm')) return path;

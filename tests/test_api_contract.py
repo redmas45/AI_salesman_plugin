@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import json
+import re
 
 import pytest
 from fastapi import FastAPI
@@ -74,28 +75,63 @@ def test_client_panel_static_path_defaults_to_sibling_dist():
 
 def test_client_panel_root_redirect_keeps_proxy_prefix():
     res = TestClient(app).get(
-        "/client-panel",
+        "/client_panel",
         headers={"x-forwarded-prefix": "/aihub"},
         follow_redirects=False,
     )
 
     assert res.status_code in {307, 308}
-    assert res.headers["location"] == "/aihub/client-panel/"
+    assert res.headers["location"] == "/aihub/client_panel/"
+
+
+def test_legacy_client_panel_url_redirects_to_canonical_path():
+    res = TestClient(app).get(
+        "/client-panel/site_123",
+        headers={"x-forwarded-prefix": "/aihub"},
+        follow_redirects=False,
+    )
+
+    assert res.status_code in {307, 308}
+    assert res.headers["location"] == "/aihub/client_panel/site_123"
+
+
+def test_client_panel_site_url_keeps_proxy_prefix():
+    res = TestClient(app).get(
+        "/client_panel/site_123",
+        headers={"x-forwarded-prefix": "/aihub"},
+        follow_redirects=False,
+    )
+
+    assert res.status_code == 200
+    assert "/client_panel/assets/" in res.text
 
 
 def test_spa_static_files_serves_index_for_deep_links(tmp_path):
     (tmp_path / "index.html").write_text("<main>client panel app</main>", encoding="utf-8")
     (tmp_path / "assets").mkdir()
     static_app = FastAPI()
-    static_app.mount("/client-panel", SpaStaticFiles(directory=tmp_path, html=True), name="client_panel")
+    static_app.mount("/client_panel", SpaStaticFiles(directory=tmp_path, html=True), name="client_panel")
     client = TestClient(static_app)
 
-    deep_link = client.get("/client-panel/site_123")
-    missing_asset = client.get("/client-panel/assets/missing.js")
+    deep_link = client.get("/client_panel/site_123")
+    missing_asset = client.get("/client_panel/assets/missing.js")
 
     assert deep_link.status_code == 200
     assert "client panel app" in deep_link.text
     assert missing_asset.status_code == 404
+
+
+def test_client_panel_routes_serve_panel_and_assets():
+    client = TestClient(app)
+    panel = client.get("/client_panel/site_123/")
+    asset_match = next(iter(re.findall(r'/client_panel/assets/[^"]+\.js', panel.text)), "")
+    root_asset = client.get(asset_match)
+    old_clean_route = client.get("/site_123", follow_redirects=False)
+
+    assert panel.status_code == 200
+    assert "/client_panel/assets/" in panel.text
+    assert root_asset.status_code == 200
+    assert old_clean_route.status_code == 404
 
 
 def test_shop_response_accepts_valid_ui_action():

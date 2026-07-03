@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 import psycopg
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -65,6 +65,8 @@ CLIENT_PANEL_SOURCE_DIR = Path(
 CLIENT_PANEL_STATIC_DIR = Path(
     os.getenv("CLIENT_PANEL_STATIC_DIR", str(CLIENT_PANEL_SOURCE_DIR / "dist"))
 ).expanduser()
+CLIENT_PANEL_PUBLIC_PATH = "/client_panel"
+CLIENT_PANEL_LEGACY_PATH = "/client-panel"
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -311,11 +313,20 @@ async def redirect_crm_root(request: Request) -> RedirectResponse:
     return RedirectResponse(url=f"{prefix}/crm/")
 
 
-@app.get("/client-panel", include_in_schema=False)
+@app.get(CLIENT_PANEL_PUBLIC_PATH, include_in_schema=False)
 async def redirect_client_panel_root(request: Request) -> RedirectResponse:
-    """Redirect the bare client-panel path to the static app root."""
+    """Redirect the bare client_panel path to the static app root."""
     prefix = request.headers.get("x-forwarded-prefix", "").rstrip("/")
-    return RedirectResponse(url=f"{prefix}/client-panel/")
+    return RedirectResponse(url=f"{prefix}{CLIENT_PANEL_PUBLIC_PATH}/")
+
+
+@app.get(f"{CLIENT_PANEL_LEGACY_PATH}", include_in_schema=False)
+@app.get(f"{CLIENT_PANEL_LEGACY_PATH}/{{spa_path:path}}", include_in_schema=False)
+async def redirect_legacy_client_panel_path(request: Request, spa_path: str = "") -> RedirectResponse:
+    """Redirect old /client-panel links to the canonical /client_panel path."""
+    prefix = request.headers.get("x-forwarded-prefix", "").rstrip("/")
+    suffix = f"/{spa_path}" if spa_path else "/"
+    return RedirectResponse(url=f"{prefix}{CLIENT_PANEL_PUBLIC_PATH}{suffix}")
 
 
 if CRM_STATIC_DIR.exists():
@@ -328,10 +339,86 @@ if CRM_STATIC_DIR.exists():
 
 if CLIENT_PANEL_STATIC_DIR.exists():
     app.mount(
-        "/client-panel",
+        CLIENT_PANEL_PUBLIC_PATH,
         SpaStaticFiles(directory=CLIENT_PANEL_STATIC_DIR, html=True),
         name="client_panel",
     )
+
+
+CLIENT_PANEL_RESERVED_SLUGS = frozenset(
+    {
+        "assets",
+        "client-panel",
+        "client_panel",
+        "crm",
+        "docs",
+        "health",
+        "install.js",
+        "mayabot-adapter.js",
+        "mayabot-widget.js",
+        "openapi.json",
+        "redoc",
+        "v1",
+        "ws",
+    }
+)
+
+
+def _prefixed_url(request: Request, path: str) -> str:
+    prefix = request.headers.get("x-forwarded-prefix", "").rstrip("/")
+    return f"{prefix}{path}"
+
+
+def _is_client_panel_site_slug(site_id: str) -> bool:
+    clean = str(site_id or "").strip().strip("/")
+    if not clean or clean.lower() in CLIENT_PANEL_RESERVED_SLUGS:
+        return False
+    return "." not in clean and "/" not in clean
+
+
+def _client_panel_file_response(relative_path: str) -> FileResponse:
+    base_dir = CLIENT_PANEL_STATIC_DIR.resolve()
+    target = (base_dir / relative_path).resolve()
+    if not target.is_file() or base_dir not in (target, *target.parents):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client panel file not found.")
+    return FileResponse(
+        target,
+        headers={
+            "Cache-Control": "no-store, max-age=0, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+@app.get(f"{CLIENT_PANEL_PUBLIC_PATH}/assets/{{asset_path:path}}", include_in_schema=False)
+async def serve_root_client_panel_asset(asset_path: str) -> FileResponse:
+    """Serve client-panel assets for public /aihub/client_panel/<site_id> panel URLs."""
+    return _client_panel_file_response(f"assets/{asset_path}")
+
+
+@app.get(f"{CLIENT_PANEL_PUBLIC_PATH}/{{site_id}}", include_in_schema=False)
+async def redirect_clean_client_panel_url(request: Request, site_id: str) -> RedirectResponse:
+    """Redirect /client_panel/<site_id> to /client_panel/<site_id>/ for SPA routing."""
+    if not _is_client_panel_site_slug(site_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
+    return RedirectResponse(url=_prefixed_url(request, f"{CLIENT_PANEL_PUBLIC_PATH}/{site_id}/"))
+
+
+@app.get(f"{CLIENT_PANEL_PUBLIC_PATH}/{{site_id}}/{{spa_path:path}}", include_in_schema=False)
+async def serve_clean_client_panel_url(site_id: str, spa_path: str) -> FileResponse:
+    """Serve the client panel at /client_panel/<site_id>/ for public /aihub/client_panel/<site_id>/ links."""
+    if not _is_client_panel_site_slug(site_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
+    if spa_path.startswith("assets/"):
+        return _client_panel_file_response(spa_path)
+    if spa_path:
+        candidate = CLIENT_PANEL_STATIC_DIR / spa_path
+        if candidate.is_file():
+            return _client_panel_file_response(spa_path)
+        if "." in Path(spa_path).name:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Client panel file not found.")
+    return _client_panel_file_response("index.html")
 
 
 # Endpoints
