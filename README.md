@@ -129,18 +129,18 @@ Important reality: this is a strong automatic foundation, not a magic 100% autom
 Current public-domain deployment:
 
 ```text
-Public domain:   https://demo1.ergobite.com:3001
+Public domain:   https://demo1.ergobite.com
 Server IP:       157.245.3.230
-AI Hub CRM:      https://demo1.ergobite.com:3001/aihub/crm/
-AI Hub API:      https://demo1.ergobite.com:3001/aihub/
-Client Panel:    https://demo1.ergobite.com:3001/aihub/client_panel/<client_id>
+AI Hub CRM:      https://demo1.ergobite.com/crm/
+AI Hub API:      https://demo1.ergobite.com/
+Client Panel:    https://demo1.ergobite.com/client_panel/<client_id>
 ```
 
 Shared Nginx routing is owned by the host:
 
 ```text
-/aihub/                   -> AI Hub Docker app on 127.0.0.1:5176
-/aihub/client_panel/<client_id> -> AI Hub-served Client Panel bundle from sibling client_panel/dist
+/                         -> AI Hub Docker app on 127.0.0.1:3002
+/client_panel/<client_id> -> AI Hub-served Client Panel bundle from sibling client_panel/dist
 ```
 
 Demo websites can run on different domains. They should load the AI Hub install script from this public Hub domain.
@@ -151,7 +151,7 @@ Public route changes belong in the host Nginx config, not in this repo.
 Universal script shown in AI Hub CRM:
 
 ```html
-<script defer src="https://demo1.ergobite.com:3001/aihub/install.js"></script>
+<script defer src="https://demo1.ergobite.com/install.js"></script>
 ```
 
 Generic deployed form:
@@ -464,9 +464,9 @@ DATABASE_URL=postgresql://shopbot:shopbot_password@db:5432/shopping_db
 Important Hub environment keys:
 
 ```env
-HUB_PUBLIC_URL=https://demo1.ergobite.com:3001/aihub
-PUBLIC_API_URL=https://demo1.ergobite.com:3001/aihub
-CORS_ORIGINS=https://demo1.ergobite.com:3001
+HUB_PUBLIC_URL=https://demo1.ergobite.com
+PUBLIC_API_URL=https://demo1.ergobite.com
+CORS_ORIGINS=https://demo1.ergobite.com
 CRAWL_ON_STARTUP=false
 CRAWL_PERIODIC_ENABLED=false
 ENSURE_DEFAULT_CLIENT_ON_STARTUP=false
@@ -490,8 +490,8 @@ deploy.md
 High-level order:
 
 1. Deploy AI Hub from `/var/www/AI_salesman_plugin/deploy.md`.
-2. Deploy or reload the host Nginx config for `/aihub/`.
-3. Build the Client Panel bundle in `/var/www/client_panel`; AI Hub serves that `dist` at `/aihub/client_panel/<client_id>`.
+2. Deploy or reload the host Nginx config.
+3. Build the Client Panel bundle in `/var/www/client_panel`; AI Hub serves that `dist` at `/client_panel/<client_id>`.
 4. Open CRM and confirm the client workspace, Setup workspace, adapter tab, prompt tab, client-panel link, and crawl status.
 
 Production AI Hub runs in Docker Compose:
@@ -664,7 +664,7 @@ Until those remaining layers exist, the system should be presented as automatic 
 
 ## Troubleshooting
 
-`/aihub/health` fails publicly but `127.0.0.1:5176/health` works:
+`/health` fails publicly but `127.0.0.1:3002/health` works:
 
 ```text
 Shared Nginx route is missing or stale. Apply Vercel_website/aikart.md.
