@@ -1,0 +1,4 @@
+packages:
+  - "crm"
+  - "plugin"
+  - "packages/*"

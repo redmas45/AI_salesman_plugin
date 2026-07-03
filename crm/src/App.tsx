@@ -227,7 +227,7 @@ export function App() {
   }
 
   async function removeClient(siteId: string) {
-    if (!window.confirm(`Move ${siteId} out of Current clients? Tenant data is kept.`)) return;
+    if (!window.confirm(`Remove ${siteId} from the CRM client list? Tenant data is kept for traceability.`)) return;
     setBusy(true);
     try {
       await crmApi.removeClient(siteId);
@@ -236,9 +236,27 @@ export function App() {
       setOverview(await crmApi.overview());
       setClientBoardSection('available');
       setView('clients');
-      setToast('Client moved to Available.');
+      setToast('Client removed from CRM list.');
     } catch (error) {
       showError(error, 'Client removal failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function moveClientToAvailable(siteId: string) {
+    if (!window.confirm(`Move ${siteId} back to Available? Tenant data and setup evidence are kept.`)) return;
+    setBusy(true);
+    try {
+      const response = await crmApi.moveClientToAvailable(siteId);
+      setSelectedClient(response.client);
+      setPasswordDialogClient((current) => (current?.site_id === siteId ? response.client : current));
+      setOverview(await crmApi.overview());
+      setClientBoardSection('available');
+      setView('clients');
+      setToast('Client moved to Available.');
+    } catch (error) {
+      showError(error, 'Move to Available failed.');
     } finally {
       setBusy(false);
     }
@@ -575,6 +593,7 @@ export function App() {
                   onTriggerCrawl={triggerCrawl}
                   onAutoIntegrate={triggerAutoIntegration}
                   onRemoveClient={removeClient}
+                  onMoveClientToAvailable={moveClientToAvailable}
                   onToggleClient={toggleClient}
                   onUpdateTokenLimits={updateClientTokenLimits}
                   onOpenPasswordDialog={setPasswordDialogClient}

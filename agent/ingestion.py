@@ -1804,6 +1804,12 @@ def _vectorize(site_id: str) -> int:
                 "UPDATE products SET embedding = %s WHERE id = %s",
                 (embeddings[index], row["id"]),
             )
+    # Also rebuild full-text search vectors alongside embeddings
+    try:
+        from db.database import rebuild_search_vectors
+        rebuild_search_vectors(site_id)
+    except Exception as exc:
+        logger.warning("Ingestion | search_vector rebuild after vectorize failed: %s", exc)
     return len(rows)
 
 
@@ -1978,6 +1984,13 @@ def _persist_catalog(
 
     vectorized = _vectorize(site_id)
     knowledge_vectorized = _sync_catalog_knowledge(site_id, source_name, vertical_key=vertical_key)
+    if changed or deactivated or variant_count or vectorized or knowledge_vectorized:
+        try:
+            from db.answer_cache import bump_data_version
+
+            bump_data_version(site_id, reason="catalog_sync")
+        except Exception as exc:
+            logger.warning("Answer cache invalidation skipped for %s/%s: %s", site_id, source_name, exc)
     with get_db(site_id) as conn:
         conn.execute(
             """

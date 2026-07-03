@@ -30,7 +30,7 @@ function resolveApiUrl(url) {
   }
 
   if (url?.origin) {
-    const pathname = url.pathname.replace(/\/shopbot-adapter\.js$/, "");
+    const pathname = url.pathname.replace(/\/mayabot-adapter\.js$/, "");
     return trimTrailingSlash(`${url.origin}${pathname}`);
   }
 

@@ -192,3 +192,138 @@ def test_provider_success_clears_quota_status(monkeypatch):
     assert status["status"] == "ok"
     assert status["recent_events"][0]["category"] == "ok"
     assert persisted == [("openai", "ok", "LLM request completed successfully.")]
+
+
+def test_manual_provider_quota_check_records_ok_after_http_200(monkeypatch):
+    provider_status._RECENT_EVENTS.clear()
+    persisted: list[tuple[str, str, str]] = []
+
+    class FakeConnection:
+        rows = [
+            {
+                "provider": "openai",
+                "category": "quota_exhausted",
+                "message": "insufficient_quota",
+                "created_at": "2026-06-30 00:00:00+00",
+            }
+        ]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, query, params=()):
+            if str(query).lstrip().upper().startswith("INSERT"):
+                persisted.append(tuple(params))
+                self.rows.insert(
+                    0,
+                    {
+                        "provider": params[0],
+                        "category": params[1],
+                        "message": params[2],
+                        "created_at": "2026-07-01 00:00:00+00",
+                    },
+                )
+            return self
+
+        def fetchall(self):
+            return list(self.rows)
+
+        def commit(self):
+            return None
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(provider_status, "init_admin_schema", lambda: None)
+    monkeypatch.setattr(provider_status, "_connect", lambda: FakeConnection())
+    monkeypatch.setattr(provider_status.config, "OPENAI_API_KEY", "test-runtime-key")
+    monkeypatch.setattr(provider_status.config, "OPENAI_ADMIN_KEY", "")
+    monkeypatch.setattr(provider_status.config, "LLM_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(provider_status.httpx, "post", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(
+        provider_status,
+        "_usage_summary",
+        lambda: {
+            "total_turns": 1,
+            "turns_today": 0,
+            "tokens_estimated": 50,
+            "avg_latency_ms": 100,
+        },
+    )
+
+    status = provider_status.check_openai_runtime_quota()
+
+    assert status["status"] == "ok"
+    assert status["recent_events"][0]["category"] == "ok"
+    assert persisted == [("openai", "ok", "OpenAI quota check passed with HTTP 200.")]
+
+
+def test_manual_provider_quota_check_records_quota_for_429(monkeypatch):
+    provider_status._RECENT_EVENTS.clear()
+    persisted: list[tuple[str, str, str]] = []
+
+    class FakeConnection:
+        rows: list[dict[str, str]] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, query, params=()):
+            if str(query).lstrip().upper().startswith("INSERT"):
+                persisted.append(tuple(params))
+                self.rows.insert(
+                    0,
+                    {
+                        "provider": params[0],
+                        "category": params[1],
+                        "message": params[2],
+                        "created_at": "2026-07-01 00:00:00+00",
+                    },
+                )
+            return self
+
+        def fetchall(self):
+            return list(self.rows)
+
+        def commit(self):
+            return None
+
+    class FakeResponse:
+        status_code = 429
+        text = "quota"
+
+        def json(self):
+            return {"error": {"message": "You exceeded your current quota.", "code": "insufficient_quota"}}
+
+    monkeypatch.setattr(provider_status, "init_admin_schema", lambda: None)
+    monkeypatch.setattr(provider_status, "_connect", lambda: FakeConnection())
+    monkeypatch.setattr(provider_status.config, "OPENAI_API_KEY", "test-runtime-key")
+    monkeypatch.setattr(provider_status.config, "OPENAI_ADMIN_KEY", "")
+    monkeypatch.setattr(provider_status.httpx, "post", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(
+        provider_status,
+        "_usage_summary",
+        lambda: {
+            "total_turns": 1,
+            "turns_today": 0,
+            "tokens_estimated": 50,
+            "avg_latency_ms": 100,
+        },
+    )
+
+    status = provider_status.check_openai_runtime_quota()
+
+    assert status["status"] == "quota_exhausted"
+    assert status["recent_events"][0]["category"] == "quota_exhausted"
+    assert persisted[0][0] == "openai"
+    assert persisted[0][1] == "quota_exhausted"

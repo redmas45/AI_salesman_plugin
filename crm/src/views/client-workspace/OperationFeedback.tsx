@@ -1,6 +1,6 @@
 /* eslint-disable react-hooks/purity */
 /* eslint-disable react-refresh/only-export-components */
-import { Gauge } from 'lucide-react';
+import { Gauge, Square } from 'lucide-react';
 import type { Client, OperationStatus, OperationStatusResponse } from '../../types';
 import { Button } from '../../components/ui/Button';
 import { number } from '../../utils/format';
@@ -103,12 +103,14 @@ export function OperationFeedbackPanel({
   backendOperation,
   onViewResult,
   onRetry,
+  onCancel,
   onDismiss,
 }: {
   feedback: OperationFeedbackState | null;
   backendOperation: OperationStatus | null;
   onViewResult: (tabId: ClientWorkspaceTabId) => void;
   onRetry: (kind: OperationFeedbackKind) => void;
+  onCancel?: (kind: OperationFeedbackKind) => void;
   onDismiss: () => void;
 }) {
   if (!feedback) return null;
@@ -191,6 +193,11 @@ export function OperationFeedbackPanel({
           {status === 'running' || status === 'complete' ? (
             <Button variant="secondary" size="sm" onClick={() => onViewResult(resultTab)}>
               {status === 'running' ? 'Open live output' : 'View result'}
+            </Button>
+          ) : null}
+          {status === 'running' && feedback.kind === 'integration' && onCancel ? (
+            <Button icon={Square} variant="danger" size="sm" onClick={() => onCancel(feedback.kind)}>
+              Stop setup
             </Button>
           ) : null}
           {status === 'failed' ? (

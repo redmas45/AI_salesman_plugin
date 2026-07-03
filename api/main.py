@@ -26,6 +26,7 @@ from agent import orchestrator
 from agent.page_context import parse_page_context
 from api import client_panel as client_panel_api
 from api import crm as crm_api
+from api.action_truth import annotate_ui_actions, new_action_turn_id
 from api.middleware import RateLimitMiddleware, RequestTracingMiddleware, SecurityHeadersMiddleware
 from api.routes import clients as clients_router
 from api.routes import analytics as analytics_router
@@ -34,6 +35,7 @@ from api.routes import settings as settings_router
 from api.turn_logging import print_turn_summary, turn_timer
 from api.ws_shop import ws_shop_handler
 from db import admin as admin_db
+from db.session_memory import get_session_summary, update_session_summary
 
 from api.models import (
     KnowledgeItemResponse,
@@ -122,6 +124,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         admin_db.init_admin_schema()
         logger.info("Default client startup seed disabled; keeping existing client list unchanged.")
+    if config.CLEAN_SYNTHETIC_DEMO_CLIENTS_ON_STARTUP:
+        removed_demo_clients = admin_db.cleanup_synthetic_demo_clients()
+        if removed_demo_clients:
+            logger.info("Removed %d stale synthetic example-domain install(s).", removed_demo_clients)
 
     async def run_crawl_once(target_url: str, site_id: str, *, initial: bool = False) -> None:
         from agent.ingestion import sync_web_crawl
@@ -231,13 +237,16 @@ def _allowed_cors_origins() -> list[str]:
 
 PUBLIC_WIDGET_CORS_PATHS = {
     "/install.js",
-    "/shopbot.js",
-    "/shopbot-widget.js",
-    "/shopbot-adapter.js",
-    "/shopbot-frame",
+    "/mayabot.js",
+    "/mayabot-widget.js",
+    "/mayabot-adapter.js",
+    "/mayabot-frame",
     "/v1/shop",
     "/v1/shop/stream",
     "/v1/ws/shop",
+    "/v1/products",
+    "/v1/products/by-ids",
+    "/v1/knowledge/by-ids",
     "/ws/chat",
 }
 
@@ -401,6 +410,8 @@ def _stream_shop_events(
 ) -> Iterator[str]:
     started_at = turn_timer()
     state = TurnLogState(transcript=text or "")
+    action_turn_id = new_action_turn_id()
+    session_summary = get_session_summary(site_id, session_id)
     try:
         for event in orchestrator.run_stream(
             site_id=site_id,
@@ -410,7 +421,17 @@ def _stream_shop_events(
             skip_tts=skip_tts,
             conversation_history=payload.conversation_history,
             page_context=payload.page_context,
+            session_summary=session_summary,
         ):
+            if event.get("event") == "actions":
+                data = event.get("data") if isinstance(event.get("data"), dict) else {}
+                event = {
+                    **event,
+                    "data": {
+                        **data,
+                        "ui_actions": annotate_ui_actions(data.get("ui_actions"), turn_id=action_turn_id),
+                    },
+                }
             state = _update_turn_log_state(state, event)
             yield f"data: {json.dumps(event)}\n\n"
     finally:
@@ -420,6 +441,7 @@ def _stream_shop_events(
             session_id=session_id,
             started_at=started_at,
             state=state,
+            history=payload.conversation_history,
         )
 
 
@@ -430,6 +452,7 @@ def _print_turn_state(
     session_id: str,
     started_at: float,
     state: TurnLogState,
+    history: list[dict[str, str]] | None = None,
 ) -> None:
     print_turn_summary(
         transport=transport,
@@ -447,6 +470,13 @@ def _print_turn_state(
         transport=transport,
         state=state,
     )
+    update_session_summary(
+        site_id,
+        session_id,
+        history=history or [],
+        transcript=state.transcript,
+        response_text=state.response_text,
+    )
 
 
 def _record_usage_state(*, site_id: str, session_id: str, transport: str, state: TurnLogState) -> None:
@@ -463,7 +493,14 @@ def _record_usage_state(*, site_id: str, session_id: str, transport: str, state:
     )
 
 
-def _record_usage_result(*, site_id: str, session_id: str, transport: str, result: dict[str, Any]) -> None:
+def _record_usage_result(
+    *,
+    site_id: str,
+    session_id: str,
+    transport: str,
+    result: dict[str, Any],
+    history: list[dict[str, str]] | None = None,
+) -> None:
     status_text = "error" if result.get("intent") == "error" else "ok"
     _record_usage_safely(
         site_id=site_id,
@@ -475,6 +512,13 @@ def _record_usage_result(*, site_id: str, session_id: str, transport: str, resul
         intent=str(result.get("intent") or ""),
         action_count=len(result.get("ui_actions") or []),
         latency_ms=_total_latency_ms(result.get("latency_ms") or {}),
+    )
+    update_session_summary(
+        site_id,
+        session_id,
+        history=history or [],
+        transcript=str(result.get("transcript") or ""),
+        response_text=str(result.get("response_text") or ""),
     )
 
 
@@ -585,6 +629,7 @@ async def shop(
     )
 
     started_at = turn_timer()
+    session_summary = get_session_summary(site_id, session_id)
     result = orchestrator.run(
         site_id=site_id,
         audio_bytes=payload.audio_bytes,
@@ -593,7 +638,9 @@ async def shop(
         skip_tts=skip_tts,
         conversation_history=payload.conversation_history,
         page_context=payload.page_context,
+        session_summary=session_summary,
     )
+    result["ui_actions"] = annotate_ui_actions(result.get("ui_actions"), turn_id=new_action_turn_id())
     print_turn_summary(
         transport="legacy-http",
         site_id=site_id,
@@ -603,7 +650,13 @@ async def shop(
         ui_actions=result.get("ui_actions", []),
         latency_ms=result.get("latency_ms", {}),
     )
-    _record_usage_result(site_id=site_id, session_id=session_id, transport="legacy-http", result=result)
+    _record_usage_result(
+        site_id=site_id,
+        session_id=session_id,
+        transport="legacy-http",
+        result=result,
+        history=payload.conversation_history,
+    )
 
     return ShopResponse(**result)
 
@@ -697,6 +750,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
 
             started_at = turn_timer()
             state = TurnLogState(transcript=text_input or "")
+            session_summary = get_session_summary(site_id, session_id)
             for event in orchestrator.run_stream(
                 site_id=site_id,
                 audio_bytes=audio_bytes,
@@ -704,6 +758,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 audio_filename=DEFAULT_AUDIO_FILENAME,
                 skip_tts=payload.get("skip_tts", False),
                 conversation_history=parsed_history,
+                session_summary=session_summary,
             ):
                 state = _update_turn_log_state(state, event)
                 await websocket.send_json(event)
@@ -713,6 +768,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
                 session_id=session_id,
                 started_at=started_at,
                 state=state,
+                history=parsed_history,
             )
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")

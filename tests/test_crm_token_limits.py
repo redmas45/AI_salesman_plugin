@@ -121,6 +121,41 @@ def test_crm_sets_manual_client_panel_password(monkeypatch):
     assert res.json()["generated_password"] == ""
 
 
+def test_client_panel_password_update_records_security_audit_without_token_limit_leak(monkeypatch):
+    captured = {}
+
+    class FakeCursor:
+        rowcount = 1
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def execute(self, query, params):
+            captured["update_params"] = params
+            return FakeCursor()
+
+        def commit(self):
+            captured["committed"] = True
+
+    monkeypatch.setattr(client_db, "init_admin_schema", lambda: None)
+    monkeypatch.setattr(client_db, "_connect", lambda: FakeConnection())
+    monkeypatch.setattr(client_db, "_hash_panel_password", lambda password: "pbkdf2-hash")
+    monkeypatch.setattr(client_db, "get_client_detail", lambda site_id: {"site_id": site_id, "panel_password_status": "configured"})
+    monkeypatch.setattr(client_db, "_record_audit_event_safely", lambda **kwargs: captured.update({"audit": kwargs}))
+
+    client = client_db.update_client_panel_password("ai_kart", "manual-password-strong")
+
+    assert client["panel_password_status"] == "configured"
+    assert captured["update_params"][0] == "pbkdf2-hash"
+    assert captured["audit"]["event_type"] == "client_panel_password_updated"
+    assert captured["audit"]["event_scope"] == "security"
+    assert captured["audit"]["metadata"] == {"password_configured": True}
+
+
 def test_crm_rejects_short_client_panel_password(monkeypatch):
     monkeypatch.setenv("CRM_ADMIN_TOKEN", "test-token-strong")
 

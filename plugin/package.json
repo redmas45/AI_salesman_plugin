@@ -1,10 +1,13 @@
 {
-  "name": "shopbot-plugin",
+  "name": "mayabot-plugin",
   "version": "1.0.0",
-  "description": "Voice Shopping Plugin",
+  "description": "MayaBot voice sales widget",
   "main": "src/index.js",
   "scripts": {
     "build": "node build.js"
+  },
+  "dependencies": {
+    "@ai-hub/contracts": "workspace:*"
   },
   "devDependencies": {
     "esbuild": "^0.28.1"

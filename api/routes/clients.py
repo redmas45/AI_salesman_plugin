@@ -23,13 +23,13 @@ from db import admin as admin_db
 logger = logging.getLogger(__name__)
 
 CLIENT_DISABLED_MESSAGE = "AI assistant is disabled for this client."
-DISABLED_WIDGET_DOM_ID = "shopbot-widget"
-DISABLED_WIDGET_BOOT_FLAG = "__shopbotBooted"
-DISABLED_WIDGET_FRAME_FLAG = "__shopbotFrameLoaded"
-DISABLED_WIDGET_REGISTRY = "__shopbotDisabledSites"
+DISABLED_WIDGET_DOM_ID = "mayabot-widget"
+DISABLED_WIDGET_BOOT_FLAG = "__mayabotBooted"
+DISABLED_WIDGET_FRAME_FLAG = "__mayabotFrameLoaded"
+DISABLED_WIDGET_REGISTRY = "__mayabotDisabledSites"
 INSTALL_REGISTRY_FLAG = "__aihubInstallLoadedSites"
-ADAPTER_SCRIPT_NAME = "shopbot-adapter.js"
-WIDGET_SCRIPT_NAME = "shopbot.js"
+ADAPTER_SCRIPT_NAME = "mayabot-adapter.js"
+WIDGET_SCRIPT_NAME = "mayabot.js"
 PLUGIN_DIR = Path(__file__).parent.parent.parent / "plugin"
 RUNTIME_CONFIG_VERSION = 1
 GENERIC_VERTICAL_KEY = admin_db.DEFAULT_CLIENT_VERTICAL_KEY
@@ -136,12 +136,18 @@ class WidgetActionExecutionEventRequest(BaseModel):
     origin: str = Field(..., min_length=1, max_length=240)
     url: str = Field(..., min_length=1, max_length=600)
     occurred_at: str = Field(default="", max_length=80)
+    request_id: str = Field(default="", max_length=80)
+    turn_id: str = Field(default="", max_length=80)
+    sequence: int = Field(default=0, ge=0, le=100)
     action: str = Field(..., min_length=1, max_length=80)
     status: str = Field(default="unknown", max_length=40)
     stage: str = Field(default="", max_length=80)
     reason: str = Field(default="", max_length=240)
     duration_ms: float = Field(default=0.0, ge=0)
     param_keys: list[str] = Field(default_factory=list, max_length=20)
+    requested_url: str = Field(default="", max_length=600)
+    final_url: str = Field(default="", max_length=600)
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 class WidgetInteractionEventRequest(BaseModel):
@@ -227,6 +233,16 @@ def _disabled_widget_script(*, site: str) -> str:
   console.info("[AI Hub Widget] " + {json.dumps(CLIENT_DISABLED_MESSAGE)} + " Site: " + siteId);
 }})();
 """
+
+
+def _client_scripts_can_load(site: str) -> bool:
+    if not site:
+        return True
+    try:
+        client = admin_db.get_client_detail(site)
+    except LookupError:
+        return True
+    return str(client.get("status") or "").strip().lower() != admin_db.CLIENT_STATUS_DISABLED
 
 
 def _script_url(*, api_base_url: str, script_name: str, site: str | None = None) -> str:
@@ -346,7 +362,7 @@ def _runtime_adapter_config(
             vertical_config,
             str(client.get("vertical_key") or admin_db.DEFAULT_CLIENT_VERTICAL_KEY),
         ),
-        "action_events": _list_value(vertical_config, "action_events"),
+        "action_events": _durable_action_events_for_client(str(client.get("site_id") or "")),
         "action_health": _dict_value(vertical_config, "action_health"),
         "action_proposals": _list_value(vertical_config, "action_proposals"),
         "action_proposal_reviews": _list_value(vertical_config, "action_proposal_reviews"),
@@ -375,6 +391,16 @@ def _runtime_adapter_config(
         "selector_confidence": float(selectors.get("confidence") or 0),
         "selector_validated": bool(selectors.get("validated")),
     }
+
+
+def _durable_action_events_for_client(site_id: str) -> list[dict[str, Any]]:
+    if not site_id:
+        return []
+    try:
+        return admin_db.list_client_action_events({site_id}, limit=80).get(site_id, [])
+    except Exception as exc:
+        logger.warning("Runtime action evidence lookup failed for %s: %s", site_id, exc)
+        return []
 
 
 def _dict_value(data: dict[str, Any], key: str) -> dict[str, Any]:
@@ -582,12 +608,18 @@ def _process_action_execution_event(req: WidgetActionExecutionEventRequest) -> d
         "origin": origin,
         "url": same_origin_public_url(req.url, origin),
         "occurred_at": req.occurred_at,
+        "request_id": req.request_id,
+        "turn_id": req.turn_id,
+        "sequence": req.sequence,
         "action": req.action,
         "status": req.status,
         "stage": req.stage,
         "reason": req.reason,
         "duration_ms": req.duration_ms,
         "param_keys": req.param_keys,
+        "requested_url": same_origin_public_url(req.requested_url, origin) if req.requested_url else "",
+        "final_url": same_origin_public_url(req.final_url, origin) if req.final_url else "",
+        "evidence": req.evidence,
     }
     admin_db.save_client_action_event(safe_site, event)
     return {"site_id": safe_site, "status": "ok"}
@@ -632,12 +664,12 @@ def same_origin_public_url(url: str, origin: str) -> str:
 
 
 def _ensure_registration_client(site_id: str, store_url: str, title: str, vertical_key: str) -> dict[str, Any]:
+    name = str(title or site_id.replace("_", " ").title()).strip()[:120] or site_id
     try:
-        return admin_db.get_client_detail(site_id)
+        client = admin_db.get_client_detail(site_id)
     except LookupError:
-        name = str(title or site_id.replace("_", " ").title()).strip()[:120]
         return admin_db.discover_available_client(
-            name=name or site_id,
+            name=name,
             store_url=store_url,
             site_id=site_id,
             deploy_mode=admin_db.DEFAULT_DEPLOY_MODE,
@@ -645,6 +677,20 @@ def _ensure_registration_client(site_id: str, store_url: str, title: str, vertic
             adapter_name="generated_adapter.js",
             vertical_key=vertical_key,
         )
+    current_origin = _safe_script_base_url(str(client.get("allowed_origin") or client.get("store_url") or ""))
+    next_origin = _safe_script_base_url(store_url)
+    if next_origin and next_origin != current_origin:
+        existing_vertical_key = str(client.get("vertical_key") or vertical_key).strip() or vertical_key
+        return admin_db.discover_available_client(
+            name=str(client.get("name") or name).strip()[:120] or name,
+            store_url=store_url,
+            site_id=site_id,
+            deploy_mode=str(client.get("deploy_mode") or admin_db.DEFAULT_DEPLOY_MODE),
+            plan=str(client.get("plan") or admin_db.DEFAULT_PLAN),
+            adapter_name="generated_adapter.js",
+            vertical_key=existing_vertical_key,
+        )
+    return client
 
 
 def _seed_generated_prompt_once(site_id: str, client: dict[str, Any], discovery: Any) -> None:
@@ -682,15 +728,15 @@ def _vertical_config_section(client: dict[str, Any], key: str) -> dict[str, Any]
 def _render_embed_bootstrap(*, site: str, api_base_url: str) -> str:
     return f"""
 (function () {{
-  if (window.__shopbotFrameLoaded) return;
-  window.__shopbotFrameLoaded = true;
+  if (window.__mayabotFrameLoaded) return;
+  window.__mayabotFrameLoaded = true;
 
   var currentScript = document.currentScript;
   var scriptUrl = currentScript && currentScript.src ? new URL(currentScript.src, window.location.href) : null;
   var siteId = {json.dumps(site)};
   var apiBaseUrl = {json.dumps(api_base_url)};
   var parentOrigin = window.location.origin;
-  var frameUrl = new URL(apiBaseUrl + "/shopbot-frame");
+  var frameUrl = new URL(apiBaseUrl + "/mayabot-frame");
   frameUrl.searchParams.set("site", siteId);
   frameUrl.searchParams.set("parent_origin", parentOrigin);
 
@@ -722,9 +768,9 @@ def _render_embed_bootstrap(*, site: str, api_base_url: str) -> str:
   window.addEventListener("message", function (event) {{
     if (event.origin !== new URL(apiBaseUrl).origin) return;
     var data = event.data || {{}};
-    if (data.source !== "shopbot-frame") return;
+    if (data.source !== "mayabot-frame") return;
 
-    if (data.type === "shopbot:frame-size") {{
+    if (data.type === "mayabot:frame-size") {{
       var width = clamp(data.width, 360, Math.max(320, window.innerWidth - 24));
       var height = clamp(data.height, 180, Math.max(180, window.innerHeight - 24));
       frame.style.width = width + "px";
@@ -732,7 +778,7 @@ def _render_embed_bootstrap(*, site: str, api_base_url: str) -> str:
       return;
     }}
 
-    if (data.type === "shopbot:navigate" && data.path) {{
+    if (data.type === "mayabot:navigate" && data.path) {{
       try {{
         var targetUrl = new URL(data.path, window.location.href);
         if (targetUrl.origin === window.location.origin) {{
@@ -814,7 +860,7 @@ async def widget_status(
     }
 
 
-@router.get("/shopbot-frame")
+@router.get("/mayabot-frame")
 async def serve_plugin_frame(
     request: Request,
     site: Optional[str] = None,
@@ -824,7 +870,7 @@ async def serve_plugin_frame(
 ) -> Response:
     """Serve a standalone orb frame for external website modes."""
     safe_site = _safe_site_id(site or site_id or shop or config.DEFAULT_SITE_ID)
-    script_path = f"{_public_widget_base_url(request)}/shopbot-widget.js?site={safe_site}"
+    script_path = f"{_public_widget_base_url(request)}/mayabot-widget.js?site={safe_site}"
     if parent_origin:
         script_path += f"&parent_origin={parent_origin}"
 
@@ -867,7 +913,7 @@ async def serve_plugin_frame(
     )
 
 
-@router.get("/shopbot-widget.js")
+@router.get("/mayabot-widget.js")
 async def serve_plugin_widget(
     request: Request,
     site: Optional[str] = None,
@@ -880,7 +926,7 @@ async def serve_plugin_widget(
     safe_api = _public_widget_base_url(request)
     js_code = (
         _load_widget_script(site=safe_site, api_base_url=safe_api)
-        if not safe_site or admin_db.is_client_widget_enabled(safe_site)
+        if _client_scripts_can_load(safe_site)
         else _disabled_widget_script(site=safe_site)
     )
 
@@ -891,7 +937,7 @@ async def serve_plugin_widget(
     )
 
 
-@router.get("/shopbot-adapter.js")
+@router.get("/mayabot-adapter.js")
 async def serve_plugin_adapter(
     request: Request,
     site: Optional[str] = None,
@@ -904,7 +950,7 @@ async def serve_plugin_adapter(
     safe_api = _public_widget_base_url(request)
     js_code = (
         _load_adapter_script(site=safe_site, api_base_url=safe_api)
-        if not safe_site or admin_db.is_client_widget_enabled(safe_site)
+        if _client_scripts_can_load(safe_site)
         else _disabled_widget_script(site=safe_site)
     )
 
@@ -915,7 +961,7 @@ async def serve_plugin_adapter(
     )
 
 
-@router.get("/shopbot.js")
+@router.get("/mayabot.js")
 async def serve_plugin(
     request: Request,
     site: Optional[str] = None,
@@ -933,7 +979,7 @@ async def serve_plugin(
     safe_api = _public_widget_base_url(request)
     js_code = (
         _load_widget_script(site=safe_site, api_base_url=safe_api)
-        if not safe_site or admin_db.is_client_widget_enabled(safe_site)
+        if _client_scripts_can_load(safe_site)
         else _disabled_widget_script(site=safe_site)
     )
 
@@ -957,7 +1003,7 @@ async def serve_install_script(
     safe_api = _public_widget_base_url(request)
     js_code = (
         _render_install_script(site=safe_site or None, api_base_url=safe_api)
-        if not safe_site or admin_db.is_client_widget_enabled(safe_site)
+        if _client_scripts_can_load(safe_site)
         else _disabled_widget_script(site=safe_site)
     )
 

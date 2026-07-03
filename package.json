@@ -1,0 +1,16 @@
+{
+  "name": "ai-salesman-plugin-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "build:crm": "pnpm --filter ai-hub-crm build",
+    "build:plugin": "pnpm --filter mayabot-plugin build",
+    "contracts:check": "python scripts/check_contracts.py",
+    "typecheck": "pnpm --filter ai-hub-crm exec tsc -b",
+    "test:py": "python -m pytest -q",
+    "compile:py": "python -m compileall agent api db tests",
+    "ci": "pnpm run contracts:check && pnpm -r run build && python -m pytest -q && python -m compileall agent api db tests"
+  }
+}

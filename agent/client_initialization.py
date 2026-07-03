@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import config
+from agent.actions.registry import get_action
 from agent.flow_discovery import DEFAULT_FLOW_MAX_PAGES, discover_site_flows
 from agent.flow_regression import build_flow_regression_report
 from agent.flow_rehearsal import DEFAULT_REHEARSAL_MAX_STEPS, rehearse_site_flows
@@ -25,6 +26,16 @@ DISPLAY_ACTION_ID_PARAMS = {
     "SHOW_ENTITIES": "entity_ids",
     "COMPARE_ENTITIES": "entity_ids",
 }
+SMOKE_MAX_ATTEMPTS = 1
+
+
+class SetupRunStopped(Exception):
+    """Raised when a setup run should stop at the next safe checkpoint."""
+
+    def __init__(self, status: str, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
 
 
 def run_widget_initialization(
@@ -43,12 +54,70 @@ def run_widget_initialization(
     run_smoke_tests: bool = False,
 ) -> dict[str, Any]:
     """Run automatic onboarding after the universal script registers."""
+    run_id = uuid.uuid4().hex
+    timeout_seconds = max(1, int(getattr(config, "SETUP_RUN_TIMEOUT_SECONDS", 7200) or 7200))
     started = time.monotonic()
     started_at = _utc_now()
     stages: list[dict[str, Any]] = []
+    stop_check_failed = False
 
     def save_running() -> None:
-        _save_report(site_id, _report(site_id, site_url, vertical_key, "running", stages, started_at, started))
+        _save_report(
+            site_id,
+            _report(
+                site_id,
+                site_url,
+                vertical_key,
+                "running",
+                stages,
+                started_at,
+                started,
+                run_id=run_id,
+                timeout_seconds=timeout_seconds,
+            ),
+        )
+
+    def stop_if_requested() -> None:
+        nonlocal stop_check_failed
+        elapsed = time.monotonic() - started
+        if elapsed > timeout_seconds:
+            raise SetupRunStopped("timed_out", f"Setup run timed out after {timeout_seconds} seconds.")
+        if stop_check_failed:
+            return
+        try:
+            if admin_db.setup_cancel_requested(site_id, run_id):
+                raise SetupRunStopped("canceled", "Setup run canceled by admin.")
+        except SetupRunStopped:
+            raise
+        except Exception as exc:
+            stop_check_failed = True
+            logger.warning("Setup cancel check failed for %s: %s", site_id, exc)
+
+    def stopped_report(stop: SetupRunStopped) -> dict[str, Any]:
+        if stages and stages[-1].get("status") == "running":
+            stages[-1] = {
+                **stages[-1],
+                "status": stop.status,
+                "message": stop.message,
+                "completed_at": _utc_now(),
+            }
+        else:
+            stages.append(_stage("setup_stopped", stop.status, stop.message))
+        final_report = _report(
+            site_id,
+            site_url,
+            vertical_key,
+            stop.status,
+            stages,
+            started_at,
+            started,
+            run_id=run_id,
+            timeout_seconds=timeout_seconds,
+            error=stop.message,
+        )
+        _save_report(site_id, final_report)
+        _update_crawl_status_safe(site_id, admin_db.CRAWL_STATUS_ERROR, stop.message)
+        return final_report
 
     save_running()
 
@@ -56,50 +125,76 @@ def run_widget_initialization(
     flow_report: dict[str, Any] = {}
     rehearsal_report: dict[str, Any] = {}
 
-    if run_crawl:
-        _start_stage(stages, "crawl", "Content crawl is running.")
-        save_running()
-        stages[-1] = _crawl_stage(site_id, site_url, crawl_max_pages, crawl_max_depth)
-        save_running()
-    if run_flow:
-        _start_stage(stages, "flow_discovery", "Adapter flow discovery is running.")
-        save_running()
-        flow_report, flow_stage = _flow_stage(site_id, site_url, vertical_key, flow_max_pages)
-        stages[-1] = flow_stage
-        save_running()
-    rehearsal_flow_report = flow_report or _existing_flow_report(site_id)
-    if run_rehearsal and rehearsal_flow_report:
-        _start_stage(stages, "flow_rehearsal", "Safe action rehearsal is running.")
-        save_running()
-        rehearsal_report, rehearsal_stage = _rehearsal_stage(site_id, site_url, rehearsal_flow_report, rehearsal_max_steps)
-        stages[-1] = rehearsal_stage
-        save_running()
-    elif run_rehearsal:
-        stages.append(_stage("flow_rehearsal", "skipped", "No flow report is available to rehearse."))
-        save_running()
-    if flow_report:
-        _start_stage(stages, "flow_regression", "Flow regression comparison is running.")
-        save_running()
-        stages[-1] = _regression_stage(site_id, site_url, previous_client, flow_report, rehearsal_report)
-        save_running()
-    if run_readiness:
-        _start_stage(stages, "readiness_scan", "Readiness scan is running.")
-        save_running()
-        stages[-1] = _readiness_stage(site_id, site_url, vertical_key)
-        save_running()
-    if run_smoke_tests:
-        _start_stage(stages, "assistant_smoke_tests", "Assistant prompt smoke tests are running.")
-        save_running()
-        stages[-1] = _assistant_smoke_stage(site_id, vertical_key)
-        save_running()
+    try:
+        stop_if_requested()
+        if run_crawl:
+            _start_stage(stages, "crawl", "Content crawl is running.")
+            save_running()
+            stages[-1] = _crawl_stage(site_id, site_url, crawl_max_pages, crawl_max_depth)
+            save_running()
+            stop_if_requested()
+        if run_flow:
+            stop_if_requested()
+            _start_stage(stages, "flow_discovery", "Adapter flow discovery is running.")
+            save_running()
+            flow_report, flow_stage = _flow_stage(site_id, site_url, vertical_key, flow_max_pages)
+            stages[-1] = flow_stage
+            save_running()
+            stop_if_requested()
+        rehearsal_flow_report = flow_report or _existing_flow_report(site_id)
+        if run_rehearsal and rehearsal_flow_report:
+            stop_if_requested()
+            _start_stage(stages, "flow_rehearsal", "Safe action rehearsal is running.")
+            save_running()
+            rehearsal_report, rehearsal_stage = _rehearsal_stage(site_id, site_url, rehearsal_flow_report, rehearsal_max_steps)
+            stages[-1] = rehearsal_stage
+            save_running()
+            stop_if_requested()
+        elif run_rehearsal:
+            stages.append(_stage("flow_rehearsal", "skipped", "No flow report is available to rehearse."))
+            save_running()
+            stop_if_requested()
+        if flow_report:
+            stop_if_requested()
+            _start_stage(stages, "flow_regression", "Flow regression comparison is running.")
+            save_running()
+            stages[-1] = _regression_stage(site_id, site_url, previous_client, flow_report, rehearsal_report)
+            save_running()
+            stop_if_requested()
+        if run_readiness:
+            stop_if_requested()
+            _start_stage(stages, "readiness_scan", "Readiness scan is running.")
+            save_running()
+            stages[-1] = _readiness_stage(site_id, site_url, vertical_key)
+            save_running()
+            stop_if_requested()
+        if run_smoke_tests:
+            stop_if_requested()
+            _start_stage(stages, "assistant_smoke_tests", "Assistant prompt smoke tests are running.")
+            save_running()
+            stages[-1] = _assistant_smoke_stage(site_id, vertical_key)
+            save_running()
+            stop_if_requested()
+    except SetupRunStopped as stop:
+        return stopped_report(stop)
 
     status = _overall_status(stages)
-    final_report = _report(site_id, site_url, vertical_key, status, stages, started_at, started)
+    final_report = _report(
+        site_id,
+        site_url,
+        vertical_key,
+        status,
+        stages,
+        started_at,
+        started,
+        run_id=run_id,
+        timeout_seconds=timeout_seconds,
+    )
     _save_report(site_id, final_report)
-    
+
     if status == "ok":
         admin_db.update_client_setup_status(site_id, needs_setup=False, last_setup_at=_utc_now())
-        
+
     return final_report
 
 
@@ -198,7 +293,11 @@ def _readiness_stage(site_id: str, site_url: str, vertical_key: str) -> dict[str
             )
         ).to_dict()
         admin_db.save_readiness_report(site_id, report)
-        supported = sum(1 for capability in report.get("capabilities", []) if capability.get("supported"))
+        supported = sum(
+            1
+            for capability in report.get("capabilities", [])
+            if capability.get("supported") or capability.get("blocking") is False
+        )
         total = len(report.get("capabilities", []))
         return _stage(
             "readiness_scan",
@@ -220,7 +319,7 @@ def _assistant_smoke_stage(site_id: str, vertical_key: str) -> dict[str, Any]:
         attempts = 0
         success = False
         last_result = None
-        while attempts < 3 and not success:
+        while attempts < SMOKE_MAX_ATTEMPTS and not success:
             attempts += 1
             try:
                 result = _run_assistant_turn(site_id, case["prompt"])
@@ -229,9 +328,7 @@ def _assistant_smoke_stage(site_id: str, vertical_key: str) -> dict[str, Any]:
                 if test_result["status"] == "ok":
                     success = True
                 else:
-                    if attempts < 3:
-                        logger.warning("Smoke test failed (attempt %d). Auto-repairing: %s", attempts, test_result.get("failure_kind"))
-                        _auto_repair_smoke_failure(site_id, case, test_result)
+                    _record_smoke_repair_need(site_id, case, test_result)
             except Exception as exc:
                 logger.error("Assistant smoke test failed for %s/%s: %s", site_id, case["name"], exc)
                 last_result = {
@@ -271,57 +368,27 @@ def _assistant_smoke_stage(site_id: str, vertical_key: str) -> dict[str, Any]:
         tests=tests,
     )
 
-def _auto_repair_smoke_failure(site_id: str, case: dict[str, Any], test_result: dict[str, Any]) -> None:
-    if not _external_smoke_llm_enabled():
-        logger.info("Skipping smoke auto-repair because external LLM calls are disabled.")
-        return
 
-    from db.prompts import get_client_prompt_profile, save_client_prompt_profile
-    from agent.llm import _get_client
-    
-    prompt = f"""
-    The automated smoke test for a chatbot failed. 
-    User Prompt: "{case['prompt']}"
-    Expected Actions: {case.get('expected_actions')}
-    Actual Actions: {test_result.get('actual_actions')}
-    Failure Kind: {test_result.get('failure_kind')}
-    Assistant Response: {test_result.get('response_excerpt')}
-    
-    Write a 1-sentence developer rule to add to the assistant's prompt profile to fix this issue.
-    For example: 'If the user asks for FAQ, always trigger the OPEN_POLICY action.'
-    Just return the single sentence, nothing else.
-    """
-    
+def _record_smoke_repair_need(site_id: str, case: dict[str, Any], test_result: dict[str, Any]) -> None:
+    """Log deterministic smoke repair evidence without mutating prompts blindly."""
     try:
-        openai_client = _get_client()
-        completion = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=100
+        admin_db.record_audit_event(
+            site_id=site_id,
+            actor_type="setup_runner",
+            actor_id="assistant_smoke_tests",
+            event_type="assistant_smoke_repair_needed",
+            status=str(test_result.get("failure_kind") or "failed"),
+            message=str(test_result.get("recommended_fix") or test_result.get("reason") or "Smoke test repair needed."),
+            metadata={
+                "case": str(case.get("name") or ""),
+                "prompt": str(case.get("prompt") or ""),
+                "expected_actions": test_result.get("expected_actions") or [],
+                "actual_actions": test_result.get("actual_actions") or [],
+                "filtered_actions": test_result.get("filtered_actions") or [],
+            },
         )
-        rule = completion.choices[0].message.content.strip().strip('"').strip("'")
-        profile_data = get_client_prompt_profile(site_id)
-        if profile_data and rule:
-            active_version = profile_data.get("active_version")
-            if active_version:
-                existing_rules = active_version.get("developer_rules") or ""
-                new_rules = existing_rules.strip()
-                if new_rules:
-                    new_rules += "\n"
-                new_rules += f"- [CRITICAL OVERRIDE RULE] {rule}"
-                
-                save_client_prompt_profile(
-                    site_id,
-                    name=profile_data["profile"]["name"],
-                    system_prompt=active_version.get("system_prompt", ""),
-                    developer_rules=new_rules,
-                    publish=True,
-                    changelog="Auto-repair from smoke test failure"
-                )
-                logger.info("Auto-repaired prompt profile with rule: %s", rule)
-    except Exception as e:
-        logger.error("Auto repair LLM generation failed: %s", e)
+    except Exception as exc:
+        logger.warning("Smoke repair audit write failed for %s/%s: %s", site_id, case.get("name"), exc)
 
 
 def run_assistant_smoke_tests(site_id: str, vertical_key: str) -> dict[str, Any]:
@@ -349,61 +416,11 @@ def _assistant_smoke_cases(site_id: str, vertical_key: str | None = None) -> lis
     if vertical_key is None:
         return _fallback_assistant_smoke_cases(site_id)
 
-    client = _client_detail(site_id)
-    vertical_config = client.get("vertical_config") if isinstance(client.get("vertical_config"), dict) else {}
-    domain = client.get("domain") or client.get("store_url") or client.get("allowed_origin") or site_id
+    contract_cases = _action_contract_smoke_cases(site_id)
+    if contract_cases:
+        return contract_cases
 
-    if not _external_smoke_llm_enabled():
-        return _fallback_assistant_smoke_cases(vertical_key)
-
-    prompt = f"""
-    You are generating 2-3 smoke test queries for an AI agent on the domain {domain}.
-    The agent belongs to vertical: {vertical_key}.
-    The vertical config context: {vertical_config}
-    
-    Please return a JSON object with a single key "cases", which is an array of objects representing test queries the user might ask.
-    Each object must have:
-    - "name": string (a short snake_case name for the test)
-    - "prompt": string (the simulated user query)
-    - "expected_actions": list of strings (e.g. ["SHOW_ENTITIES", "COMPARE_ENTITIES", "START_BOOKING", "CAPTURE_LEAD"])
-    - "expected_terms": optional list of strings
-    - "required_terms": optional list of strings
-    
-    Make the tests highly specific to the domain's actual products/services found in the config if available.
-    """
-    
-    try:
-        from agent.llm import _get_client
-        import json
-        
-        openai_client = _get_client()
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
-        )
-        content = response.choices[0].message.content or "{}"
-        data = json.loads(content)
-        cases = data.get("cases", [])
-        
-        return [
-            _smoke_case(
-                c.get("name", "test"),
-                c.get("prompt", "Hello"),
-                c.get("expected_actions", []),
-                expected_terms=c.get("expected_terms"),
-                required_terms=c.get("required_terms")
-            ) for c in cases
-        ][:3] or _fallback_assistant_smoke_cases(vertical_key)
-    except Exception as exc:
-        logger.error("Failed to generate dynamic smoke cases: %s", exc)
-        return _fallback_assistant_smoke_cases(vertical_key)
-
-
-def _external_smoke_llm_enabled() -> bool:
-    if os.getenv("PYTEST_CURRENT_TEST"):
-        return False
-    return bool(config.OPENAI_API_KEY)
+    return _schema_aware_smoke_cases(site_id, vertical_key, _fallback_assistant_smoke_cases(vertical_key))
 
 
 def _fallback_assistant_smoke_cases(vertical_key: str) -> list[dict[str, Any]]:
@@ -493,6 +510,191 @@ def _fallback_assistant_smoke_cases(vertical_key: str) -> list[dict[str, Any]]:
     )
 
 
+def _schema_aware_smoke_cases(site_id: str, vertical_key: str, cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    action_configs = _smoke_action_configs(site_id)
+    if not action_configs:
+        return cases
+
+    enriched_cases: list[dict[str, Any]] = []
+    for case in cases:
+        updated = dict(case)
+        prompt = str(updated.get("prompt") or "")
+        for action_name in [str(action or "").upper() for action in updated.get("expected_actions") or []]:
+            clause = _smoke_required_param_clause(action_configs.get(action_name) or {})
+            if clause:
+                prompt = _append_smoke_details(prompt, clause)
+                updated["schema_enriched"] = True
+                break
+        updated["prompt"] = prompt
+        enriched_cases.append(updated)
+    return enriched_cases
+
+
+def _action_contract_smoke_cases(site_id: str) -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = []
+    for action_name, action_config in _smoke_action_configs(site_id).items():
+        if not get_action(action_name):
+            continue
+        clause = _smoke_required_param_clause(action_config)
+        if not clause:
+            continue
+        label = str(action_config.get("label") or action_name.replace("_", " ").title()).strip()
+        case = _smoke_case(
+            f"{action_name.lower()}_contract",
+            f"Please run {label}. Use these exact field values: {clause}.",
+            [action_name],
+        )
+        case["schema_enriched"] = True
+        cases.append(case)
+        if len(cases) >= 3:
+            break
+    return cases
+
+
+def _smoke_action_configs(site_id: str) -> dict[str, dict[str, Any]]:
+    client = _client_detail(site_id)
+    vertical_config = client.get("vertical_config") if isinstance(client.get("vertical_config"), dict) else {}
+    actions = vertical_config.get("actions") if isinstance(vertical_config, dict) else {}
+    if not isinstance(actions, dict):
+        return {}
+    return {
+        str(action_name or "").upper(): action_config
+        for action_name, action_config in actions.items()
+        if str(action_name or "").strip() and isinstance(action_config, dict)
+    }
+
+
+def _smoke_required_param_clause(action_config: dict[str, Any]) -> str:
+    params = _smoke_action_required_params(action_config)
+    if not params:
+        return ""
+    schema_by_param = _smoke_schema_by_param(action_config)
+    parts = []
+    for param in params[:6]:
+        value = _smoke_value_for_param(param, schema_by_param.get(param) or {})
+        if value:
+            parts.append(f"{_humanize_smoke_param(param)}: {value}")
+    if len(parts) < len(params[:6]):
+        return ""
+    return "; ".join(parts)
+
+
+def _smoke_action_required_params(action_config: dict[str, Any]) -> list[str]:
+    required_fields = action_config.get("required_fields")
+    if isinstance(required_fields, list):
+        return _unique_smoke_params(required_fields)
+    params: list[str] = []
+    steps = action_config.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict) or step.get("optional") is True:
+                continue
+            param = str(step.get("param") or step.get("parameter") or step.get("name") or "").strip()
+            if param:
+                params.append(param)
+    return _unique_smoke_params(params)
+
+
+def _smoke_schema_by_param(action_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    schema = action_config.get("field_schema")
+    if not isinstance(schema, list):
+        return {}
+    return {
+        str(item.get("param") or "").strip(): item
+        for item in schema
+        if isinstance(item, dict) and str(item.get("param") or "").strip()
+    }
+
+
+def _unique_smoke_params(params: list[Any]) -> list[str]:
+    rows: list[str] = []
+    seen: set[str] = set()
+    for param in params:
+        clean = str(param or "").strip()
+        key = clean.lower().replace("-", "_")
+        if not clean or key in seen:
+            continue
+        seen.add(key)
+        rows.append(clean)
+    return rows
+
+
+def _smoke_value_for_param(param: str, schema: dict[str, Any]) -> str:
+    option_value = _smoke_option_value(schema.get("options"))
+    if option_value:
+        return option_value
+    text = f"{param} {schema.get('label') or ''} {schema.get('type') or ''}".lower().replace("_", " ")
+    field_type = str(schema.get("type") or "").lower()
+    label = _humanize_smoke_param(param)
+    if field_type in {"date", "datetime", "datetime-local", "month", "time"}:
+        return "2026-08-15"
+    if field_type in {"number", "range"}:
+        if "age" in text or "eldest" in text:
+            return "27"
+        if any(term in text for term in ("budget", "amount", "price", "cost", "premium", "income", "loan", "emi", "salary")):
+            return "5000"
+        return "2"
+    if field_type in {"email"}:
+        return "test@example.com"
+    if field_type in {"tel", "phone"}:
+        return "5550100"
+    if "age" in text or "eldest" in text:
+        return "27"
+    if any(term in text for term in ("date", "day", "check in", "arrival", "departure", "start", "end", "when")):
+        return "2026-08-15"
+    if any(term in text for term in ("traveler", "traveller", "guest", "people", "passenger", "ticket", "adult", "room", "night", "party", "count", "size", "quantity")):
+        return "2"
+    if "child" in text or "children" in text:
+        return "0"
+    if any(term in text for term in ("budget", "amount", "price", "cost", "premium", "income", "loan", "emi", "salary")):
+        return "5000"
+    if "phone" in text or "mobile" in text:
+        return "5550100"
+    if "email" in text:
+        return "test@example.com"
+    if "name" in text:
+        return "Aarav Sharma"
+    if any(term in text for term in ("city", "location", "area", "origin", "source", "destination", "target", "from", "to", "port", "station", "terminal", "branch")):
+        return f"Sample {label}"
+    if any(term in text for term in ("category", "type", "service", "scope", "goal", "matter", "role", "skill", "course", "program", "vehicle", "cover", "coverage")):
+        return f"Sample {label}"
+    return f"Sample {label}"
+
+
+def _smoke_option_value(options: Any) -> str:
+    if not isinstance(options, list):
+        return ""
+    preferred_terms = ("27", "self", "individual", "standard", "economy", "basic")
+    candidates: list[str] = []
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        label = str(option.get("label") or "").strip()
+        value = str(option.get("value") or "").strip()
+        candidate = value or label
+        if not candidate:
+            continue
+        text = f"{label} {value}".lower()
+        if any(term in text for term in preferred_terms):
+            return candidate
+        candidates.append(candidate)
+    return candidates[0] if candidates else ""
+
+
+def _append_smoke_details(prompt: str, clause: str) -> str:
+    clean_prompt = str(prompt or "").strip()
+    suffix = f" Use these exact field values: {clause}."
+    if not clean_prompt:
+        return suffix.strip()
+    if clause.lower() in clean_prompt.lower():
+        return clean_prompt
+    return clean_prompt.rstrip(" .") + "." + suffix
+
+
+def _humanize_smoke_param(param: str) -> str:
+    return " ".join(str(param or "").replace("_", " ").replace("-", " ").split())
+
+
 def _smoke_case(
     name: str,
     prompt: str,
@@ -542,6 +744,8 @@ def _assistant_smoke_result(case: dict[str, Any], result: dict[str, Any]) -> dic
     required_terms = [str(term).lower() for term in case.get("expected_response_terms_all") or [] if str(term).strip()]
     response_text = str(result.get("response_text") or "")
     retrieval_evidence = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
+    action_filter = result.get("action_filter") if isinstance(result.get("action_filter"), dict) else {}
+    filtered_actions = action_filter.get("removed_actions") if isinstance(action_filter.get("removed_actions"), list) else []
     blocked_phrase = _contains_blocked_smoke_phrase(response_text)
     matched_actions = sorted(set(action_names).intersection(expected_actions))
     matched_terms = [term for term in expected_terms if term in response_text.lower()]
@@ -564,6 +768,7 @@ def _assistant_smoke_result(case: dict[str, Any], result: dict[str, Any]) -> dic
         required_terms,
         matched_required_terms,
         display_payload_ok,
+        filtered_actions,
     )
     return {
         "name": case["name"],
@@ -577,6 +782,8 @@ def _assistant_smoke_result(case: dict[str, Any], result: dict[str, Any]) -> dic
         "matched_response_terms": matched_terms,
         "matched_response_terms_all": matched_required_terms,
         "display_action_evidence": display_action_evidence,
+        "filtered_actions": filtered_actions,
+        "action_filter": action_filter,
         "retrieval_evidence": retrieval_evidence,
         "intent": str(result.get("intent") or ""),
         "response_excerpt": response_text[:320],
@@ -590,8 +797,14 @@ def _assistant_smoke_result(case: dict[str, Any], result: dict[str, Any]) -> dic
             required_terms,
             matched_required_terms,
             display_payload_ok,
+            filtered_actions,
         ),
-        "recommended_fix": "" if passed else _smoke_recommended_fix(failure_kind, expected_actions, retrieval_evidence),
+        "recommended_fix": "" if passed else _smoke_recommended_fix(
+            failure_kind,
+            expected_actions,
+            retrieval_evidence,
+            filtered_actions,
+        ),
     }
 
 
@@ -651,7 +864,16 @@ def _smoke_failure_reason(
     required_terms: list[str] | None = None,
     matched_required_terms: list[str] | None = None,
     display_payload_ok: bool = True,
+    filtered_actions: list[Any] | None = None,
 ) -> str:
+    filter_reason = _primary_smoke_filter_reason(filtered_actions)
+    if filter_reason == "missing_required_params":
+        missing = _filtered_missing_params(filtered_actions)
+        return f"Runtime filter removed the action because required params were missing: {', '.join(missing) or 'unknown'}."
+    if filter_reason in {"blocked_by_policy", "blocked_by_action_health"}:
+        return "Runtime filter removed the action because the website flow is blocked by safety policy or recent browser health evidence."
+    if filter_reason == "unsupported_action":
+        return "Runtime filter removed an action that is not available for this client website."
     if blocked_phrase:
         return "Assistant response used a no-data or no-records fallback."
     if not display_payload_ok:
@@ -673,7 +895,15 @@ def _smoke_failure_kind(
     required_terms: list[str] | None = None,
     matched_required_terms: list[str] | None = None,
     display_payload_ok: bool = True,
+    filtered_actions: list[Any] | None = None,
 ) -> str:
+    filter_reason = _primary_smoke_filter_reason(filtered_actions)
+    if filter_reason == "missing_required_params":
+        return "missing_required_action_params"
+    if filter_reason in {"blocked_by_policy", "blocked_by_action_health"}:
+        return "blocked_action_filtered"
+    if filter_reason == "unsupported_action":
+        return "unsupported_action_filtered"
     if blocked_phrase:
         return "no_data_fallback"
     if not action_names:
@@ -693,6 +923,7 @@ def _smoke_recommended_fix(
     failure_kind: str,
     expected_actions: list[str],
     retrieval_evidence: dict[str, Any] | None = None,
+    filtered_actions: list[Any] | None = None,
 ) -> str:
     expected = ", ".join(expected_actions) or "the expected action"
     if failure_kind == "no_data_fallback":
@@ -713,7 +944,48 @@ def _smoke_recommended_fix(
         return "Inspect retrieval evidence and action params; display actions must include product_ids or entity_ids from retrieved records before rerunning prompt tests."
     if failure_kind == "missing_response_terms":
         return "Tighten the prompt profile or recommendation logic so the response answers the requested recommendation detail, not only the record list."
+    if failure_kind == "missing_required_action_params":
+        missing = _filtered_missing_params(filtered_actions)
+        detail = f" ({', '.join(missing)})" if missing else ""
+        return f"Teach field extraction or ask one short follow-up for missing required action params{detail}, then rerun prompt tests."
+    if failure_kind == "blocked_action_filtered":
+        return "The action is blocked by a managed website barrier or runtime health rule. Use the discovered handoff action/boundary instead of claiming autonomous completion."
+    if failure_kind == "unsupported_action_filtered":
+        return f"The prompt emitted an unavailable action. Map the intent to one of {expected} or repair generated adapter actions before rerunning prompt tests."
     return "Inspect the prompt profile, retrieved records, adapter actions, and runtime logs, then rerun prompt tests."
+
+
+def _primary_smoke_filter_reason(filtered_actions: list[Any] | None) -> str:
+    reasons = [
+        str(item.get("reason") or "").strip()
+        for item in (filtered_actions or [])
+        if isinstance(item, dict) and str(item.get("reason") or "").strip()
+    ]
+    priority = (
+        "missing_required_params",
+        "blocked_by_policy",
+        "blocked_by_action_health",
+        "unsupported_action",
+    )
+    for reason in priority:
+        if reason in reasons:
+            return reason
+    return reasons[0] if reasons else ""
+
+
+def _filtered_missing_params(filtered_actions: list[Any] | None) -> list[str]:
+    missing: list[str] = []
+    for item in filtered_actions or []:
+        if not isinstance(item, dict):
+            continue
+        raw_params = item.get("missing_params")
+        if not isinstance(raw_params, (list, tuple)):
+            continue
+        for param in raw_params:
+            clean = str(param or "").strip()
+            if clean and clean not in missing:
+                missing.append(clean)
+    return missing
 
 
 def _client_detail(site_id: str) -> dict[str, Any]:
@@ -737,6 +1009,13 @@ def _save_report(site_id: str, report: dict[str, Any]) -> None:
         logger.warning("Initialization report could not be saved for %s: %s", site_id, exc)
 
 
+def _update_crawl_status_safe(site_id: str, status: str, message: str) -> None:
+    try:
+        admin_db.update_client_crawl_status(site_id, status, message)
+    except Exception as exc:
+        logger.warning("Setup crawl status could not be updated for %s: %s", site_id, exc)
+
+
 def _report(
     site_id: str,
     site_url: str,
@@ -745,16 +1024,23 @@ def _report(
     stages: list[dict[str, Any]],
     started_at: str,
     started: float,
+    *,
+    run_id: str = "",
+    timeout_seconds: int = 0,
+    error: str = "",
 ) -> dict[str, Any]:
     return {
         "source": INITIALIZATION_SOURCE,
         "status": status,
+        "run_id": run_id,
         "site_id": site_id,
         "site_url": site_url,
         "vertical_key": vertical_key,
         "started_at": started_at,
         "completed_at": _utc_now() if status != "running" else "",
         "duration_ms": (time.monotonic() - started) * 1000,
+        "timeout_seconds": max(0, int(timeout_seconds or 0)),
+        "error": error,
         "stages": [dict(stage) for stage in stages],
     }
 
@@ -777,7 +1063,7 @@ def _start_stage(stages: list[dict[str, Any]], name: str, message: str) -> None:
 
 
 def _overall_status(stages: list[dict[str, Any]]) -> str:
-    failed = [stage for stage in stages if stage.get("status") == "failed"]
+    failed = [stage for stage in stages if stage.get("status") in {"failed", "canceled", "timed_out"}]
     succeeded = [stage for stage in stages if stage.get("status") == "ok"]
     if failed and succeeded:
         return "partial"

@@ -57,6 +57,7 @@ function normalizeAction(action) {
 
 export async function executeConfiguredAction(action, runtimeConfig) {
   const normalizedAction = normalizeAction(action);
+  if (normalizedAction.action === ACTIONS.NAVIGATE_TO) return false;
   const actionConfig = runtimeConfig?.adapter?.actions?.[normalizedAction.action];
   if (!actionConfig || typeof actionConfig !== "object") return false;
   if (await isProductSpecificActionOnDifferentPage(normalizedAction)) return false;
@@ -95,7 +96,8 @@ export async function executeDomFallback(action, runtimeConfig) {
     return navigateToNamedPage(normalizedAction.parameters?.[ACTION_PARAMS.PAGE], runtimeConfig);
   }
   if (normalizedAction.action === ACTIONS.FILTER_PRODUCTS) {
-    return submitSearch(normalizedAction.parameters?.[ACTION_PARAMS.SEARCH_QUERY]);
+    const searchQuery = normalizedAction.parameters?.[ACTION_PARAMS.SEARCH_QUERY];
+    return submitSearch(searchQuery) || navigateToSearchPage(searchQuery, runtimeConfig);
   }
   if (normalizedAction.action === ACTIONS.RUN_DOM_SEQUENCE) {
     return runDomSequence(normalizedAction.parameters?.steps, normalizedAction.parameters, runtimeConfig);
@@ -143,15 +145,49 @@ function navigateToNamedPage(page, runtimeConfig) {
   return navigateToPath(routeMap[pageKey] || `/${pageKey}`);
 }
 
-function navigateToActionPage(actionConfig) {
-  const pagePath = sameOriginPath(actionConfig?.page_path || actionConfig?.pagePath || actionConfig?.source_path || actionConfig?.sourcePath);
+function navigateToSearchPage(query, runtimeConfig) {
+  const searchQuery = clean(query);
+  if (!searchQuery) return false;
+  const routeMap = {
+    ...DEFAULT_NAVIGATION_ROUTES,
+    ...(runtimeConfig?.adapter?.routes || {}),
+  };
+  const shopPath = routeMap.shop || DEFAULT_NAVIGATION_ROUTES.shop;
+  const pagePath = sameOriginPath(shopPath);
+  if (!pagePath) return false;
+
+  try {
+    const url = new URL(pagePath, window.location.origin);
+    url.searchParams.set("q", searchQuery);
+    return navigateToPath(`${url.pathname}${url.search}${url.hash}`);
+  } catch (_err) {
+    return false;
+  }
+}
+
+function navigateToActionPage(actionConfig, params = {}) {
+  const pagePath = actionPagePath(actionConfig, params);
   if (!pagePath || pagePath === currentPagePath()) return false;
   return navigateToPath(pagePath);
 }
 
 async function shouldNavigateToActionPage(action, actionConfig) {
   if (await isCurrentProductSpecificAction(action)) return false;
-  return navigateToActionPage(actionConfig);
+  return navigateToActionPage(actionConfig, action.parameters);
+}
+
+function actionPagePath(actionConfig, params = {}) {
+  const pagePath = sameOriginPath(actionConfig?.page_path || actionConfig?.pagePath || actionConfig?.source_path || actionConfig?.sourcePath);
+  const searchQuery = clean(params?.[ACTION_PARAMS.SEARCH_QUERY] || params?.query || params?.q);
+  if (!pagePath || !searchQuery) return pagePath;
+
+  try {
+    const url = new URL(pagePath, window.location.origin);
+    url.searchParams.set("q", searchQuery);
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch (_err) {
+    return pagePath;
+  }
 }
 
 function currentPagePath() {

@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { Activity, ChevronDown, Search, X } from 'lucide-react';
-import type { ConversationsResponse } from '../types';
+import type { ActionExecutionEvent, ConversationsResponse } from '../types';
 import type { ClientWorkspaceTabId } from '../verticals/types';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
@@ -268,6 +268,7 @@ function CrmConversationCard({
                 </div>
               </div>
             </div>
+            {turn.action_events?.length ? <TurnActionEvidence events={turn.action_events} /> : null}
           </div>
         ))}
         {session.turns.length > 1 ? (
@@ -278,6 +279,58 @@ function CrmConversationCard({
       </div>
     </article>
   );
+}
+
+function TurnActionEvidence({ events }: { events: ActionExecutionEvent[] }) {
+  return (
+    <div className="turn-action-evidence" aria-label="Browser action evidence">
+      {events.map((event, index) => (
+        <div key={`${event.request_id || event.action}-${event.occurred_at}-${index}`} className={`turn-action-event ${actionEventTone(event.status)}`}>
+          <div className="turn-action-event-head">
+            <strong>{event.action || 'ACTION'}</strong>
+            <StatusPill value={actionStatusLabel(event.status)} />
+            {event.url_changed ? <span>URL changed</span> : null}
+          </div>
+          <div className="turn-action-event-meta">
+            <span>{event.stage || 'browser'}</span>
+            {event.duration_ms ? <span>{number(event.duration_ms)} ms</span> : null}
+            {event.request_id ? <code>{event.request_id}</code> : null}
+          </div>
+          <small>{actionEventDestination(event)}</small>
+          {event.reason ? <small>{event.reason}</small> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function actionStatusLabel(status: string) {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'succeeded' || normalized === 'ok') return 'succeeded';
+  if (normalized === 'requested' || normalized === 'executing') return normalized;
+  if (normalized === 'needs_handoff') return 'handoff';
+  if (normalized === 'blocked') return 'blocked';
+  if (normalized === 'failed' || normalized === 'error') return 'failed';
+  return normalized || 'unknown';
+}
+
+function actionEventTone(status: string) {
+  const normalized = String(status || '').toLowerCase();
+  if (normalized === 'succeeded' || normalized === 'ok') return 'ok';
+  if (normalized === 'failed' || normalized === 'error' || normalized === 'blocked') return 'bad';
+  if (normalized === 'requested' || normalized === 'executing' || normalized === 'needs_handoff') return 'warn';
+  return 'idle';
+}
+
+function actionEventDestination(event: ActionExecutionEvent) {
+  const finalUrl = event.final_url || '';
+  if (!finalUrl) return 'No final URL reported';
+  try {
+    const url = new URL(finalUrl);
+    return `Final URL: ${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return `Final URL: ${finalUrl}`;
+  }
 }
 
 function sessionNeedsReview(session: ConversationsResponse['groups'][number]['sessions'][number]) {

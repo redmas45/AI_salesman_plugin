@@ -51,6 +51,7 @@ export interface ViewRendererProps {
   onTriggerCrawl: (siteId: string) => void;
   onAutoIntegrate: (siteId: string) => void;
   onRemoveClient: (siteId: string) => void;
+  onMoveClientToAvailable: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
   onUpdateTokenLimits: (siteId: string, tokenLimit: number, sessionTokenLimit: number) => Promise<void>;
   onOpenPasswordDialog: (client: Client) => void;

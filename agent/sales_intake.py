@@ -139,6 +139,8 @@ def sales_intake_prompt_context(vertical_key: str | None) -> str:
     lines = [
         "## Sales Intake Plan",
         f"Use these {vertical.label} intake questions to qualify the user's need before starting quote, booking, checkout, application, appointment, or lead-capture actions.",
+        "Before asking a question, extract and reuse facts from the current user message, conversation history, session profile, and live page context.",
+        "Do not ask for a value the user already gave. Ask only the exact missing field needed for the next supported website action.",
         "Ask one missing question at a time. Do not ask for passwords, OTPs, card numbers, full medical records, or sensitive documents in chat.",
     ]
     if vertical.risk_level == "high":

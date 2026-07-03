@@ -218,7 +218,7 @@ def _missing_params_notice(
     missing_params: list[str],
     readiness: dict[str, Any] | None,
 ) -> FilteredActionNotice:
-    question = str((readiness or {}).get("question") or _missing_param_question(missing_params))
+    question = _missing_param_question(missing_params)
     return FilteredActionNotice(
         action=action_name,
         reason=FILTER_REASON_MISSING_PARAMS,
@@ -245,7 +245,28 @@ def _unsupported_message(action_name: str, reason: str) -> str:
 
 
 def _missing_param_question(missing_params: list[str]) -> str:
-    return f"Please provide {', '.join(missing_params)}."
+    labels = [_missing_param_label(param) for param in missing_params if str(param or "").strip()]
+    if not labels:
+        return "Please provide the missing detail."
+    if labels == ["age of eldest member"]:
+        return "What is the age of the eldest member?"
+    if labels == ["city"]:
+        return "Which city should I use?"
+    if len(labels) == 1:
+        return f"Please provide {labels[0]}."
+    return f"Please provide {', '.join(labels[:-1])} and {labels[-1]}."
+
+
+def _missing_param_label(param: str) -> str:
+    key = str(param or "").strip().lower().replace("-", "_")
+    labels = {
+        "age_of_eldest_member": "age of eldest member",
+        "coverage_type": "coverage type",
+        "full_name": "full name",
+        "phone_number": "phone number",
+        "mobile_number": "phone number",
+    }
+    return labels.get(key, key.replace("_", " "))
 
 
 def _allowed_vertical_actions(site_id: str) -> set[str]:
@@ -340,7 +361,7 @@ def capability_summary(site_id: str) -> dict[str, Any]:
     ]
     unsupported = [
         cap["name"] for cap in capabilities
-        if not cap.get("supported", False)
+        if not cap.get("supported", False) and cap.get("blocking", True) is not False
     ]
 
     return {

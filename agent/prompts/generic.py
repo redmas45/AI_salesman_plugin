@@ -15,6 +15,7 @@ GENERIC_RESPONSE_SCHEMA = """{
   "response_text": "<concise source-backed answer>",
   "intent": "<discovery | compare | lead_capture | handoff | navigate | chitchat | unknown>",
   "confidence": <0.0 to 1.0>,
+  "answer_scope": "<grounded_fact | buying_guidance | website_action | unsupported_or_offsite>",
   "ui_actions": [
     {
       "action": "<allowed action>",
@@ -39,9 +40,11 @@ def build_generic_system_prompt(
     sections = [
         _platform_policy(vertical.risk_level),
         _vertical_block(vertical, actions),
+        _conversation_intelligence_block(vertical.key),
         _intake_block(sales_intake_prompt_context(vertical.key)),
         _capability_block(capability_prompt_context(site_id)),
         _custom_prompt_block(custom_context),
+        _sales_relevance_block(),
         _profile_block(profile_context),
         _page_context_block(page_context),
         _knowledge_block(knowledge_context),
@@ -64,6 +67,7 @@ def _platform_policy(risk_level: str) -> str:
         "Do not invent prices, terms, availability, eligibility, professional advice, or policy details.",
         "If data is missing, say what is missing and offer a safe next step.",
         "If the user asks to go to, open, visit, switch to, or navigate to a site page, return NAVIGATE_TO instead of explaining the page.",
+        "If conversation history contains BROWSER_ACTION_RESULTS, treat it as browser execution proof. If the latest action failed or was blocked, acknowledge that and choose a safe recovery instead of claiming success.",
         "Return valid JSON only.",
     ]
     if risk_level == "high":
@@ -97,7 +101,7 @@ def _vertical_playbook(vertical_key: str) -> str:
         "insurance": (
             "\nInsurance behavior: act like a source-grounded insurance sales advisor. Compare plan type, premium visibility, sum insured/coverage amount, waiting periods, exclusions, deductibles/copay, riders/add-ons, claim process, renewal steps, documents, and insurer/support details only when those facts are retrieved. "
             "If premiums are missing, do not treat zero as a real premium; say the website requires quote details and use START_QUOTE, OPEN_POLICY, OPEN_CLAIM_FLOW, OPEN_RENEWAL_FLOW, HANDOFF_TO_AGENT, SHOW_ENTITIES, COMPARE_ENTITIES, SORT_ENTITIES, or NAVIGATE_TO when allowed. "
-            "Ask only the minimum next intake question needed for the website flow, such as coverage type, age band, family size, budget, city, phone, or claim/renewal intent. Never promise eligibility, approval, coverage, claim payout, medical acceptance, or regulatory outcome."
+            "Ask only the minimum next intake question needed for the website flow, such as coverage type, age band, family size, budget, city, phone, or claim/renewal intent. Reuse direct facts the user already gave, for example city, age, self/family, plan type, and budget, instead of asking again. Never promise eligibility, approval, coverage, claim payout, medical acceptance, or regulatory outcome."
         ),
         "travel": (
             "\nTravel behavior: compare destinations, activities, tickets, dates, availability windows, inclusions, pickup/location clues, cancellation clues, and itinerary fit from source data. Use availability/search/booking/navigation actions when asked to do site work, and never claim a booking is complete unless the website confirms it."
@@ -119,6 +123,20 @@ def _vertical_playbook(vertical_key: str) -> str:
         vertical_key,
         "\nGeneral sales behavior: identify the visitor's goal, retrieve matching records, explain tradeoffs from source data, navigate to relevant pages, and start supported website actions. Do not claim completion beyond website confirmation.",
     )
+
+
+def _conversation_intelligence_block(vertical_key: str) -> str:
+    lines = [
+        "## Conversation Intelligence",
+        "- Treat the latest user message, previous turns, session profile, and live page context as structured facts before asking anything.",
+        "- Use the Website Capability Policy and action field schema as the source of truth for required action params.",
+        "- Never ask again for a required field already supplied in normal language; fill the matching action param and continue.",
+        "- Match natural language to the exact discovered field labels, input types, placeholders, and select/radio options for every vertical.",
+        "- If the user asks to buy, get, take, start, apply for, book, or request something the website supports, start that supported website flow instead of navigating to home.",
+        "- If a supported action still lacks required params after extraction, ask one short question for only the exact missing field.",
+        '- Example: if a discovered action requires fields "Start location", "End location", "Service date", and "Party size", and the user supplies those values, emit the action with exactly those params instead of asking again.',
+    ]
+    return "\n".join(lines)
 
 
 def _capability_block(capability_context: str) -> str:
@@ -155,10 +173,21 @@ def _knowledge_block(knowledge_context: str) -> str:
     return f"## Retrieved Knowledge\n{text}"
 
 
+def _sales_relevance_block() -> str:
+    return (
+        "## Sales Relevance And Grounding\n"
+        "- Maya is a sales assistant for this exact website, not a general research chatbot.\n"
+        "- Answer buying-relevant questions about products, plans, services, policies, specs, reviews, pricing, availability, documents, flow steps, or comparisons only from retrieved/source/client data.\n"
+        "- If the user asks for deep off-site theory, internals, architecture, research, legal/medical/financial conclusions, or anything not supported by retrieved website data, give a brief boundary and offer to compare website-confirmed buying facts instead.\n"
+        "- Do not expose chain-of-thought, hidden scoring, or private reasoning. Provide only the concise customer-facing answer.\n"
+        "- Set answer_scope to grounded_fact for source-backed facts, buying_guidance for practical recommendations, website_action for navigation/forms/actions, and unsupported_or_offsite for bounded unsupported questions."
+    )
+
+
 def _response_block() -> str:
     return (
         "## Response Format\n"
-        "Navigation example: {\"response_text\":\"Opening plans.\",\"intent\":\"navigate\",\"confidence\":1.0,\"ui_actions\":[{\"action\":\"NAVIGATE_TO\",\"params\":{\"page\":\"plans\"}}]}\n"
+        "Navigation example: {\"response_text\":\"Opening plans.\",\"intent\":\"navigate\",\"confidence\":1.0,\"answer_scope\":\"website_action\",\"ui_actions\":[{\"action\":\"NAVIGATE_TO\",\"params\":{\"page\":\"plans\"}}]}\n"
         "Return this JSON object only:\n"
         f"```json\n{GENERIC_RESPONSE_SCHEMA}\n```"
     )
@@ -181,6 +210,11 @@ def _item_line(item: dict[str, Any]) -> str:
         parts.append(f"Pricing: {pricing}")
     if availability:
         parts.append(f"Availability: {availability}")
+
+    attributes = _compact_json(item.get("attributes_json"))
+    if attributes:
+        parts.append(f"Attributes: {attributes}")
+
     if url:
         parts.append(f"Source: {url}")
     return " | ".join(parts)

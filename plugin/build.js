@@ -6,11 +6,11 @@ const IIFE_FORMAT = "iife";
 const bundles = [
   {
     entryPoints: ["src/index.js"],
-    outfile: "shopbot.js",
+    outfile: "mayabot.js",
   },
   {
     entryPoints: ["src/adapter/index.js"],
-    outfile: "shopbot-adapter.js",
+    outfile: "mayabot-adapter.js",
   },
 ];
 

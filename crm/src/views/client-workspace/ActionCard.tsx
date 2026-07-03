@@ -1,4 +1,4 @@
-import { Loader2, WifiOff, type LucideIcon } from 'lucide-react';
+import { ArrowRight, Loader2, WifiOff, type LucideIcon } from 'lucide-react';
 
 interface ActionCardProps {
   icon: LucideIcon;
@@ -51,10 +51,10 @@ export function ActionCard({
           disabled={disabled}
           onClick={onClick}
           className={cx(
-            'inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40',
+            'inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-md px-3 text-sm font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-40',
             primary
-              ? 'bg-[#3b6ef8] text-white hover:bg-[#2d5be3]'
-              : 'border border-[#dce6f5] bg-white text-[#172033] hover:border-[#93b4fd] hover:text-[#3b6ef8]',
+              ? 'bg-[#172033] text-white shadow-[0_10px_24px_rgba(23,32,51,0.18)] hover:-translate-y-0.5 hover:bg-[#263247] hover:shadow-[0_14px_30px_rgba(23,32,51,0.2)]'
+              : 'border border-[#dce6f5] bg-white text-[#172033] hover:border-[#93b4fd] hover:bg-[#f8fbff] hover:text-[#3b6ef8]',
           )}
         >
           {running ? (
@@ -63,7 +63,10 @@ export function ActionCard({
               Running...
             </>
           ) : (
-            buttonLabel
+            <>
+              <span>{buttonLabel}</span>
+              {primary ? <ArrowRight size={14} aria-hidden="true" /> : null}
+            </>
           )}
         </button>
       )}

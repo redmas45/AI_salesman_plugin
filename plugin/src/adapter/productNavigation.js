@@ -17,7 +17,20 @@ const CATALOG_ARRAY_FIELDS = Object.freeze(["products", "data", "items", "result
 const PRODUCT_ID_FIELDS = Object.freeze(["id", "product_id", "handle", "sku"]);
 const PRODUCT_NAME_FIELDS = Object.freeze(["name", "title"]);
 const PRODUCT_URL_FIELDS = Object.freeze(["url", "href", "permalink", "product_url"]);
-const PRODUCT_IMAGE_FIELDS = Object.freeze(["image_url", "image", "thumbnail", "featured_image"]);
+const PRODUCT_IMAGE_FIELDS = Object.freeze([
+  "image_url",
+  "imageUrl",
+  "image_src",
+  "imageSrc",
+  "image",
+  "images",
+  "media",
+  "thumbnail",
+  "thumbnail_url",
+  "featured_image",
+  "featuredImage",
+  "featured_image_url",
+]);
 const HANDLE_PATTERN = /^[a-z0-9][a-z0-9-]*$/i;
 const PRODUCT_ROUTE_PREFIX = "/product/";
 
@@ -41,16 +54,59 @@ function firstValue(raw, fields) {
 }
 
 function imageFrom(raw) {
-  const direct = firstValue(raw, PRODUCT_IMAGE_FIELDS);
-  if (direct) return direct;
-
-  const image = raw?.image || raw?.featured_image;
-  if (image && typeof image === "object") return clean(image.src || image.url);
-
-  if (Array.isArray(raw?.images)) {
-    return clean(raw.images[0]?.src || raw.images[0]?.url || raw.images[0]);
+  for (const field of PRODUCT_IMAGE_FIELDS) {
+    const candidate = imageCandidateFrom(raw?.[field]);
+    if (candidate) return candidate;
   }
   return "";
+}
+
+function imageCandidateFrom(value) {
+  if (!value) return "";
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const candidate = imageCandidateFrom(item);
+      if (candidate) return candidate;
+    }
+    return "";
+  }
+
+  if (typeof value === "object") {
+    for (const field of [
+      "src",
+      "url",
+      "image_url",
+      "imageUrl",
+      "image_src",
+      "imageSrc",
+      "thumbnail",
+      "thumbnail_url",
+      "featured_image",
+      "featuredImage",
+      "featured_image_url",
+    ]) {
+      const candidate = imageCandidateFrom(value[field]);
+      if (candidate) return candidate;
+    }
+    return "";
+  }
+
+  return safeImageUrl(value);
+}
+
+function safeImageUrl(value) {
+  const raw = clean(value);
+  if (!raw || /^javascript:/i.test(raw)) return "";
+  if (/^data:image\//i.test(raw)) return raw;
+
+  try {
+    const url = new URL(raw, window.location.origin);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    return url.toString();
+  } catch (_err) {
+    return "";
+  }
 }
 
 function sameOriginPath(value) {

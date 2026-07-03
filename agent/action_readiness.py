@@ -120,13 +120,13 @@ def _sequence_required_params(action_config: dict[str, Any]) -> list[str]:
 
 
 def _question_for_action(vertical_key: str, action_name: str, required_params: tuple[str, ...]) -> str:
+    if required_params:
+        return f"Please provide {', '.join(_humanize_param(param) for param in required_params)}."
     for question in intake_questions_for(vertical_key):
         actions = {normalize_action_name(action) for action in question.get("actions", [])}
         if action_name in actions:
             return str(question.get("question") or "")
-    if not required_params:
-        return ""
-    return f"Please provide {', '.join(_humanize_param(param) for param in required_params)}."
+    return ""
 
 
 def _reason_for_action(vertical_key: str, action_name: str) -> str:

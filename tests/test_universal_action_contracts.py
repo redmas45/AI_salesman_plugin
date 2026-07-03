@@ -54,6 +54,7 @@ def test_low_sensitivity_result_forms_submit_across_domains(action_name: str, la
 
     assert form_submit_mode(action_name, form) == "submit"
     assert steps[-1] == {"op": "submit", "selector": "button.primary-submit"}
+    assert all(step.get("optional") is False for step in steps if step.get("param"))
 
 
 @pytest.mark.parametrize(("action_name", "label"), RESULT_FORM_ACTIONS)

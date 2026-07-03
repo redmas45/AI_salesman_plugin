@@ -88,6 +88,41 @@ def test_default_client_seed_can_be_disabled_for_empty_install_tests(monkeypatch
     assert calls == ["admin_schema"]
 
 
+def test_cleanup_synthetic_demo_clients_hides_available_example_domains(monkeypatch):
+    calls = []
+
+    class FakeCursor:
+        rowcount = 2
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, query, params):
+            calls.append(("execute", query, params))
+            return FakeCursor()
+
+        def commit(self):
+            calls.append(("commit",))
+
+    monkeypatch.setattr(client_db, "init_admin_schema", lambda: calls.append(("schema",)))
+    monkeypatch.setattr(client_db, "_connect", lambda: FakeConnection())
+
+    removed = client_db.cleanup_synthetic_demo_clients()
+
+    assert removed == 2
+    assert calls[0] == ("schema",)
+    assert calls[-1] == ("commit",)
+    query, params = calls[1][1], calls[1][2]
+    assert "UPDATE hub_clients" in query
+    assert params[0] == client_db.CLIENT_STATUS_DELETED
+    assert params[1] == client_db.CLIENT_STATUS_AVAILABLE
+    assert "example" in params[2]
+
+
 def test_local_cors_allowlist_uses_hub_dev_origins_not_demo_sites(monkeypatch):
     monkeypatch.setattr(client_db.config, "CORS_ORIGINS", ["*"])
     monkeypatch.setattr(client_db.config, "DEPLOYMENT_MODE", "local")
@@ -106,6 +141,7 @@ def test_lifespan_empty_local_startup_does_not_seed_default_client_or_crawl(monk
     calls = []
 
     monkeypatch.setattr(api_main.config, "ENSURE_DEFAULT_CLIENT_ON_STARTUP", False)
+    monkeypatch.setattr(api_main.config, "CLEAN_SYNTHETIC_DEMO_CLIENTS_ON_STARTUP", False)
     monkeypatch.setattr(api_main.config, "CRAWL_ON_STARTUP", False)
     monkeypatch.setattr(api_main.config, "CRAWL_PERIODIC_ENABLED", False)
     monkeypatch.setattr(api_main.config, "CURRENT_URL", "https://policy.example.com")
@@ -137,6 +173,7 @@ def test_lifespan_with_empty_current_url_never_starts_crawler(monkeypatch):
     calls = []
 
     monkeypatch.setattr(api_main.config, "ENSURE_DEFAULT_CLIENT_ON_STARTUP", False)
+    monkeypatch.setattr(api_main.config, "CLEAN_SYNTHETIC_DEMO_CLIENTS_ON_STARTUP", False)
     monkeypatch.setattr(api_main.config, "CRAWL_ON_STARTUP", True)
     monkeypatch.setattr(api_main.config, "CRAWL_PERIODIC_ENABLED", True)
     monkeypatch.setattr(api_main.config, "CURRENT_URL", "")
@@ -251,6 +288,53 @@ def test_crm_activate_client_does_not_start_integration(monkeypatch):
     body = res.json()
     assert body["status"] == "activated"
     assert body["client"]["status"] == client_db.CLIENT_STATUS_LIVE
+
+
+def test_remove_client_marks_deleted_not_available(monkeypatch):
+    updates = []
+
+    monkeypatch.setattr(client_db, "_update_client_status", lambda site_id, status: updates.append((site_id, status)))
+
+    client_db.remove_client("old_auto_install")
+
+    assert updates == [("old_auto_install", client_db.CLIENT_STATUS_DELETED)]
+
+
+def test_crm_remove_client_uses_delete_semantics(monkeypatch):
+    monkeypatch.setenv("CRM_ADMIN_TOKEN", "test-token-strong")
+    removed = []
+
+    monkeypatch.setattr(crm.admin_db, "remove_client", lambda site_id: removed.append(site_id))
+
+    res = TestClient(app).delete(
+        "/v1/admin/clients/old_auto_install",
+        headers={"x-crm-admin-token": "test-token-strong"},
+    )
+
+    assert res.status_code == 200
+    assert res.json()["status"] == "ok"
+    assert removed == ["old_auto_install"]
+
+
+def test_crm_move_client_to_available_has_separate_endpoint(monkeypatch):
+    monkeypatch.setenv("CRM_ADMIN_TOKEN", "test-token-strong")
+    moved = []
+
+    def fake_move(site_id: str):
+        moved.append(site_id)
+        return {"site_id": site_id, "status": client_db.CLIENT_STATUS_AVAILABLE}
+
+    monkeypatch.setattr(crm.admin_db, "move_client_to_available", fake_move)
+
+    res = TestClient(app).post(
+        "/v1/admin/clients/current_site/available",
+        headers={"x-crm-admin-token": "test-token-strong"},
+    )
+
+    assert res.status_code == 200
+    assert res.json()["status"] == client_db.CLIENT_STATUS_AVAILABLE
+    assert res.json()["client"]["status"] == client_db.CLIENT_STATUS_AVAILABLE
+    assert moved == ["current_site"]
 
 
 def test_crm_crawl_rejects_available_client(monkeypatch):

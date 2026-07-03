@@ -4,6 +4,7 @@ import { fetchHubEntitiesByIds, resolveEntityDetailUrl } from "./entityResolver"
 const TYPE_WORD_LIMIT = 2;
 const ASC_MISSING_NUMBER = Number.POSITIVE_INFINITY;
 const DESC_MISSING_NUMBER = Number.NEGATIVE_INFINITY;
+const MAX_EVIDENCE_IDS = 12;
 let currentEntities = [];
 let currentTitle = DEFAULT_ENTITY_RECOMMENDATION_TITLE;
 
@@ -26,17 +27,17 @@ function readableType(value) {
 }
 
 function ensureStyles() {
-  if (document.getElementById("shopbot-entity-overlay-styles")) return;
+  if (document.getElementById("mayabot-entity-overlay-styles")) return;
 
   const style = document.createElement("style");
-  style.id = "shopbot-entity-overlay-styles";
+  style.id = "mayabot-entity-overlay-styles";
   style.textContent = `
-    #shopbot-entity-panel {
+    #mayabot-entity-panel {
       position: fixed;
       left: 50%;
       bottom: 96px;
       z-index: 2147483638;
-      width: min(calc(100vw - 32px), var(--shopbot-entity-panel-width, 760px));
+      width: min(calc(100vw - 32px), var(--mayabot-entity-panel-width, 760px));
       max-height: min(72vh, 620px);
       transform: translate(-50%, calc(100% + 32px));
       opacity: 0;
@@ -52,16 +53,16 @@ function ensureStyles() {
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
     }
-    #shopbot-entity-panel.active {
+    #mayabot-entity-panel.active {
       transform: translate(-50%, 0);
       opacity: 1;
       pointer-events: auto;
     }
-    #shopbot-entity-panel.count-1 { --shopbot-entity-panel-width: 420px; }
-    #shopbot-entity-panel.count-2 { --shopbot-entity-panel-width: 660px; }
-    #shopbot-entity-panel.count-3,
-    #shopbot-entity-panel.count-many { --shopbot-entity-panel-width: 980px; }
-    .shopbot-entity-header {
+    #mayabot-entity-panel.count-1 { --mayabot-entity-panel-width: 420px; }
+    #mayabot-entity-panel.count-2 { --mayabot-entity-panel-width: 660px; }
+    #mayabot-entity-panel.count-3,
+    #mayabot-entity-panel.count-many { --mayabot-entity-panel-width: 980px; }
+    .mayabot-entity-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -69,7 +70,7 @@ function ensureStyles() {
       padding: 14px 16px;
       border-bottom: 1px solid rgba(22, 22, 21, 0.1);
     }
-    .shopbot-entity-title {
+    .mayabot-entity-title {
       margin: 0;
       color: #161615;
       font-size: 15px;
@@ -77,7 +78,7 @@ function ensureStyles() {
       line-height: 1.25;
       letter-spacing: 0;
     }
-    .shopbot-entity-close {
+    .mayabot-entity-close {
       display: grid;
       place-items: center;
       width: 34px;
@@ -91,15 +92,15 @@ function ensureStyles() {
       font-size: 20px;
       line-height: 1;
     }
-    .shopbot-entity-grid {
+    .mayabot-entity-grid {
       display: grid;
-      grid-template-columns: repeat(var(--shopbot-entity-card-count, 2), minmax(0, 1fr));
+      grid-template-columns: repeat(var(--mayabot-entity-card-count, 2), minmax(0, 1fr));
       gap: 12px;
       padding: 14px;
       overflow: auto;
       scrollbar-width: thin;
     }
-    .shopbot-entity-card {
+    .mayabot-entity-card {
       display: grid;
       grid-template-rows: auto auto auto 1fr auto;
       gap: 10px;
@@ -109,7 +110,7 @@ function ensureStyles() {
       background: #ffffff;
       padding: 12px;
     }
-    .shopbot-entity-media {
+    .mayabot-entity-media {
       display: grid;
       place-items: center;
       min-height: 116px;
@@ -117,13 +118,13 @@ function ensureStyles() {
       background: #f1f2ee;
       overflow: hidden;
     }
-    .shopbot-entity-media img {
+    .mayabot-entity-media img {
       width: 100%;
       height: 150px;
       object-fit: contain;
       padding: 8px;
     }
-    .shopbot-entity-badge {
+    .mayabot-entity-badge {
       display: grid;
       place-items: center;
       width: 100%;
@@ -135,7 +136,7 @@ function ensureStyles() {
       text-align: center;
       text-transform: capitalize;
     }
-    .shopbot-entity-name {
+    .mayabot-entity-name {
       margin: 0;
       min-height: 38px;
       color: #161615;
@@ -147,7 +148,7 @@ function ensureStyles() {
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
-    .shopbot-entity-meta {
+    .mayabot-entity-meta {
       margin: 0;
       color: #686660;
       font-size: 12px;
@@ -155,7 +156,7 @@ function ensureStyles() {
       overflow-wrap: anywhere;
       text-transform: capitalize;
     }
-    .shopbot-entity-summary {
+    .mayabot-entity-summary {
       margin: 0;
       color: #3d3933;
       font-size: 13px;
@@ -165,12 +166,12 @@ function ensureStyles() {
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
-    .shopbot-entity-facts {
+    .mayabot-entity-facts {
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
     }
-    .shopbot-entity-fact {
+    .mayabot-entity-fact {
       border: 1px solid rgba(22, 22, 21, 0.1);
       border-radius: 999px;
       padding: 5px 8px;
@@ -181,12 +182,12 @@ function ensureStyles() {
       line-height: 1;
       overflow-wrap: anywhere;
     }
-    .shopbot-entity-actions {
+    .mayabot-entity-actions {
       display: flex;
       justify-content: flex-end;
       align-self: end;
     }
-    .shopbot-entity-actions button {
+    .mayabot-entity-actions button {
       min-height: 36px;
       min-width: 86px;
       border: 1px solid rgba(22, 22, 21, 0.12);
@@ -198,38 +199,38 @@ function ensureStyles() {
       font-weight: 760;
       line-height: 1;
     }
-    .shopbot-entity-empty {
+    .mayabot-entity-empty {
       margin: 0;
       padding: 14px;
       color: #686660;
       font-size: 14px;
     }
     @media (max-width: 720px) {
-      #shopbot-entity-panel {
+      #mayabot-entity-panel {
         bottom: 86px;
         width: min(calc(100vw - 20px), 520px);
       }
-      #shopbot-entity-panel.count-2,
-      #shopbot-entity-panel.count-3,
-      #shopbot-entity-panel.count-many {
-        --shopbot-entity-card-count: 2;
+      #mayabot-entity-panel.count-2,
+      #mayabot-entity-panel.count-3,
+      #mayabot-entity-panel.count-many {
+        --mayabot-entity-card-count: 2;
       }
-      .shopbot-entity-grid {
+      .mayabot-entity-grid {
         padding: 12px;
       }
-      .shopbot-entity-media img {
+      .mayabot-entity-media img {
         height: 132px;
       }
     }
     @media (max-width: 430px) {
-      #shopbot-entity-panel {
+      #mayabot-entity-panel {
         bottom: 82px;
       }
-      #shopbot-entity-panel.count-1,
-      #shopbot-entity-panel.count-2,
-      #shopbot-entity-panel.count-3,
-      #shopbot-entity-panel.count-many {
-        --shopbot-entity-card-count: 1;
+      #mayabot-entity-panel.count-1,
+      #mayabot-entity-panel.count-2,
+      #mayabot-entity-panel.count-3,
+      #mayabot-entity-panel.count-many {
+        --mayabot-entity-card-count: 1;
       }
     }
   `;
@@ -239,20 +240,20 @@ function ensureStyles() {
 function ensurePanel() {
   ensureStyles();
 
-  let panel = document.getElementById("shopbot-entity-panel");
+  let panel = document.getElementById("mayabot-entity-panel");
   if (panel) return panel;
 
   panel = document.createElement("div");
-  panel.id = "shopbot-entity-panel";
+  panel.id = "mayabot-entity-panel";
   panel.setAttribute("aria-live", "polite");
   panel.innerHTML = `
-    <div class="shopbot-entity-header">
-      <h2 class="shopbot-entity-title">${DEFAULT_ENTITY_RECOMMENDATION_TITLE}</h2>
-      <button class="shopbot-entity-close" type="button" aria-label="Close recommendations">&times;</button>
+    <div class="mayabot-entity-header">
+      <h2 class="mayabot-entity-title">${DEFAULT_ENTITY_RECOMMENDATION_TITLE}</h2>
+      <button class="mayabot-entity-close" type="button" aria-label="Close recommendations">&times;</button>
     </div>
-    <div class="shopbot-entity-grid"></div>
+    <div class="mayabot-entity-grid"></div>
   `;
-  panel.querySelector(".shopbot-entity-close").addEventListener("click", () => {
+  panel.querySelector(".mayabot-entity-close").addEventListener("click", () => {
     panel.classList.remove("active");
   });
   document.body.appendChild(panel);
@@ -272,6 +273,27 @@ function cardCount(count) {
   return 3;
 }
 
+function overlayResult(requestedIds, entities, reason = "") {
+  const renderedIds = (Array.isArray(entities) ? entities : [])
+    .map((entity) => String(entity?.id ?? "").trim())
+    .filter(Boolean);
+  const renderedCount = renderedIds.length;
+  const requestedCount = requestedIds.length;
+  const status = renderedCount > 0 ? "succeeded" : "failed";
+  return {
+    status,
+    stage: "entity_overlay",
+    reason: reason || (status === "succeeded" ? "" : "no_matching_entities_rendered"),
+    evidence: {
+      requested_entity_count: requestedCount,
+      rendered_entity_count: renderedCount,
+      missing_entity_count: Math.max(requestedCount - renderedCount, 0),
+      requested_entity_ids: requestedIds.slice(0, MAX_EVIDENCE_IDS).join(","),
+      rendered_entity_ids: renderedIds.slice(0, MAX_EVIDENCE_IDS).join(","),
+    },
+  };
+}
+
 function entityFacts(entity) {
   return [
     entity.displayPrice,
@@ -287,14 +309,14 @@ function entityFacts(entity) {
 function entityMediaMarkup(entity) {
   if (entity.imageUrl) {
     return `
-      <div class="shopbot-entity-media">
+      <div class="mayabot-entity-media">
         <img src="${escapeHtml(entity.imageUrl)}" alt="${escapeHtml(entity.title)}">
       </div>
     `;
   }
   return `
-    <div class="shopbot-entity-media">
-      <div class="shopbot-entity-badge">${escapeHtml(readableType(entity.entityType))}</div>
+    <div class="mayabot-entity-media">
+      <div class="mayabot-entity-badge">${escapeHtml(readableType(entity.entityType))}</div>
     </div>
   `;
 }
@@ -303,8 +325,8 @@ function entityFactsMarkup(entity) {
   const facts = entityFacts(entity);
   if (!facts.length) return "";
   return `
-    <div class="shopbot-entity-facts">
-      ${facts.map((fact) => `<span class="shopbot-entity-fact">${escapeHtml(fact)}</span>`).join("")}
+    <div class="mayabot-entity-facts">
+      ${facts.map((fact) => `<span class="mayabot-entity-fact">${escapeHtml(fact)}</span>`).join("")}
     </div>
   `;
 }
@@ -312,7 +334,7 @@ function entityFactsMarkup(entity) {
 function entityActionMarkup(entity) {
   if (!entity.url) return "";
   return `
-    <div class="shopbot-entity-actions">
+    <div class="mayabot-entity-actions">
       <button type="button" data-view-entity="${escapeHtml(entity.id)}">Open</button>
     </div>
   `;
@@ -320,19 +342,19 @@ function entityActionMarkup(entity) {
 
 function renderEntities(entities, title) {
   const panel = ensurePanel();
-  const grid = panel.querySelector(".shopbot-entity-grid");
-  const heading = panel.querySelector(".shopbot-entity-title");
+  const grid = panel.querySelector(".mayabot-entity-grid");
+  const heading = panel.querySelector(".mayabot-entity-title");
   const count = entities.length;
   currentEntities = Array.isArray(entities) ? [...entities] : [];
   currentTitle = title || DEFAULT_ENTITY_RECOMMENDATION_TITLE;
 
   panel.classList.remove("count-1", "count-2", "count-3", "count-many");
   panel.classList.add(countClass(count));
-  panel.style.setProperty("--shopbot-entity-card-count", String(cardCount(count)));
+  panel.style.setProperty("--mayabot-entity-card-count", String(cardCount(count)));
   heading.textContent = currentTitle;
 
   if (!count) {
-    grid.innerHTML = `<p class="shopbot-entity-empty">No matching records are currently available.</p>`;
+    grid.innerHTML = `<p class="mayabot-entity-empty">No matching records are currently available.</p>`;
     panel.classList.add("active");
     collapseVoiceBubble();
     return;
@@ -342,11 +364,11 @@ function renderEntities(entities, title) {
     .map((entity) => {
       const safeId = escapeHtml(entity.id);
       return `
-        <article class="shopbot-entity-card" data-entity-id="${safeId}">
+        <article class="mayabot-entity-card" data-entity-id="${safeId}">
           ${entityMediaMarkup(entity)}
-          <h3 class="shopbot-entity-name">${escapeHtml(entity.title)}</h3>
-          <p class="shopbot-entity-meta">${escapeHtml(entity.subtitle || readableType(entity.entityType))}</p>
-          <p class="shopbot-entity-summary">${escapeHtml(entity.summary || entity.body || "Details are available on the website.")}</p>
+          <h3 class="mayabot-entity-name">${escapeHtml(entity.title)}</h3>
+          <p class="mayabot-entity-meta">${escapeHtml(entity.subtitle || readableType(entity.entityType))}</p>
+          <p class="mayabot-entity-summary">${escapeHtml(entity.summary || entity.body || "Details are available on the website.")}</p>
           ${entityFactsMarkup(entity)}
           ${entityActionMarkup(entity)}
         </article>
@@ -381,8 +403,8 @@ function openUrl(url) {
 
 function collapseVoiceBubble() {
   window.setTimeout(() => {
-    const chat = document.getElementById("shopbot-chat");
-    const messages = document.getElementById("shopbot-msgs");
+    const chat = document.getElementById("mayabot-chat");
+    const messages = document.getElementById("mayabot-msgs");
     if (messages) messages.innerHTML = "";
     if (chat) chat.classList.remove("visible");
   }, OVERLAY_COLLAPSE_DELAY_MS);
@@ -394,19 +416,34 @@ export async function openEntityDetail(entityId) {
 }
 
 export async function showEntityOverlay(entityIds, title = DEFAULT_ENTITY_RECOMMENDATION_TITLE) {
+  const requestedIds = entityIdsFromParams({ [ACTION_PARAMS.ENTITY_IDS]: entityIds });
+  if (!requestedIds.length) {
+    renderEntities([], title);
+    return overlayResult([], [], "missing_entity_ids");
+  }
+
   try {
-    const entities = await fetchHubEntitiesByIds(entityIds);
+    const entities = await fetchHubEntitiesByIds(requestedIds);
     renderEntities(entities, title);
-    return true;
+    return overlayResult(requestedIds, entities);
   } catch (error) {
     console.warn("[AI Hub Widget] Entity overlay failed:", error);
     renderEntities([], title);
-    return true;
+    return overlayResult(requestedIds, [], "entity_overlay_fetch_failed");
   }
 }
 
 export function entityIdsFromParams(params) {
-  return params[ACTION_PARAMS.ENTITY_IDS] || params.ids || params.items || [];
+  const ids = params[ACTION_PARAMS.ENTITY_IDS] || params.ids || params.items || [];
+  const seen = new Set();
+  return (Array.isArray(ids) ? ids : [])
+    .map((id) => String(id ?? "").trim())
+    .filter(Boolean)
+    .filter((id) => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
 }
 
 export function sortEntityOverlay(params = {}) {

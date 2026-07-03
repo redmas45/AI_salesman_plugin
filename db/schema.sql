@@ -1,4 +1,5 @@
-CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS vector SCHEMA public;
+CREATE EXTENSION IF NOT EXISTS pg_trgm SCHEMA public;
 
 CREATE TABLE IF NOT EXISTS categories (
     id      BIGINT PRIMARY KEY,
@@ -26,6 +27,7 @@ CREATE TABLE IF NOT EXISTS products (
     image_url       TEXT,
     is_active       INTEGER DEFAULT 1,
     embedding       vector(384),
+    search_vector   TSVECTOR,
     FOREIGN KEY (category_id) REFERENCES categories(id)
 );
 
@@ -60,6 +62,9 @@ CREATE INDEX IF NOT EXISTS idx_products_price ON products(price);
 CREATE INDEX IF NOT EXISTS idx_products_color ON products(color);
 CREATE INDEX IF NOT EXISTS idx_products_rating ON products(rating DESC);
 CREATE INDEX IF NOT EXISTS idx_products_embedding ON products USING hnsw (embedding vector_cosine_ops);
+ALTER TABLE products ADD COLUMN IF NOT EXISTS search_vector TSVECTOR;
+CREATE INDEX IF NOT EXISTS idx_products_search_vector ON products USING gin (search_vector);
+CREATE INDEX IF NOT EXISTS idx_products_name_trgm ON products USING gin (name gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_catalog_source_products_source ON catalog_source_products(source_name, is_active);
 
 CREATE TABLE IF NOT EXISTS cart (
@@ -134,6 +139,7 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     risk_tags_json      TEXT NOT NULL DEFAULT '[]',
     is_active           INTEGER NOT NULL DEFAULT 1,
     embedding           vector(384),
+    search_vector       TSVECTOR,
     last_seen_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -145,6 +151,54 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_items_source
     ON knowledge_items(source_id, is_active);
 CREATE INDEX IF NOT EXISTS idx_knowledge_items_embedding
     ON knowledge_items USING hnsw (embedding vector_cosine_ops);
+ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS search_vector TSVECTOR;
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_search_vector
+    ON knowledge_items USING gin (search_vector);
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_title_trgm
+    ON knowledge_items USING gin (title gin_trgm_ops);
+
+CREATE TABLE IF NOT EXISTS tenant_data_versions (
+    scope       TEXT PRIMARY KEY,
+    version     BIGINT NOT NULL DEFAULT 1,
+    reason      TEXT NOT NULL DEFAULT '',
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO tenant_data_versions (scope, version, reason)
+VALUES ('runtime_data', 1, 'initial')
+ON CONFLICT (scope) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS answer_cache (
+    id                    BIGSERIAL PRIMARY KEY,
+    normalized_question   TEXT NOT NULL,
+    question              TEXT NOT NULL,
+    question_embedding    vector(384),
+    answer_text           TEXT NOT NULL,
+    answer_scope          TEXT NOT NULL DEFAULT 'grounded_fact',
+    cache_type            TEXT NOT NULL DEFAULT 'llm',
+    source_ids_json       TEXT NOT NULL DEFAULT '[]',
+    source_urls_json      TEXT NOT NULL DEFAULT '[]',
+    ui_actions_json       TEXT NOT NULL DEFAULT '[]',
+    confidence            REAL NOT NULL DEFAULT 0.0,
+    data_version          BIGINT NOT NULL DEFAULT 1,
+    is_stale              INTEGER NOT NULL DEFAULT 0,
+    stale_reason          TEXT NOT NULL DEFAULT '',
+    hit_count             INTEGER NOT NULL DEFAULT 0,
+    last_hit_at           TIMESTAMP,
+    expires_at            TIMESTAMP,
+    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (normalized_question, data_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_answer_cache_normalized
+    ON answer_cache(normalized_question, is_stale, data_version);
+CREATE INDEX IF NOT EXISTS idx_answer_cache_updated
+    ON answer_cache(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_answer_cache_embedding
+    ON answer_cache USING hnsw (question_embedding vector_cosine_ops);
 
 -- Phase 3: Crawl Report storage
 ALTER TABLE catalog_sync_runs ADD COLUMN IF NOT EXISTS report_json TEXT NOT NULL DEFAULT '';
+
+-- Phase 4: Full-text search support (Already added in lines above)

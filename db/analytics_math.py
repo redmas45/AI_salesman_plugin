@@ -28,6 +28,9 @@ PERCENT_SCALE = 100
 LATENCY_FAST_MS = 1000
 LATENCY_ACCEPTABLE_MS = 3000
 DEFAULT_USAGE_LIMIT = 200
+ACTION_EVENT_MATCH_WINDOW_SECONDS = 120
+ACTION_EVENT_MATCH_GRACE_SECONDS = 10
+MAX_TURN_ACTION_EVENTS = 8
 
 RANGE_DAYS = {
     "1d": 1,
@@ -111,6 +114,7 @@ PRODUCT_TYPE_TOKENS = {
 def conversation_log(range_key: str = ANALYTICS_DEFAULT_RANGE, site_id: str = "") -> dict[str, Any]:
     """Return date-grouped conversation sessions and turns for CRM review."""
     rows = _usage_rows(range_key, site_id, limit=500)
+    action_events_by_site = _action_events_by_site({str(row.get("site_id") or "") for row in rows})
     sessions: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         session_key = (row["site_id"], row["session_id"])
@@ -129,7 +133,7 @@ def conversation_log(range_key: str = ANALYTICS_DEFAULT_RANGE, site_id: str = ""
         session["turn_count"] += 1
         session["tokens_used"] += _row_tokens(row)
         session["last_seen_at"] = row["created_at"]
-        session["turns"].append(_conversation_turn(row))
+        session["turns"].append(_conversation_turn(row, _matching_action_events(row, action_events_by_site)))
 
     date_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for session in sessions.values():
@@ -261,7 +265,7 @@ def _usage_rows(range_key: str, site_id: str = "", limit: int = DEFAULT_USAGE_LI
     return [dict(row) for row in rows]
 
 
-def _conversation_turn(row: dict[str, Any]) -> dict[str, Any]:
+def _conversation_turn(row: dict[str, Any], action_events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {
         "created_at": row["created_at"],
         "transport": row["transport"],
@@ -272,7 +276,104 @@ def _conversation_turn(row: dict[str, Any]) -> dict[str, Any]:
         "transcript": row["transcript"],
         "response_text": row["response_text"],
         "action_count": int(row["action_count"] or 0),
+        "action_events": action_events or [],
     }
+
+
+def _action_events_by_site(site_ids: set[str]) -> dict[str, list[dict[str, Any]]]:
+    clean_site_ids = sorted(site_id for site_id in site_ids if site_id)
+    if not clean_site_ids:
+        return {}
+    try:
+        from db.clients import list_client_action_events
+
+        durable_events = list_client_action_events(clean_site_ids, limit=1000)
+    except Exception as exc:
+        logger.warning("Durable action event lookup failed: %s", exc)
+        return {site_id: [] for site_id in clean_site_ids}
+    return {
+        site_id: [
+            _conversation_action_event(event)
+            for event in durable_events.get(site_id, [])[:120]
+            if isinstance(event, dict)
+        ]
+        for site_id in clean_site_ids
+    }
+
+
+def _matching_action_events(row: dict[str, Any], events_by_site: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    if int(row.get("action_count") or 0) <= 0:
+        return []
+    row_epoch = _timestamp_epoch(row.get("created_at"))
+    if row_epoch <= 0:
+        return []
+    matched: list[dict[str, Any]] = []
+    for event in events_by_site.get(str(row.get("site_id") or ""), []):
+        event_epoch = _timestamp_epoch(event.get("occurred_at"))
+        if event_epoch <= 0:
+            continue
+        delta = event_epoch - row_epoch
+        if -ACTION_EVENT_MATCH_GRACE_SECONDS <= delta <= ACTION_EVENT_MATCH_WINDOW_SECONDS:
+            matched.append(event)
+    return _latest_action_events_by_request(matched)[:MAX_TURN_ACTION_EVENTS]
+
+
+def _latest_action_events_by_request(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for event in events:
+        key = str(event.get("request_id") or "") or f"{event.get('action')}:{event.get('sequence')}:{event.get('occurred_at')}"
+        existing = grouped.get(key)
+        if not existing or _timestamp_epoch(event.get("occurred_at")) >= _timestamp_epoch(existing.get("occurred_at")):
+            grouped[key] = event
+    return sorted(
+        grouped.values(),
+        key=lambda event: (int(event.get("sequence") or 0), _timestamp_epoch(event.get("occurred_at"))),
+    )
+
+
+def _conversation_action_event(event: dict[str, Any]) -> dict[str, Any]:
+    evidence = event.get("evidence") if isinstance(event.get("evidence"), dict) else {}
+    return {
+        "occurred_at": str(event.get("occurred_at") or ""),
+        "request_id": str(event.get("request_id") or ""),
+        "turn_id": str(event.get("turn_id") or ""),
+        "sequence": int(event.get("sequence") or 0),
+        "action": str(event.get("action") or ""),
+        "status": str(event.get("status") or "unknown"),
+        "stage": str(event.get("stage") or ""),
+        "reason": str(event.get("reason") or ""),
+        "duration_ms": int(float(event.get("duration_ms") or 0)),
+        "requested_url": str(event.get("requested_url") or ""),
+        "final_url": str(event.get("final_url") or event.get("url") or ""),
+        "url_changed": bool(evidence.get("url_changed")),
+        "evidence": {
+            key: value
+            for key, value in evidence.items()
+            if key in {"target_page", "product_id", "entity_id", "product_count", "entity_count", "path_changed", "title"}
+        },
+    }
+
+
+def _timestamp_epoch(value: Any) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _json_object(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        data = json.loads(str(raw))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _row_tokens(row: dict[str, Any]) -> int:

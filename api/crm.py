@@ -14,7 +14,7 @@ import config
 from agent.adapter_discovery import render_adapter_code
 from agent.client_initialization import run_assistant_smoke_tests, run_widget_initialization
 from agent.ingestion import sync_web_crawl
-from agent.provider_status import provider_usage_status
+from agent.provider_status import check_openai_runtime_quota, provider_usage_status
 from agent.tenant_isolation import build_tenant_isolation_audit
 from api.routes.clients import _public_runtime_config, _public_widget_base_url, universal_install_script_tag
 from db import admin as admin_db
@@ -144,10 +144,21 @@ router = APIRouter(
 )
 
 
+def _expire_stale_setup_runs() -> None:
+    try:
+        expired = admin_db.expire_stale_client_initialization_runs(config.SETUP_RUN_TIMEOUT_SECONDS)
+    except Exception as exc:
+        logger.warning("CRM stale setup sweep failed: %s", exc)
+        return
+    if expired:
+        logger.warning("CRM marked %s stale setup run(s) as timed out.", expired)
+
+
 @router.get("/overview")
 async def crm_overview() -> dict[str, Any]:
     """Return dashboard metrics, clients, health, and recent activity."""
     try:
+        _expire_stale_setup_runs()
         return admin_db.overview()
     except Exception as exc:
         logger.error("CRM overview failed: %s", exc)
@@ -164,10 +175,21 @@ async def crm_provider_usage() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to load provider usage.") from exc
 
 
+@router.post("/provider-usage/check")
+async def crm_check_provider_usage() -> dict[str, Any]:
+    """Run a live provider quota check and return the refreshed status."""
+    try:
+        return {"provider_usage": check_openai_runtime_quota()}
+    except Exception as exc:
+        logger.error("CRM provider usage check failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to check provider usage.") from exc
+
+
 @router.get("/clients")
 async def crm_clients() -> dict[str, list[dict[str, Any]]]:
     """Return all active CRM clients."""
     try:
+        _expire_stale_setup_runs()
         return {"clients": admin_db.list_clients()}
     except Exception as exc:
         logger.error("CRM clients failed: %s", exc)
@@ -228,6 +250,7 @@ async def crm_create_client(req: ClientCreateRequest) -> dict[str, Any]:
 async def crm_client_detail(site_id: str) -> dict[str, Any]:
     """Return one client and its tenant catalog summary."""
     try:
+        _expire_stale_setup_runs()
         return {"client": admin_db.get_client_detail(site_id)}
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -240,6 +263,7 @@ async def crm_client_detail(site_id: str) -> dict[str, Any]:
 async def crm_client_operation_status(site_id: str) -> dict[str, Any]:
     """Return backend-backed operation status for one client."""
     try:
+        _expire_stale_setup_runs()
         client = admin_db.get_client_detail(site_id)
         return _client_operation_status(client)
     except LookupError as exc:
@@ -265,6 +289,19 @@ async def crm_client_knowledge(site_id: str, limit: int = 50) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to load knowledge items.") from exc
 
 
+@router.get("/clients/{site_id}/answer-cache")
+async def crm_client_answer_cache(site_id: str, limit: int = 20) -> dict[str, Any]:
+    """Return tenant-local answer cache stats and recent reusable answers."""
+    try:
+        from db.answer_cache import answer_cache_summary
+
+        safe_limit = max(1, min(int(limit), 100))
+        return {"answer_cache": answer_cache_summary(site_id, limit=safe_limit)}
+    except Exception as exc:
+        logger.error("CRM answer cache lookup failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to load answer cache.") from exc
+
+
 @router.get("/clients/{site_id}/isolation-audit")
 async def crm_client_isolation_audit(site_id: str) -> dict[str, Any]:
     """Return explicit tenant/RAG isolation checks for one client."""
@@ -278,6 +315,7 @@ async def crm_client_isolation_audit(site_id: str) -> dict[str, Any]:
             "stats": knowledge_stats(site_id),
             "items": knowledge_preview(site_id, 10),
         }
+        answer_cache = admin_db._safe_answer_cache_summary(site_id)
         return {
             "audit": build_tenant_isolation_audit(
                 site_id=site_id,
@@ -285,6 +323,7 @@ async def crm_client_isolation_audit(site_id: str) -> dict[str, Any]:
                 runtime_config=runtime_config,
                 prompt_profile=prompt_profile,
                 knowledge=knowledge,
+                answer_cache=answer_cache,
             )
         }
     except LookupError as exc:
@@ -569,7 +608,7 @@ async def crm_client_vertical(site_id: str, req: ClientVerticalRequest) -> dict[
 
 @router.delete("/clients/{site_id}")
 async def crm_remove_client(site_id: str) -> dict[str, str]:
-    """Remove a client from the current roster without dropping tenant data."""
+    """Hide a client from CRM lists without dropping tenant data."""
     try:
         admin_db.remove_client(site_id)
         return {"status": "ok"}
@@ -578,6 +617,19 @@ async def crm_remove_client(site_id: str) -> dict[str, str]:
     except Exception as exc:
         logger.error("CRM remove client failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to remove client.") from exc
+
+
+@router.post("/clients/{site_id}/available")
+async def crm_move_client_to_available(site_id: str) -> dict[str, Any]:
+    """Move a client back to the Available board without deleting tenant data."""
+    try:
+        client = admin_db.move_client_to_available(site_id)
+        return {"status": "available", "client": client}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM move client to available failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to move client to available.") from exc
 
 
 @router.post("/clients/{site_id}/activate")
@@ -690,6 +742,7 @@ async def crm_trigger_client_crawl(site_id: str, background_tasks: BackgroundTas
 async def crm_trigger_client_auto_integration(site_id: str, background_tasks: BackgroundTasks) -> dict[str, str]:
     """Queue the non-destructive AI Hub setup pipeline for one client."""
     try:
+        _expire_stale_setup_runs()
         client = admin_db.get_client_detail(site_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -698,6 +751,14 @@ async def crm_trigger_client_auto_integration(site_id: str, background_tasks: Ba
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Move this client to Current before starting setup.",
+        )
+
+    vertical_config = client.get("vertical_config") if isinstance(client.get("vertical_config"), dict) else {}
+    initialization = vertical_config.get("initialization") if isinstance(vertical_config.get("initialization"), dict) else {}
+    if str(initialization.get("status") or "").lower() == admin_db.SETUP_STATUS_RUNNING:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Setup run is already running. Stop it before starting another setup.",
         )
 
     admin_db.update_client_crawl_status(site_id, admin_db.CRAWL_STATUS_RUNNING, "Setup run queued.")
@@ -718,6 +779,26 @@ async def crm_trigger_client_auto_integration(site_id: str, background_tasks: Ba
         "status": "queued",
         "message": "Setup run queued: crawl, flow discovery, rehearsal, regression, readiness scan, and assistant smoke tests.",
     }
+
+
+@router.post("/clients/{site_id}/auto-integrate/cancel")
+async def crm_cancel_client_auto_integration(site_id: str) -> dict[str, Any]:
+    """Request a cooperative stop for the active setup pipeline."""
+    try:
+        _expire_stale_setup_runs()
+        client = admin_db.request_client_setup_cancel(site_id)
+        return {
+            "status": "cancel_requested",
+            "message": "Setup stop requested. The current stage will stop at the next safe checkpoint.",
+            "client": client,
+        }
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("CRM setup cancel failed for %s: %s", site_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to stop setup run.") from exc
 
 
 @router.post("/clients/{site_id}/assistant-smoke-tests")
@@ -938,7 +1019,11 @@ def _readiness_operation_status(client: dict[str, Any]) -> dict[str, Any]:
     report = admin_db.get_readiness_report(site_id) or {}
     scanned_at = str(report.get("scanned_at") or "")
     capabilities = report.get("capabilities") if isinstance(report.get("capabilities"), list) else []
-    supported = sum(1 for item in capabilities if isinstance(item, dict) and item.get("supported"))
+    supported = sum(
+        1
+        for item in capabilities
+        if isinstance(item, dict) and (item.get("supported") or item.get("blocking") is False)
+    )
     total = len(capabilities)
     if not report:
         return _operation(
@@ -1000,11 +1085,14 @@ def _integration_operation_status(client: dict[str, Any], vertical_config: dict[
     if all(stage["status"] != "running" for stage in stages):
         stages.append(_operation_stage("integration_save", "Saving evidence", "complete", "Setup evidence saved.", completed_at=str(initialization.get("completed_at") or "")))
     status = _normalize_operation_status(str(initialization.get("status") or "unknown"), stages)
+    message = str(initialization.get("error") or "") or _operation_message(status, "Setup run")
+    if status == "running" and initialization.get("cancel_requested"):
+        message = "Setup stop requested. Waiting for the current stage checkpoint."
     return _operation(
         "integration",
         "Setup run",
         status,
-        str(initialization.get("error") or "") or _operation_message(status, "Setup run"),
+        message,
         stages,
         result_tab="integration",
         started_at=str(initialization.get("started_at") or ""),
@@ -1045,7 +1133,7 @@ def _normalize_stage_status(status: str) -> str:
     normalized = status.lower()
     if normalized in {"ok", "complete", "completed", "success", "passed"}:
         return "complete"
-    if normalized in {"failed", "error"}:
+    if normalized in {"failed", "error", "canceled", "cancelled", "timed_out", "timeout"}:
         return "failed"
     if normalized == "running":
         return "running"
@@ -1058,7 +1146,7 @@ def _normalize_operation_status(raw_status: str, stages: list[dict[str, Any]]) -
     normalized = raw_status.lower()
     if any(stage["status"] == "running" for stage in stages) or normalized == "running":
         return "running"
-    if any(stage["status"] == "failed" for stage in stages) or normalized in {"failed", "error"}:
+    if any(stage["status"] == "failed" for stage in stages) or normalized in {"failed", "error", "canceled", "cancelled", "timed_out", "timeout"}:
         return "failed"
     if stages and all(stage["status"] in {"complete", "skipped"} for stage in stages):
         return "complete"

@@ -16,6 +16,23 @@ function paramKeys(params) {
     .slice(0, 20);
 }
 
+function cleanEvidence(evidence) {
+  if (!evidence || typeof evidence !== "object") return {};
+  const safe = {};
+  for (const [key, value] of Object.entries(evidence).slice(0, 20)) {
+    const cleanKey = clean(key).slice(0, 80);
+    if (!cleanKey) continue;
+    if (typeof value === "boolean" || value === null) {
+      safe[cleanKey] = value;
+    } else if (typeof value === "number") {
+      safe[cleanKey] = Number.isFinite(value) ? value : 0;
+    } else {
+      safe[cleanKey] = clean(value).slice(0, 240);
+    }
+  }
+  return safe;
+}
+
 export async function reportActionExecution(apiBaseUrl, siteId, action, result) {
   if (!apiBaseUrl || !siteId || !action?.action) return;
   const payload = JSON.stringify({
@@ -23,12 +40,18 @@ export async function reportActionExecution(apiBaseUrl, siteId, action, result) 
     origin: window.location.origin,
     url: window.location.href,
     occurred_at: new Date().toISOString(),
+    request_id: clean(action.request_id || action.action_request_id),
+    turn_id: clean(action.turn_id),
+    sequence: Number(action.sequence || 0),
     action: clean(action.action).toUpperCase(),
     status: clean(result?.status) || "unknown",
     stage: clean(result?.stage),
     reason: clean(result?.reason),
     duration_ms: Number(result?.duration_ms || 0),
     param_keys: paramKeys(action.parameters || action.params),
+    requested_url: clean(result?.requested_url),
+    final_url: clean(result?.final_url || window.location.href),
+    evidence: cleanEvidence(result?.evidence),
   });
   const url = apiUrl(ACTION_EVENT_PATH, apiBaseUrl);
   if (sendBeaconJson(url, payload)) return;

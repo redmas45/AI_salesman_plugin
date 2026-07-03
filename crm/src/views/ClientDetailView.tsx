@@ -153,6 +153,7 @@ export interface ClientDetailViewProps {
   onTriggerCrawl: (siteId: string) => void;
   onAutoIntegrate: (siteId: string) => void;
   onRemoveClient: (siteId: string) => void;
+  onMoveClientToAvailable: (siteId: string) => void;
   onToggleClient: (siteId: string, enabled: boolean) => void;
   onUpdateTokenLimits: (siteId: string, tokenLimit: number, sessionTokenLimit: number) => Promise<void>;
   onOpenPasswordDialog: (client: Client) => void;
@@ -172,6 +173,7 @@ export function ClientDetailView({
   onTriggerCrawl,
   onAutoIntegrate,
   onRemoveClient,
+  onMoveClientToAvailable,
   onToggleClient,
   onUpdateTokenLimits,
   onOpenPasswordDialog,
@@ -533,6 +535,24 @@ export function ClientDetailView({
     onAutoIntegrate(client.site_id);
   }
 
+  async function handleCancelIntegration() {
+    setReportError('');
+    try {
+      const response = await crmApi.cancelAutoIntegrateClient(client.site_id);
+      setOperationFeedback((current) => {
+        if (!current || current.kind !== 'integration' || current.status !== 'running') return current;
+        return {
+          ...current,
+          message: response.message,
+        };
+      });
+      await refreshOperationStatus();
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : 'Setup stop request failed.');
+      await refreshOperationStatus();
+    }
+  }
+
   function handleStartCrawl() {
     if (blockIfSourceUnavailable('crawl source')) return;
     setActiveTab('crawl');
@@ -568,7 +588,7 @@ export function ClientDetailView({
         onActivate={() => onActivateClient(client.site_id)}
         onRunIntegration={handleStartIntegration}
         onRunCrawl={() => handleStartCrawl()}
-        onRemoveClient={() => onRemoveClient(client.site_id)}
+        onRemoveClient={() => onMoveClientToAvailable(client.site_id)}
         onOpenPasswordDialog={() => onOpenPasswordDialog(client)}
         onToggleWidget={() => onToggleClient(client.site_id, client.status !== 'live')}
         onOpenControls={() => openWorkspaceTab('controls')}
@@ -586,11 +606,14 @@ export function ClientDetailView({
           feedback={operationFeedback}
           backendOperation={operationFeedback ? operationStatus?.operations?.[operationFeedback.kind] ?? null : null}
           onViewResult={openWorkspaceTab}
-        onRetry={(kind) => {
-          if (kind === 'readiness') {
-            handleStartIntegration();
-            return;
-          }
+          onCancel={() => {
+            void handleCancelIntegration();
+          }}
+          onRetry={(kind) => {
+            if (kind === 'readiness') {
+              handleStartIntegration();
+              return;
+            }
             if (kind === 'crawl') {
               handleStartCrawl();
               return;
@@ -1543,9 +1566,11 @@ function ReadinessGapEvidencePanel({
 }
 
 function readinessGapRows(scanReport: ReadinessReport | null) {
-  return (scanReport?.capabilities ?? []).filter(
-    (capability) => !capability.supported && !capability.name.startsWith('expected_action:'),
-  );
+  return (scanReport?.capabilities ?? []).filter(isBlockingCapabilityGap);
+}
+
+function isBlockingCapabilityGap(capability: ReadinessReport['capabilities'][number]) {
+  return !capability.supported && capability.blocking !== false && !capability.name.startsWith('expected_action:');
 }
 
 function actionLabel(action: string) {
@@ -1614,7 +1639,7 @@ function ClientReadinessTab({
   const [filter, setFilter] = useState<'needs' | 'supported' | 'all'>('needs');
   const rows = scanReport?.capabilities ?? [];
   const supported = rows.filter((capability) => capability.supported);
-  const unsupported = rows.filter((capability) => !capability.supported);
+  const unsupported = rows.filter(isBlockingCapabilityGap);
   const unsupportedNonDomain = readinessGapRows(scanReport);
   const filteredRows = filter === 'all'
     ? rows
@@ -1843,19 +1868,21 @@ function CapabilityReportCard({
   sourceStatus: string;
   onRunSetup: () => void;
 }) {
-  const Icon = capability.supported ? CheckCircle2 : capability.confidence >= 0.5 ? AlertTriangle : XCircle;
-  const tone = capability.supported ? 'ok' : capability.confidence >= 0.5 ? 'warn' : 'bad';
+  const blockingGap = isBlockingCapabilityGap(capability);
+  const Icon = capability.supported || !blockingGap ? CheckCircle2 : capability.confidence >= 0.5 ? AlertTriangle : XCircle;
+  const tone = capability.supported || !blockingGap ? 'ok' : capability.confidence >= 0.5 ? 'warn' : 'bad';
+  const status = capability.supported ? 'supported' : blockingGap ? 'needs work' : 'informational';
   const hint = automationHintForCapability(capability.name);
   return (
     <article className={`capability-card capability-card-${tone}`}>
       <div className="capability-card-head">
         <Icon size={18} aria-hidden="true" />
-        <StatusPill value={capability.supported ? 'supported' : 'needs work'} />
+        <StatusPill value={status} />
       </div>
       <h3>{labelize(capability.name)}</h3>
       <strong>{percent(capability.confidence)}% confidence</strong>
       <p>{capability.evidence || 'No scanner evidence was saved for this check.'}</p>
-      {!capability.supported ? (
+      {blockingGap ? (
         <button
           className="capability-card-action capability-card-action-button"
           type="button"

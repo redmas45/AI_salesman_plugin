@@ -22,6 +22,7 @@ from api.main import (
     _public_knowledge_items,
     app,
 )
+from api.action_truth import annotate_ui_actions
 from api.models import KnowledgeItemResponse, ProductResponse, ShopResponse
 from db import schema as db_schema
 
@@ -62,7 +63,8 @@ def test_init_admin_schema_runs_ddl_once_per_process(monkeypatch):
     db_schema.init_admin_schema()
     db_schema.init_admin_schema()
 
-    assert [call[0] for call in calls] == ["execute", "commit"]
+    assert [call[0] for call in calls] == ["execute", "execute", "commit"]
+    assert "action_events" in calls[1][1]
 
 
 def test_client_panel_static_path_defaults_to_sibling_dist():
@@ -109,6 +111,43 @@ def test_shop_response_accepts_valid_ui_action():
     )
 
     assert response.ui_actions[0].action == "FILTER_PRODUCTS"
+
+
+def test_action_truth_adds_stable_request_metadata():
+    actions = annotate_ui_actions(
+        [{"action": "NAVIGATE_TO", "params": {"page": "plans"}}],
+        turn_id="turn_test",
+    )
+
+    assert actions == [
+        {
+            "action": "NAVIGATE_TO",
+            "params": {"page": "plans"},
+            "request_id": "turn_test_1",
+            "turn_id": "turn_test",
+            "sequence": 1,
+        }
+    ]
+
+
+def test_shop_response_accepts_action_truth_metadata():
+    response = ShopResponse(
+        **_base_response(
+            ui_actions=[
+                {
+                    "action": "NAVIGATE_TO",
+                    "params": {"page": "plans"},
+                    "request_id": "turn_abc_1",
+                    "turn_id": "turn_abc",
+                    "sequence": 1,
+                }
+            ]
+        )
+    )
+
+    assert response.ui_actions[0].request_id == "turn_abc_1"
+    assert response.ui_actions[0].turn_id == "turn_abc"
+    assert response.ui_actions[0].sequence == 1
 
 
 def test_shop_response_exposes_retrieval_evidence():

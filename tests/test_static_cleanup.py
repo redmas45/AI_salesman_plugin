@@ -17,12 +17,12 @@ DOCKER_ENTRYPOINT_SOURCE = Path("docker/entrypoint.sh")
 ADMIN_SCHEMA_SOURCE = Path("db/schema.py")
 LEGACY_WIDGET_TOKENS = (
     "window.ShopCart",
-    "window.ShopBotConfig",
+    "window.MayaBotConfig",
     "demo.vercel.store",
 )
 UNIVERSAL_WIDGET_BRAND_TOKENS = (
     "AI-KART",
-    "ShopBot",
+    "MayaBot",
     "Shopping Assistant",
 )
 
@@ -58,7 +58,7 @@ def test_runtime_loader_and_ecommerce_prompt_do_not_use_legacy_widget_brand() ->
         )
     )
 
-    assert "ShopBot" not in source
+    assert "MayaBot" not in source
     assert "Shopping Assistant" not in source
 
 

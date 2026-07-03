@@ -19,6 +19,7 @@ from tenacity import (
 )
 
 import config
+from agent.context_budget import build_context_messages
 from agent.prompt import build_system_prompt, format_products_for_prompt
 from agent.page_context import format_page_context, sanitize_page_context
 from agent.prompts.generic import build_generic_system_prompt, format_knowledge_for_prompt
@@ -50,6 +51,7 @@ DEFAULT_RESPONSE: dict[str, Any] = {
     "response_text": "I'm sorry, I couldn't process that request. Please try again.",
     "intent": "unknown",
     "confidence": 0.0,
+    "answer_scope": "",
     "ui_actions": [],
 }
 QUOTA_EXHAUSTED_RESPONSE: dict[str, Any] = {
@@ -59,6 +61,7 @@ QUOTA_EXHAUSTED_RESPONSE: dict[str, Any] = {
     ),
     "intent": "llm_quota_exhausted",
     "confidence": 1.0,
+    "answer_scope": "unsupported_or_offsite",
     "ui_actions": [],
 }
 
@@ -119,6 +122,7 @@ def generate_response(
     cart_context: str = "",
     profile_context: str = "",
     page_context: dict[str, Any] | None = None,
+    session_summary: str = "",
 ) -> dict[str, Any]:
     """
     Generate the next AI response, JSON-formatted, including UI actions.
@@ -131,9 +135,10 @@ def generate_response(
         price_constraints:      Optional price filter dict.
         cart_context:           Formatted string of current cart items.
         profile_context:        Formatted string of user profile data.
+        session_summary:        Compact rolling memory for this browser session.
 
     Returns:
-        Parsed dict with keys: response_text, intent, confidence, ui_actions.
+        Parsed dict with keys: response_text, intent, confidence, answer_scope, ui_actions.
     """
     vertical_key = _runtime_vertical_key(site_id)
     safe_page_context = sanitize_page_context(page_context)
@@ -165,16 +170,11 @@ def generate_response(
         len(conversation_history) if conversation_history else 0,
     )
 
-    # Build messages array with history + current user message
-    messages: list[dict] = []
-
-    if conversation_history:
-        history_to_use = _sanitize_history(conversation_history)[
-            -(MAX_HISTORY_TURNS * 2) :
-        ]
-        messages.extend(history_to_use)
-
-    # Add current user message
+    messages = build_context_messages(
+        conversation_history or [],
+        session_summary=session_summary,
+        max_recent_messages=MAX_HISTORY_TURNS,
+    )
     messages.append({"role": "user", "content": user_message})
 
     try:
@@ -215,6 +215,7 @@ def _parse_response(raw: str) -> dict[str, Any]:
             "response_text": data.get("response_text", DEFAULT_RESPONSE["response_text"]),
             "intent": data.get("intent", DEFAULT_RESPONSE["intent"]),
             "confidence": data.get("confidence", DEFAULT_RESPONSE["confidence"]),
+            "answer_scope": data.get("answer_scope", DEFAULT_RESPONSE["answer_scope"]),
             "ui_actions": data.get("ui_actions", DEFAULT_RESPONSE["ui_actions"])
         }
     except json.JSONDecodeError as exc:

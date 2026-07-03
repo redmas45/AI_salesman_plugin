@@ -1,3 +1,5 @@
+import type { ActionEventStatus, UiActionName } from '@ai-hub/contracts';
+
 export type View =
   | 'dashboard'
   | 'clients'
@@ -69,6 +71,29 @@ export interface QuotaStatus {
   session: QuotaPart;
 }
 
+export interface AnswerCacheItem {
+  id?: number | string;
+  question: string;
+  answer_scope?: string;
+  cache_type?: string;
+  data_version?: number;
+  is_stale?: boolean;
+  hit_count?: number;
+  updated_at?: string;
+}
+
+export interface AnswerCacheSummary {
+  site_id: string;
+  data_version: number;
+  total: number;
+  fresh: number;
+  stale: number;
+  hits: number;
+  estimated_tokens_saved: number;
+  items: AnswerCacheItem[];
+  error?: string;
+}
+
 export interface Client {
   site_id: string;
   name: string;
@@ -101,6 +126,7 @@ export interface Client {
   };
   script_tag: string;
   catalog: CatalogSummary;
+  answer_cache?: AnswerCacheSummary;
   usage: UsageSummary;
   quota: QuotaStatus;
   catalog_preview?: ProductPreview[];
@@ -144,6 +170,9 @@ export interface OverviewMetrics {
   products_indexed: number;
   avg_latency_ms: number;
   tokens_estimated: number;
+  answer_cache_hits?: number;
+  answer_cache_fresh?: number;
+  answer_cache_tokens_saved?: number;
 }
 
 export interface ProviderUsageEvent {
@@ -196,6 +225,23 @@ export interface UsageEvent {
   transcript: string;
   response_text: string;
   created_at: string;
+  action_events?: ActionExecutionEvent[];
+}
+
+export interface ActionExecutionEvent {
+  occurred_at: string;
+  request_id: string;
+  turn_id: string;
+  sequence: number;
+  action: UiActionName | string;
+  status: ActionEventStatus | string;
+  stage: string;
+  reason: string;
+  duration_ms: number;
+  requested_url: string;
+  final_url: string;
+  url_changed?: boolean;
+  evidence?: Record<string, unknown>;
 }
 
 export interface Overview {
@@ -216,6 +262,7 @@ export interface ConversationTurn {
   transcript: string;
   response_text: string;
   action_count: number;
+  action_events?: ActionExecutionEvent[];
 }
 
 export interface ConversationSession {
@@ -340,6 +387,7 @@ export interface CapabilityItem {
   supported: boolean;
   confidence: number;
   evidence: string;
+  blocking?: boolean;
 }
 
 export interface ReadinessReport {
@@ -442,6 +490,10 @@ export interface KnowledgeItem {
 export interface KnowledgeResponse {
   stats: KnowledgeStats;
   items: KnowledgeItem[];
+}
+
+export interface AnswerCacheResponse {
+  answer_cache: AnswerCacheSummary;
 }
 
 export interface AdapterRuntimeConfig {

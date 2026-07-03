@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import {
   CheckCircle2,
   Database,
@@ -17,6 +18,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import type { View, Overview, Client, AnalyticsResponse, HealthSnapshot, UsageEvent, ClientBoardSection } from '../types';
+import { crmApi } from '../api';
 import { Button } from '../components/ui/Button';
 import { EmptyState } from '../components/ui/EmptyState';
 import { StatusPill } from '../components/ui/Badge';
@@ -49,6 +51,10 @@ export function DashboardView({
   onOpenClientBoardSection,
   onOpenClient,
 }: DashboardViewProps) {
+  const [checkedProviderUsage, setCheckedProviderUsage] = useState<Overview['provider_usage'] | null>(null);
+  const [checkingProvider, setCheckingProvider] = useState(false);
+  const [providerCheckError, setProviderCheckError] = useState('');
+  const effectiveProviderUsage = checkedProviderUsage ?? overview.provider_usage;
   const metrics = overview.metrics;
   const currentClientRows = clients.filter((client) => client.status !== 'available');
   const availableRows = clients.filter((client) => client.status === 'available');
@@ -58,6 +64,23 @@ export function DashboardView({
   const offlineAvailable = availableClients - onlineAvailable;
   const missingVectorClients = currentClientRows.filter((client) => client.catalog.missing_embeddings > 0).length;
   const degradedHealth = Object.values(overview.health).filter((value) => healthState(value) !== 'up').length;
+  useEffect(() => {
+    setCheckedProviderUsage(null);
+  }, [overview.provider_usage?.checked_at]);
+
+  async function handleCheckProviderUsage() {
+    setCheckingProvider(true);
+    setProviderCheckError('');
+    try {
+      const response = await crmApi.checkProviderUsage();
+      setCheckedProviderUsage(response.provider_usage);
+    } catch (error) {
+      setProviderCheckError(error instanceof Error ? error.message : 'Provider check failed.');
+    } finally {
+      setCheckingProvider(false);
+    }
+  }
+
   return (
     <div className="grid gap-4">
       <section className="section-row">
@@ -68,7 +91,7 @@ export function DashboardView({
         <RangeControl value={range} onChange={onRangeChange} />
       </section>
       <DashboardOperationsBrief
-        providerUsage={overview.provider_usage}
+        providerUsage={effectiveProviderUsage}
         currentClients={currentClients}
         availableClients={availableClients}
         onlineAvailable={onlineAvailable}
@@ -76,9 +99,13 @@ export function DashboardView({
         missingVectorClients={missingVectorClients}
         degradedHealth={degradedHealth}
         turnsToday={metrics.voice_turns_today ?? 0}
+        cacheHits={metrics.answer_cache_hits ?? 0}
         onOpenClientBoardSection={onOpenClientBoardSection}
         onViewChange={onViewChange}
         onOpenSettings={onOpenSettings}
+        onCheckProviderUsage={handleCheckProviderUsage}
+        checkingProvider={checkingProvider}
+        providerCheckError={providerCheckError}
       />
       <div className="dashboard-bento fade-in">
         <KpiCard className="bento-kpi" label="Current clients" value={currentClients} icon={Users} tone="accent" onClick={() => onOpenClientBoardSection('current')} />
@@ -88,9 +115,12 @@ export function DashboardView({
 
         <div className="bento-wide card">
           <ProviderUsagePanel
-            providerUsage={overview.provider_usage}
+            providerUsage={effectiveProviderUsage}
             onOpenUsage={() => onViewChange('usage')}
             onOpenSettings={onOpenSettings}
+            onCheckProviderUsage={handleCheckProviderUsage}
+            checkingProvider={checkingProvider}
+            providerCheckError={providerCheckError}
           />
         </div>
         <div className="bento-wide card">
@@ -120,9 +150,13 @@ function DashboardOperationsBrief({
   missingVectorClients,
   degradedHealth,
   turnsToday,
+  cacheHits,
   onOpenClientBoardSection,
   onViewChange,
   onOpenSettings,
+  onCheckProviderUsage,
+  checkingProvider,
+  providerCheckError,
 }: {
   providerUsage: Overview['provider_usage'];
   currentClients: number;
@@ -132,9 +166,13 @@ function DashboardOperationsBrief({
   missingVectorClients: number;
   degradedHealth: number;
   turnsToday: number;
+  cacheHits: number;
   onOpenClientBoardSection: (section: ClientBoardSection) => void;
   onViewChange: (view: View) => void;
   onOpenSettings?: (focusKey?: string) => void;
+  onCheckProviderUsage: () => void | Promise<void>;
+  checkingProvider: boolean;
+  providerCheckError: string;
 }) {
   const providerBlocked = providerUsage?.status === 'quota_exhausted' || providerUsage?.status === 'not_configured';
   const attentionCount = onlineAvailable + offlineAvailable + missingVectorClients + degradedHealth + (providerBlocked ? 1 : 0);
@@ -154,6 +192,9 @@ function DashboardOperationsBrief({
             providerUsage={providerUsage}
             onOpenUsage={() => onViewChange('usage')}
             onOpenSettings={onOpenSettings}
+            onCheckProviderUsage={onCheckProviderUsage}
+            checkingProvider={checkingProvider}
+            providerCheckError={providerCheckError}
           />
         ) : (
           <button className="dashboard-provider-ok" type="button" onClick={() => onViewChange('usage')}>
@@ -201,6 +242,15 @@ function DashboardOperationsBrief({
           action="Open health"
           onClick={() => onViewChange('health')}
         />
+        <DashboardAttentionCard
+          icon={Database}
+          label="Cache hits"
+          value={cacheHits}
+          detail="Tenant-safe answers served without LLM"
+          tone={cacheHits ? 'ok' : 'idle'}
+          action="Open usage"
+          onClick={() => onViewChange('usage')}
+        />
       </div>
     </section>
   );
@@ -210,10 +260,16 @@ function ProviderCompactAlert({
   providerUsage,
   onOpenUsage,
   onOpenSettings,
+  onCheckProviderUsage,
+  checkingProvider,
+  providerCheckError,
 }: {
   providerUsage: Overview['provider_usage'];
   onOpenUsage: () => void;
   onOpenSettings?: (focusKey?: string) => void;
+  onCheckProviderUsage: () => void | Promise<void>;
+  checkingProvider: boolean;
+  providerCheckError: string;
 }) {
   const latest = providerUsage?.recent_events?.[0];
   const title = providerUsage?.status === 'quota_exhausted' ? 'OpenAI quota exhausted' : 'OpenAI key not configured';
@@ -232,9 +288,13 @@ function ProviderCompactAlert({
       <div className="dashboard-provider-alert-body">
         <p>{shortProviderMessage(detail)}</p>
         <div className="dashboard-provider-alert-actions">
+          <button type="button" onClick={onCheckProviderUsage} disabled={checkingProvider}>
+            {checkingProvider ? 'Checking...' : 'Check quota now'}
+          </button>
           <button type="button" onClick={onOpenUsage}>Open usage</button>
           <button type="button" onClick={() => onOpenSettings?.(settingsKey)}>Configure</button>
         </div>
+        {providerCheckError ? <p className="provider-check-error">{providerCheckError}</p> : null}
       </div>
     </details>
   );
@@ -244,10 +304,16 @@ function ProviderUsagePanel({
   providerUsage,
   onOpenUsage,
   onOpenSettings,
+  onCheckProviderUsage,
+  checkingProvider,
+  providerCheckError,
 }: {
   providerUsage: Overview['provider_usage'];
   onOpenUsage: () => void;
   onOpenSettings?: (focusKey?: string) => void;
+  onCheckProviderUsage: () => void | Promise<void>;
+  checkingProvider: boolean;
+  providerCheckError: string;
 }) {
   if (!providerUsage) {
     return <EmptyState title="Provider usage unavailable" message="Refresh CRM to load AI provider monitoring." />;
@@ -288,6 +354,7 @@ function ProviderUsagePanel({
           <span>{providerStatusDetail(providerUsage)}</span>
         </div>
       </div>
+      {providerCheckError ? <p className="provider-check-error">{providerCheckError}</p> : null}
       <details className="crm-disclosure provider-usage-details">
         <summary>
           <Info size={15} aria-hidden="true" />
@@ -317,6 +384,10 @@ function ProviderUsagePanel({
             : 'Set OPENAI_ADMIN_KEY for OpenAI cost API reporting.'}
         </span>
         <div className="provider-usage-actions">
+          <button type="button" onClick={onCheckProviderUsage} disabled={checkingProvider}>
+            <CheckCircle2 size={14} aria-hidden="true" />
+            {checkingProvider ? 'Checking...' : 'Check quota now'}
+          </button>
           <button type="button" onClick={() => onOpenSettings?.('OPENAI_ADMIN_KEY')}>
             <Settings size={14} aria-hidden="true" />
             Configure
@@ -355,6 +426,7 @@ function providerStatusLabel(status: string) {
 function providerStatusMessage(providerUsage: NonNullable<Overview['provider_usage']>) {
   if (providerUsage.status === 'quota_exhausted') return 'OpenAI quota is exhausted. Customer AI turns are blocked.';
   if (providerUsage.status === 'not_configured') return 'OpenAI API key is missing.';
+  if (providerUsage.status === 'ok') return 'OpenAI quota check passed. Maya can answer customer turns.';
   if (!providerUsage.openai_admin_key_configured) return 'Runtime key exists; cost reporting needs an admin key.';
   if (!providerUsage.budget.configured) return 'Cost reporting is active. Set a monthly budget to show remaining balance.';
   return `${providerUsage.budget.percent_used}% of monthly budget used.`;

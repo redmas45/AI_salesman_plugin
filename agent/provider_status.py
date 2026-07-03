@@ -17,6 +17,7 @@ from db.schema import _connect, init_admin_schema
 logger = logging.getLogger(__name__)
 
 OPENAI_COSTS_URL = "https://api.openai.com/v1/organization/costs"
+OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
 RECENT_EVENT_LIMIT = 20
 _RECENT_EVENTS: deque[dict[str, Any]] = deque(maxlen=RECENT_EVENT_LIMIT)
 _COST_CACHE: tuple[float, dict[str, Any]] | None = None
@@ -82,6 +83,41 @@ def provider_usage_status() -> dict[str, Any]:
         "recent_events": recent_events,
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def check_openai_runtime_quota() -> dict[str, Any]:
+    """Run a tiny live OpenAI request so CRM can clear or confirm quota state."""
+    if not config.OPENAI_API_KEY:
+        _record_provider_event("openai", "not_configured", "OPENAI_API_KEY is not configured.")
+        return provider_usage_status()
+
+    try:
+        response = httpx.post(
+            OPENAI_CHAT_COMPLETIONS_URL,
+            headers={
+                "Authorization": f"Bearer {config.OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": config.LLM_MODEL,
+                "messages": [{"role": "user", "content": "Reply OK."}],
+                "max_tokens": 1,
+                "temperature": 0,
+            },
+            timeout=12.0,
+        )
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        _record_provider_event("openai", "error", f"OpenAI quota check failed before HTTP response: {_safe_error_message(exc)}")
+        return provider_usage_status()
+
+    if response.status_code == 200:
+        _record_provider_event("openai", "ok", "OpenAI quota check passed with HTTP 200.")
+        return provider_usage_status()
+
+    message = _openai_error_message(response)
+    category = "quota_exhausted" if _is_quota_response(response, message) else "error"
+    _record_provider_event("openai", category, f"OpenAI quota check returned HTTP {response.status_code}: {message}")
+    return provider_usage_status()
 
 
 def _provider_status(recent_events: list[dict[str, Any]], openai_costs: dict[str, Any]) -> str:
@@ -206,3 +242,25 @@ def _month_start_epoch() -> int:
 def _safe_error_message(exc: BaseException) -> str:
     text = " ".join(str(exc).split())
     return text[:500]
+
+
+def _openai_error_message(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text[:500]
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("code") or payload)[:500]
+    return str(payload)[:500]
+
+
+def _is_quota_response(response: httpx.Response, message: str) -> bool:
+    text = f"{response.status_code} {message}".lower()
+    return response.status_code == 429 and (
+        "quota" in text
+        or "billing" in text
+        or "insufficient_quota" in text
+        or "rate limit" in text
+    )

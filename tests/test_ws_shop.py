@@ -79,3 +79,29 @@ def test_ws_text_turn_streams_pipeline_events(monkeypatch):
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "Welcome to AI-KART."},
         ]
+
+
+def test_ws_text_turn_adds_action_request_ids(monkeypatch):
+    from api.main import app
+    from api import ws_shop
+
+    def fake_run_stream(**kwargs):
+        yield {"event": "transcript", "data": {"transcript": "open plans"}}
+        yield {"event": "actions", "data": {"ui_actions": [{"action": "NAVIGATE_TO", "params": {"page": "plans"}}]}}
+        yield {"event": "response", "data": {"response_text": "Opening plans."}}
+
+    monkeypatch.setattr(ws_shop.orchestrator, "run_stream", fake_run_stream)
+
+    client = TestClient(app)
+    with client.websocket_connect("/v1/ws/shop?site_id=site_1") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_json({"type": "text", "text": "open plans"})
+        assert ws.receive_json() == {"type": "transcript", "text": "open plans"}
+        assert ws.receive_json() == {"type": "text_chunk", "text": "Opening plans."}
+
+        done = ws.receive_json()
+        action = done["ui_actions"][0]
+        assert action["action"] == "NAVIGATE_TO"
+        assert action["params"] == {"page": "plans"}
+        assert action["request_id"].startswith(action["turn_id"])
+        assert action["sequence"] == 1

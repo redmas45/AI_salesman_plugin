@@ -66,6 +66,12 @@ export function ClientOperatorCenter({
   onOpenOutput: (tabId: ClientWorkspaceTabId) => void;
 }) {
   const panelUrl = clientPanelHref(client.site_id);
+  const clientInitials = client.name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('') || 'C';
   const runtime = String(sourceStatus || client.runtime_status?.status || 'unknown').toLowerCase();
   const lifecycleStatus = automationLocked ? 'available' : client.status;
   const sourceOffline = !automationLocked && !sourceReachable;
@@ -89,8 +95,11 @@ export function ClientOperatorCenter({
   const anyRunning = autoIntegrating || scanning || crawling || nextStep.running;
 
   return (
-    <section className="overflow-hidden rounded-md border border-[#dce6f5] bg-white text-[#172033]" aria-label="Client operator center">
-      <div className="flex items-center justify-between border-b border-[#dce6f5] bg-[#f8fbff] px-4 py-2">
+    <section
+      className="overflow-hidden rounded-md border border-[#d8e2f2] bg-white text-[#172033] shadow-[0_18px_46px_rgba(15,23,42,0.08)]"
+      aria-label="Client operator center"
+    >
+      <div className="flex items-center justify-between border-b border-[#dce6f5] bg-[linear-gradient(90deg,#f8fbff,#eef4ff)] px-4 py-3">
         <button
           type="button"
           onClick={onBack}
@@ -115,45 +124,52 @@ export function ClientOperatorCenter({
       </div>
 
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_360px] max-[980px]:grid-cols-1">
-        <div className="flex min-w-0 flex-col gap-5 bg-white p-5">
-          <div className="flex min-w-0 flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded bg-[#eef4ff] px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wider text-[#64748b]">
-                {client.vertical_label || vertical.label}
-              </span>
-              <ClientStatusChip status={lifecycleStatus} />
-              <ClientStatusChip status={runtime} />
+        <div className="flex min-w-0 flex-col gap-5 bg-[linear-gradient(180deg,#ffffff,#fbfdff)] p-5">
+          <div className="flex min-w-0 items-start gap-4">
+            <div className="grid h-12 w-12 shrink-0 place-items-center rounded-md border border-[#bfd3ff] bg-[#eef4ff] font-mono text-sm font-semibold text-[#2d5be3]">
+              {clientInitials}
             </div>
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-md border border-[#bfd3ff] bg-[#eef4ff] px-2 py-1 font-mono text-[10px] font-medium uppercase tracking-wider text-[#3b6ef8]">
+                  {client.vertical_label || vertical.label}
+                </span>
+                <ClientStatusChip status={lifecycleStatus} />
+                <ClientStatusChip status={runtime} />
+              </div>
 
-            <button
-              type="button"
-              onClick={() => onOpenOutput('overview')}
-              className="w-fit max-w-full text-left text-lg font-semibold leading-tight text-[#172033] transition-colors hover:text-[#3b6ef8]"
-            >
-              {client.name}
-            </button>
+              <button
+                type="button"
+                onClick={() => onOpenOutput('overview')}
+                className="w-fit max-w-full text-left text-xl font-semibold leading-tight text-[#172033] transition-colors hover:text-[#3b6ef8]"
+              >
+                {client.name}
+              </button>
 
-            <div className="flex min-w-0 flex-col gap-1">
-              <span className="break-all font-mono text-xs tracking-tight text-[#64748b]">{client.site_id}</span>
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                <a
-                  href={client.store_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex w-fit max-w-full items-center gap-1 truncate text-xs text-[#3b6ef8] transition-colors hover:text-[#93b4fd]"
-                >
-                  <span className="truncate">{client.store_url}</span>
-                  <ExternalLink size={11} className="shrink-0" aria-hidden="true" />
-                </a>
-                <a
-                  href={panelUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex w-fit max-w-full items-center gap-1 truncate text-xs text-[#93b4fd] transition-colors hover:text-[#bfdbfe]"
-                >
-                  <span className="truncate">Owner panel</span>
-                  <ExternalLink size={11} className="shrink-0" aria-hidden="true" />
-                </a>
+              <div className="flex min-w-0 flex-col gap-2">
+                <span className="w-fit max-w-full break-all rounded border border-[#dce6f5] bg-white px-2 py-1 font-mono text-xs tracking-tight text-[#475569]">
+                  {client.site_id}
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <a
+                    href={client.store_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex w-fit max-w-full items-center gap-1 truncate rounded-md border border-[#dce6f5] bg-white px-2.5 py-1.5 text-xs font-medium text-[#3b6ef8] transition-colors hover:border-[#93b4fd] hover:bg-[#eef4ff]"
+                  >
+                    <span className="truncate">{client.store_url}</span>
+                    <ExternalLink size={11} className="shrink-0" aria-hidden="true" />
+                  </a>
+                  <a
+                    href={panelUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex w-fit max-w-full items-center gap-1 truncate rounded-md border border-[#dce6f5] bg-white px-2.5 py-1.5 text-xs font-medium text-[#64748b] transition-colors hover:border-[#93b4fd] hover:bg-[#eef4ff] hover:text-[#3b6ef8]"
+                  >
+                    <span className="truncate">Owner panel</span>
+                    <ExternalLink size={11} className="shrink-0" aria-hidden="true" />
+                  </a>
+                </div>
               </div>
             </div>
           </div>
@@ -201,7 +217,7 @@ export function ClientOperatorCenter({
           </div>
         </div>
 
-        <div className="flex min-w-0 flex-col gap-3 border-l border-[#dce6f5] bg-[#f8fbff] p-4 max-[980px]:border-l-0 max-[980px]:border-t">
+        <div className="flex min-w-0 flex-col gap-3 border-l border-[#dce6f5] bg-[linear-gradient(180deg,#f8fbff,#f1f6ff)] p-4 max-[980px]:border-l-0 max-[980px]:border-t">
           {automationLocked ? (
             <ActionCard
               icon={Plus}
@@ -224,7 +240,7 @@ export function ClientOperatorCenter({
                 running={setupState === 'running'}
                 offline={sourceOffline}
                 onClick={onRunIntegration}
-                buttonLabel={setupState === 'complete' ? 'Run setup again' : 'Run setup'}
+                buttonLabel="Setup"
               />
               <ActionCard
                 icon={PackageOpen}

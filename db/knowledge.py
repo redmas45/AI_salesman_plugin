@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import psycopg
@@ -13,6 +14,7 @@ DEFAULT_SOURCE_ID = "source:catalog_products"
 DEFAULT_SOURCE_NAME = "catalog_products"
 DEFAULT_SOURCE_TYPE = "product_catalog"
 KNOWLEDGE_PREVIEW_LIMIT = 50
+logger = logging.getLogger(__name__)
 
 
 def sync_products_to_knowledge(
@@ -46,6 +48,15 @@ def sync_products_to_knowledge(
     with get_db(site_id) as conn:
         for row in rows:
             changed += _upsert_product_knowledge_item(conn, dict(row), source_id, entity_type=entity_type)
+    if changed:
+        try:
+            from db.answer_cache import bump_data_version
+
+            bump_data_version(site_id, reason="knowledge_sync")
+        except psycopg.Error:
+            raise
+        except Exception as exc:
+            logger.warning("Answer cache invalidation skipped for %s/%s: %s", site_id, source_name, exc)
     return changed
 
 

@@ -40,7 +40,7 @@ EMBEDDING_MODEL: str = os.getenv(
     "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
 )
 RAG_TOP_K: int = int(os.getenv("RAG_TOP_K", "10"))
-RAG_TOP_N: int = int(os.getenv("RAG_TOP_N", "3"))
+RAG_TOP_N: int = int(os.getenv("RAG_TOP_N", "10"))
 
 LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.20"))
 LLM_MAX_TOKENS_HARD_CAP: int = int(os.getenv("LLM_MAX_TOKENS_HARD_CAP", "320"))
@@ -77,6 +77,7 @@ BASE_DIR = Path(__file__).parent
 
 CRAWL_MAX_PAGES: int = int(os.getenv("CRAWL_MAX_PAGES", "60"))
 CRAWL_MAX_DEPTH: int = int(os.getenv("CRAWL_MAX_DEPTH", "3"))
+SETUP_RUN_TIMEOUT_SECONDS: int = int(os.getenv("SETUP_RUN_TIMEOUT_SECONDS", "7200"))
 CRAWL_ON_STARTUP: bool = os.getenv("CRAWL_ON_STARTUP", "false").strip().lower() not in {
     "0",
     "false",
@@ -85,6 +86,7 @@ CRAWL_ON_STARTUP: bool = os.getenv("CRAWL_ON_STARTUP", "false").strip().lower() 
 }
 CRAWL_PERIODIC_ENABLED: bool = _env_bool("CRAWL_PERIODIC_ENABLED", False)
 ENSURE_DEFAULT_CLIENT_ON_STARTUP: bool = _env_bool("ENSURE_DEFAULT_CLIENT_ON_STARTUP", False)
+CLEAN_SYNTHETIC_DEMO_CLIENTS_ON_STARTUP: bool = _env_bool("CLEAN_SYNTHETIC_DEMO_CLIENTS_ON_STARTUP", True)
 
 MAX_TRANSCRIPT_CHARS: int = 2000
 MAX_RESPONSE_CHARS: int = 3000

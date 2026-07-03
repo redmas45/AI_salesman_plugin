@@ -62,7 +62,7 @@ function basePayload(siteId) {
 
 function clickPayload(siteId, event) {
   const target = closestClickableTarget(event);
-  if (!target || target.closest?.("#shopbot-widget")) return null;
+  if (!target || target.closest?.("#mayabot-widget")) return null;
 
   return {
     ...basePayload(siteId),
@@ -83,7 +83,7 @@ function closestClickableTarget(event) {
 
 function submitPayload(siteId, event) {
   const form = event.target;
-  if (!form || form.tagName?.toLowerCase() !== "form" || form.closest?.("#shopbot-widget")) return null;
+  if (!form || form.tagName?.toLowerCase() !== "form" || form.closest?.("#mayabot-widget")) return null;
 
   const submitter = event.submitter;
   return {

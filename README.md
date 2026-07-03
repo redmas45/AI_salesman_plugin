@@ -6,15 +6,15 @@ The client website stays independent. It owns its own users, products or busines
 
 ## Current State
 
-Current development checkpoint: **L12 universal domain readiness matrix and safe action contracts**
+Current development checkpoint: **L15 universal runtime intelligence, tenant cache, and data freshness**
 
-Date: **2026-06-30**
+Date: **2026-07-01**
 
 This repo has moved past the old ecommerce-only baseline. The current foundation supports:
 
 - Universal one-line installer: `/install.js` with automatic client identity and vertical discovery.
-- Hosted browser adapter runtime: `/shopbot-adapter.js`.
-- Hosted widget bundle: `/shopbot.js` and `/shopbot-widget.js`.
+- Hosted browser adapter runtime: `/mayabot-adapter.js`.
+- Hosted widget bundle: `/mayabot.js` and `/mayabot-widget.js`.
 - Browser discovery beacon: `POST /v1/widget/register`.
 - Browser-side hard-widget/provider hints for auth gates, CAPTCHA, payment providers, calendar widgets, maps, file uploads, iframes, and external handoffs.
 - Safe provider handoff execution for map links/embeds, appointment scheduler links/embeds, and contact providers such as phone, email, and WhatsApp-style links.
@@ -23,6 +23,50 @@ This repo has moved past the old ecommerce-only baseline. The current foundation
 - Generated adapter runtime config for routes, selectors, actions, platform hints, and discovery metadata.
 - Admin-visible live action candidates from buttons, links, forms, routes, and generated action mappings.
 - CRM approval/rejection controls for live action candidates and repair proposals, with review history preserved in client runtime config.
+- Per-client tenant schemas for crawled data, knowledge, embeddings, data versions, and answer cache state.
+- Bounded Maya session memory with rolling summaries, recent turns, retrieved site context, and explicit answer scopes.
+- Tenant-local safe answer cache for repeated grounded questions, with bypasses for cart, checkout, quote, booking, payment, login, upload, and other side-effect actions.
+
+## Recent Enhancements (2026-07-01)
+
+- **Universal schema-driven prompt contract**: Runtime and CRM-generated prompts now require Maya to extract facts from the latest message, conversation history, session profile, live page context, and the discovered action field schema before asking follow-up questions.
+- **No site or vertical hot patches**: Prompt/action fixes must use discovered action names, required params, field labels, input types, placeholders, and select/radio options from the current website. Do not add Policy, AI-KART, travel, insurance, or any other domain-specific slot patches to make one demo pass.
+- **Backend action-param guard**: The orchestrator now fills action params from natural language using each site's discovered action schema before capability filtering, so a weak LLM action can still execute with discovered form fields instead of getting blocked for missing params.
+- **Exact missing-field questions**: Capability filtering now asks for the exact missing required field, such as age or phone, instead of falling back to a broad vertical intake question.
+- **Quote intent over page navigation**: Phrases such as "show me quotes" are treated as quote-flow intent when the site supports `START_QUOTE`; explicit requests like "open quote page" still navigate.
+- **Result-form action contracts**: Safe result-producing forms such as quote/search/availability forms now treat their discovered fields as required action params, even when the DOM omits HTML `required`; sensitive/contact/finalization forms remain prepare-only.
+- **Schema-derived setup smoke tests**: Setup prompt checks now prefer deterministic contract tests generated from each action's discovered required fields. Fallback LLM smoke tests are enriched with exact field values from the same schema so setup validates the current website contract instead of a canned vertical script.
+- **Safer rediscovery vertical handling**: Existing clients keep their current vertical when a weak generic rediscovery refreshes the URL/origin, while the normal confidence gate still controls real vertical upgrades or switches.
+- **Sales relevance and answer scope**: Maya now marks every response as `grounded_fact`, `buying_guidance`, `website_action`, or `unsupported_or_offsite`. Buying-relevant questions use source data; off-site deep theory is bounded unless the current website's retrieved data supports it.
+- **Bounded session context**: Runtime calls include a compact rolling session summary plus recent turns instead of an unbounded transcript. This keeps Maya conversational without wasting tokens or repeating already supplied facts.
+- **Tenant-local answer cache**: Safe, source-backed answers can be served from a per-client cache when the same question returns under the same tenant data version. Side-effect requests always bypass cache.
+- **Dynamic data versioning**: Catalog, knowledge, prompt-profile, and runtime-config changes bump the tenant data version and stale old cache rows, so a changed inventory or plan catalog does not leave Maya answering from old data.
+- **CRM cache visibility**: Dashboard and client cards expose cache hits, fresh cache rows, and estimated tokens saved. The admin API exposes `/v1/admin/clients/{site_id}/answer-cache`.
+- **Extended tenant isolation audit**: The isolation check now covers answer-cache scope in addition to runtime config, install script scoping, prompt profile scoping, and knowledge/RAG scoping.
+
+## UX Reality Check And Recovery Plan (2026-07-02)
+
+Recent local testing shows the system is not yet close to the target end-user quality. Maya can often produce an action, but the full buyer journey is not reliable enough. The next work session must focus on end-to-end user experience, not more surface-level prompt edits.
+
+Observed from recent Docker logs:
+
+- Maya emits actions such as `NAVIGATE_TO`, `START_QUOTE`, `SHOW_ENTITIES`, `SORT_ENTITIES`, and `COMPARE_ENTITIES`, but the backend log does not prove that the browser completed the action, changed page, submitted a form, or recovered after failure.
+- WebSocket voice sessions close and reopen repeatedly during one user journey. The mic/voice lifecycle needs a long-session stability pass.
+- Purchase intent is weak. Example: asking to buy a named travel plan produced navigation to the travel route, then later fell back to a generic quote flow using old age/city facts. A purchase journey must bind to the specific item or service the user named.
+- Comparison is shallow and sometimes wrong. Example: unclear speech triggered entity comparison, and a two-plan comparison included extra records. Compare output must be source-grounded, structured, and useful for deciding what to buy.
+- Recommendation output can be irrelevant or mixed across categories. Example: a health-insurance-style question returned motor/health records without a clear conclusion.
+- Speech recognition errors such as `SDFC`, `SPI`, or unrelated phrases are not handled with enough disambiguation before Maya acts.
+
+Tomorrow's priority plan:
+
+1. **Action truth loop**: Add a generic request/ack contract between Maya and the browser adapter. Every UI action gets an ID, browser execution result, URL/DOM/form evidence, and failure reason. Maya must not claim "opened", "started", "added", or "submitted" unless the browser confirms it.
+2. **Mic and session stability**: Test and fix long conversations across many turns, page navigations, widget reloads, WebSocket reconnects, recording state, audio playback, and status polling. The target is a stable voice session through a realistic buying journey.
+3. **Purchase flow planner**: Build a universal flow planner for `buy`, `add to cart`, `book`, `apply`, `quote`, and `checkout` intents. It must resolve the named entity, choose the safest next website action, execute or hand off based on risk, and avoid falling back to generic navigation.
+4. **Comparison quality layer**: Replace generic compare behavior with a structured source-grounded comparison model: matched items only, key decision dimensions, missing-data labels, best-fit recommendation, and no off-site speculation.
+5. **STT uncertainty guard**: Detect low-confidence or semantically odd transcripts before acting. Ask one short clarification when the transcript conflicts with page/site data or likely entity names.
+6. **End-to-end acceptance tests**: Add browser tests for navigation, quote submission, add-to-cart/purchase prep, comparison, sorting, and long mic sessions across ecommerce and insurance fixtures. A setup run is not green unless browser-executed action evidence passes.
+7. **CRM observability**: Surface action execution status in the CRM conversation/activity view: requested action, browser ack, final URL, form submit result, latency, and failure reason.
+Golden rule: fixes must remain universal and runtime-discovered. Do not patch AI-KART, Policy Website, travel, insurance, or any individual client website to make one demo pass.
 
 ## Recent Enhancements (2026-06-29)
 
@@ -66,10 +110,12 @@ This repo has moved past the old ecommerce-only baseline. The current foundation
   - script-detected sites stay Available until explicitly approved
   - Available installs are grouped by online/offline reachability
   - duplicate `auto_*` installs are hidden when an explicit installer `data-site-id` exists on the same origin
+  - `Remove` hides an install from CRM lists by marking it deleted while retaining tenant data; `Move to available` is a separate lifecycle action for current clients
   - setup is the single visible operator action for crawl, flow discovery, rehearsal, readiness evidence, and prompt smoke tests
   - crawl/setup stay locked while the source website is offline
 - Universal action execution rule:
   - setup/discovery must never depend on client-specific website patches or hardcoded site IDs
+  - prompt engineering must be schema-driven: extract and ask for fields from the current website's discovered action contract, not from hand-written assumptions about a domain
   - safe information, comparison, sorting, page-opening, and chat-session actions are derived from the shared action registry instead of hand-maintained per-vertical allowlists
   - low-sensitivity result forms, such as search, availability, calculator, and quote-results forms, may be submitted when their labels indicate they show options/results and their fields do not collect contact, payment, identity, upload, medical, application, or other sensitive/finalization data
   - lead capture, checkout, booking finalization, payment, application, claim, renewal, contact, and sensitive forms stay prepare-only or handoff-first until the website/provider/human confirms the next step
@@ -145,8 +191,8 @@ Client site
     |
     v
 /install.js
-  loads /shopbot-adapter.js
-  loads /shopbot.js
+  loads /mayabot-adapter.js
+  loads /mayabot.js
     |
     v
 Browser adapter discovery
@@ -200,7 +246,7 @@ The adapter is the Hub-controlled execution layer that tells the widget how to o
 - Which live action candidates and prompt ideas were inferred from the pasted script.
 - Which high-confidence browser interactions were promoted into executable adapter actions.
 
-The browser runtime lives in `plugin/src/adapter/` and is served as `/shopbot-adapter.js`.
+The browser runtime lives in `plugin/src/adapter/` and is served as `/mayabot-adapter.js`.
 
 The generated per-client runtime config is returned by:
 
@@ -279,10 +325,13 @@ platform policy
   + client published prompt profile
   + runtime capabilities
   + retrieved product or knowledge context
-  + conversation context
+  + rolling session summary
+  + recent conversation context
 ```
 
 High-risk verticals must stay conservative. The assistant must not diagnose, underwrite, approve, make legal conclusions, promise returns, promise eligibility, or invent live availability/price/terms.
+
+Prompt engineering rule: the prompt must adapt from the current website's discovered schema and evidence. It must not hardcode Policy, AI-KART, travel, ecommerce, insurance, or any other demo-specific behavior. Maya should ask only for missing fields, reuse facts already supplied by the user, set `answer_scope` on every response, and keep hidden reasoning internal.
 
 ## RAG And Knowledge
 
@@ -292,6 +341,8 @@ Key files:
 
 ```text
 db/knowledge.py
+db/answer_cache.py
+db/session_memory.py
 agent/retrieval/generic_rag.py
 agent/prompts/generic.py
 ```
@@ -302,9 +353,12 @@ Key endpoints:
 GET /v1/knowledge?site_id=<site_id>
 GET /v1/knowledge/by-ids?site_id=<site_id>&ids=<id,id>
 GET /v1/admin/clients/{site_id}/knowledge
+GET /v1/admin/clients/{site_id}/answer-cache
 ```
 
 Current rule: keep ecommerce stable while generic knowledge, generic entity display, and dynamic DOM control are introduced gradually. Do not delete product tables, ecommerce prompt wrappers, Shopify/WooCommerce support, or legacy ecommerce widget fallbacks until runtime reports and tests prove the generic path has production parity.
+
+Tenant/data rule: each client must read and write through its own tenant schema. Product, plan, service, review, knowledge, embedding, session, and cache data must not mix across clients. When a client's inventory or business records change, crawl/sync updates the tenant copy, bumps `tenant_data_versions`, and marks stale cached answers so RAG and Maya's replies follow the current website data.
 
 ## Repository Layout
 
@@ -358,21 +412,19 @@ playwright install chromium
 uvicorn api.main:app --reload --host 127.0.0.1 --port 8585
 ```
 
-Build CRM:
+Build AI Hub frontend bundles:
 
 ```powershell
-cd C:\Users\admin\Desktop\AI_salesman_plugin\crm
-npm install
-npm run lint
-npm run build
+cd C:\Users\admin\Desktop\AI_salesman_plugin
+corepack pnpm install
+corepack pnpm --filter ai-hub-crm build
 ```
 
 Build widget and adapter bundles:
 
 ```powershell
-cd C:\Users\admin\Desktop\AI_salesman_plugin\plugin
-npm install
-npm run build
+cd C:\Users\admin\Desktop\AI_salesman_plugin
+corepack pnpm --filter mayabot-plugin build
 ```
 
 If you see `ModuleNotFoundError: No module named 'app'`, you are probably running an AI-KART command in the Hub repo, or a Hub command in the AI-KART repo. AI Hub runs with:
@@ -471,9 +523,8 @@ python -m compileall agent api db tests
 CRM:
 
 ```powershell
-cd C:\Users\admin\Desktop\AI_salesman_plugin\crm
-npm run lint
-npm run build
+cd C:\Users\admin\Desktop\AI_salesman_plugin
+corepack pnpm --filter ai-hub-crm build
 ```
 
 Client Panel:
@@ -488,8 +539,8 @@ npm run build
 Widget:
 
 ```powershell
-cd C:\Users\admin\Desktop\AI_salesman_plugin\plugin
-npm run build
+cd C:\Users\admin\Desktop\AI_salesman_plugin
+corepack pnpm --filter mayabot-plugin build
 ```
 
 Useful focused tests:
@@ -515,7 +566,16 @@ Recent local verification after the universal domain readiness matrix:
 ```text
 python -m pytest -q                         -> 459 passed
 python -m compileall agent api db tests      -> passed
-cd plugin; npm run build                     -> passed
+corepack pnpm --filter mayabot-plugin build  -> passed
+```
+
+Recent verification after the L15 runtime intelligence, cache, and tenant-isolation pass:
+
+```text
+python -m pytest tests/test_sales_relevance_cache.py tests/test_orchestrator_matching.py tests/test_vertical_runtime.py tests/test_robustness_roadmap.py -q -> 106 passed
+python -m pytest -q                                                                                                                   -> 488 passed, 1 skipped
+python -m compileall agent api db tests                                                                                                -> passed
+corepack pnpm --filter ai-hub-crm build                                                                                                -> passed
 ```
 
 ## Operational Boundaries
@@ -574,10 +634,13 @@ Current automatic-discovery reliability layer:
 - Vertical-aware learned action promotion with manual override protection.
 - Vertical-aware sales intake prompt block that makes the assistant collect missing domain facts before quote, booking, checkout, application, appointment, or lead-capture actions.
 - Runtime action-readiness prompt block that names missing required params and follow-up questions before generated actions are emitted.
+- Runtime sales-relevance scope that keeps Maya focused on buying, comparison, product/service facts, and safe website actions.
+- Tenant-local answer cache for repeated grounded questions, with side-effect action bypasses and data-version invalidation.
+- Bounded session memory that combines a compact summary with recent turns instead of sending an unbounded transcript.
 - CRM approve/reject workflow for live action candidates.
 - CRM refresh/approve/reject workflow for action repair proposals.
 - CRM approve/reject workflow for flow-level route/action repair plans.
-- Tenant/RAG isolation audit for per-client runtime, prompt, install, and knowledge boundaries.
+- Tenant/RAG/cache isolation audit for per-client runtime, prompt, install, knowledge, embedding, and answer-cache boundaries.
 - Robots/sitemap-aware HTTP discovery fallback.
 - Static cleanup guards against old monolithic widget action files, demo-site globals, and hardcoded AI-KART/ecommerce widget chrome.
 - Provider-heavy fixture coverage for travel, healthcare, insurance, ecommerce, construction, education, and recruiting layouts with handoff playbooks and prompt-safe browser context.

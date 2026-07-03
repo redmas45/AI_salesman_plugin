@@ -151,7 +151,15 @@ def _public_client(client: dict[str, Any]) -> dict[str, Any]:
 def _client_integration_summary(client: dict[str, Any]) -> dict[str, Any]:
     readiness = _readiness_report(client)
     capabilities = _capability_rows(readiness)
-    unsupported = [row for row in capabilities if not row.get("supported") and not str(row.get("name", "")).startswith("expected_action:")]
+    unsupported = [
+        row
+        for row in capabilities
+        if (
+            not row.get("supported")
+            and row.get("blocking", True) is not False
+            and not str(row.get("name", "")).startswith("expected_action:")
+        )
+    ]
     blocking_unsupported = [row for row in unsupported if not _is_non_blocking_readiness_gap(row)]
     informational_unsupported = [row for row in unsupported if _is_non_blocking_readiness_gap(row)]
     domain = next((row for row in capabilities if row.get("name") == "domain_action_coverage"), {})

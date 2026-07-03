@@ -12,20 +12,26 @@ from typing import Any
 
 import config
 from agent.actions.registry import is_supported_action
+from agent.navigation_aliases import is_generic_route_alias, route_alias_key, semantic_route_alias_keys
 from api.models import (
     ACTION_ADD_TO_CART,
     ACTION_CLEAR_CART,
     ACTION_CLEAR_FILTERS,
     ACTION_FILTER_PRODUCTS,
+    ACTION_COMPARE_ENTITIES,
+    ACTION_OPEN_ENTITY_DETAIL,
     ACTION_NAVIGATE_TO,
     ACTION_REMOVE_FROM_CART,
     ACTION_RUN_DOM_SEQUENCE,
+    ACTION_SHOW_ENTITIES,
     ACTION_SHOW_COMPARISON,
     ACTION_SHOW_PRODUCT_DETAIL,
     ACTION_SHOW_PRODUCTS,
     ACTION_SORT_ENTITIES,
     ACTION_SORT_PRODUCTS,
     ACTION_UPDATE_CART_QUANTITY,
+    ENTITY_ID_PARAM,
+    ENTITY_IDS_PARAM,
     PAGE_PARAM,
     PRODUCT_ID_PARAM,
     PRODUCT_IDS_PARAM,
@@ -183,7 +189,7 @@ def validate_input(transcript: str) -> str:
                 "Guardrail | Prompt injection detected: %r", transcript[:100]
             )
             raise InputGuardrailError(
-                "Whoops! I'm just a simple shopping bot, so I can't do that. But I can definitely help you find some amazing deals on our store!"
+                "Whoops! I'm just a simple sales assistant, so I can't do that. But I can definitely help you find some amazing deals on our store!"
             )
 
     # Offensive input
@@ -210,7 +216,11 @@ class OutputGuardrailError(Exception):
 
 
 def validate_output(
-    response: dict[str, Any], site_id: str, allowed_product_ids: list[int] | None = None
+    response: dict[str, Any],
+    site_id: str,
+    allowed_product_ids: list[int] | None = None,
+    allowed_entity_ids: list[str] | None = None,
+    runtime_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Validate and sanitise the LLM's structured response.
@@ -261,7 +271,7 @@ def validate_output(
         )
         actions = actions[: config.MAX_UI_ACTIONS]
 
-    adapter_contract = _adapter_contract(site_id)
+    adapter_contract = _adapter_contract(site_id, runtime_context)
     validated_actions = []
     for action in actions:
         if not isinstance(action, dict):
@@ -300,6 +310,11 @@ def validate_output(
             if params is None:
                 continue
 
+        if action_type in (ACTION_SHOW_ENTITIES, ACTION_COMPARE_ENTITIES, ACTION_OPEN_ENTITY_DETAIL):
+            params = _validate_entity_ids(action_type, params, site_id, allowed_entity_ids)
+            if params is None:
+                continue
+
         # Validate price ranges make sense
         if action_type == ACTION_FILTER_PRODUCTS:
             params = _validate_filter_params(params)
@@ -327,7 +342,7 @@ def validate_output(
         if action_type == ACTION_CLEAR_CART:
             params = {}
 
-        if action_type in adapter_contract.get("actions", {}):
+        if action_type != ACTION_NAVIGATE_TO and action_type in adapter_contract.get("actions", {}):
             params = _validate_adapter_action_params(
                 params,
                 adapter_contract["actions"][action_type],
@@ -403,6 +418,94 @@ def _validate_product_ids(
     return params
 
 
+def _validate_entity_ids(
+    action_type: str,
+    params: dict,
+    site_id: str,
+    allowed_entity_ids: list[str] | None = None,
+) -> dict | None:
+    """Validate generic record display actions against retrieved or tenant knowledge IDs."""
+    if action_type in (ACTION_SHOW_ENTITIES, ACTION_COMPARE_ENTITIES):
+        raw_ids = params.get(ENTITY_IDS_PARAM, [])
+        if not isinstance(raw_ids, list):
+            logger.warning(
+                "Guardrail | %s entity_ids is not a list - skipping.",
+                action_type,
+            )
+            return None
+
+        clean_ids = _clean_entity_ids(raw_ids)
+        valid_ids = _valid_entity_ids(site_id, clean_ids, allowed_entity_ids)
+        if len(valid_ids) != len(clean_ids):
+            logger.warning(
+                "Guardrail | Removed %d invalid entity IDs from %s.",
+                len(clean_ids) - len(valid_ids),
+                action_type,
+            )
+        if not valid_ids:
+            return None
+
+        result = {ENTITY_IDS_PARAM: valid_ids[:4] if action_type == ACTION_COMPARE_ENTITIES else valid_ids}
+        _copy_safe_display_text(params, result)
+        return result
+
+    if action_type == ACTION_OPEN_ENTITY_DETAIL:
+        raw_id = str(params.get(ENTITY_ID_PARAM) or params.get("id") or "").strip()
+        valid_ids = _valid_entity_ids(site_id, [raw_id], allowed_entity_ids)
+        if not valid_ids:
+            logger.warning(
+                "Guardrail | entity_id=%r is invalid - removing action.",
+                params.get(ENTITY_ID_PARAM) or params.get("id"),
+            )
+            return None
+        return {ENTITY_ID_PARAM: valid_ids[0]}
+
+    return params
+
+
+def _clean_entity_ids(raw_ids: list[Any]) -> list[str]:
+    clean_ids: list[str] = []
+    seen: set[str] = set()
+    for raw_id in raw_ids:
+        entity_id = str(raw_id or "").replace("\x00", "").strip()[:_MAX_ACTION_PARAM_VALUE_LENGTH]
+        if not entity_id or entity_id in seen:
+            continue
+        seen.add(entity_id)
+        clean_ids.append(entity_id)
+    return clean_ids
+
+
+def _valid_entity_ids(
+    site_id: str,
+    entity_ids: list[str],
+    allowed_entity_ids: list[str] | None = None,
+) -> list[str]:
+    if not entity_ids:
+        return []
+
+    if allowed_entity_ids is not None:
+        allowed = {str(entity_id or "").strip() for entity_id in allowed_entity_ids}
+        return [entity_id for entity_id in entity_ids if entity_id in allowed]
+
+    try:
+        from db.knowledge import get_knowledge_items_by_ids
+
+        items = get_knowledge_items_by_ids(site_id, entity_ids)
+    except Exception as exc:
+        logger.warning("Guardrail | entity ID lookup failed for %s: %s", site_id, exc)
+        return []
+
+    active_ids = {str(item.get("id") or "").strip() for item in items}
+    return [entity_id for entity_id in entity_ids if entity_id in active_ids]
+
+
+def _copy_safe_display_text(params: dict, result: dict) -> None:
+    for key in ("search_query", "title"):
+        value = _clean_action_param_value(params.get(key))
+        if isinstance(value, str) and value:
+            result[key] = value
+
+
 def _validate_filter_params(params: dict) -> dict:
     """Sanitise filter parameters and drop unsupported keys."""
     params = dict(params)
@@ -432,7 +535,7 @@ def _validate_filter_params(params: dict) -> dict:
 def _validate_navigation_params(params: dict, adapter_routes: dict[str, str] | None = None) -> dict | None:
     """Validate navigation targets for the frontend router."""
     page = str(params.get("page", "")).strip().lower().strip("/")
-    if page in _VALID_NAV_PAGES or page.startswith("category/"):
+    if page in _VALID_NAV_PAGES or page.startswith("category/") or page.startswith("shop?q="):
         return {"page": page}
     route_target = _adapter_route_target(page, adapter_routes or {})
     if route_target:
@@ -445,11 +548,12 @@ def _adapter_route_target(page: str, adapter_routes: dict[str, str]) -> str:
     if not page:
         return ""
     normalized_page = page.strip("/")
+    normalized_page_key = _route_alias_key(normalized_page)
     for key, path in adapter_routes.items():
         route_key = str(key or "").strip().lower().strip("/")
         route_path = _clean_same_origin_path(path)
-        if normalized_page == route_key and route_path:
-            return route_key
+        if (normalized_page == route_key or normalized_page_key == route_key) and route_path:
+            return route_path.strip("/") or route_key
         if route_path and normalized_page == route_path.strip("/"):
             return route_path.strip("/")
     return ""
@@ -458,7 +562,11 @@ def _adapter_route_target(page: str, adapter_routes: dict[str, str]) -> str:
 def _clean_same_origin_path(value: Any) -> str:
     path = str(value or "").strip()
     lowered = path.lower()
-    if not path or lowered.startswith(("http://", "https://", "javascript:", "data:")):
+    if (
+        not path
+        or path.startswith("//")
+        or lowered.startswith(("http://", "https://", "javascript:", "data:"))
+    ):
         return ""
     return path if path.startswith("/") else f"/{path}"
 
@@ -559,22 +667,112 @@ def _clean_action_param_value(value: Any) -> str | int | float | bool | None:
     return text
 
 
-def _adapter_contract(site_id: str) -> dict[str, Any]:
+def _adapter_contract(site_id: str, runtime_context: dict[str, Any] | None = None) -> dict[str, Any]:
     vertical_config = _client_vertical_config(site_id)
     actions = vertical_config.get("actions")
-    routes = vertical_config.get("routes")
+    route_map = _navigation_route_map(vertical_config)
+    route_map.update(_navigation_route_map(runtime_context or {}))
     return {
         "actions": {
             str(name or "").strip().upper(): config
             for name, config in (actions or {}).items()
             if isinstance(config, dict)
         } if isinstance(actions, dict) else {},
-        "routes": {
-            str(name or "").strip().lower(): str(path or "").strip()
-            for name, path in (routes or {}).items()
-            if str(name or "").strip() and _clean_same_origin_path(path)
-        } if isinstance(routes, dict) else {},
+        "routes": route_map,
     }
+
+
+def _navigation_route_map(vertical_config: dict[str, Any]) -> dict[str, str]:
+    routes: dict[str, str] = {}
+    raw_routes = vertical_config.get("routes")
+    if isinstance(raw_routes, dict):
+        for name, path in raw_routes.items():
+            _add_route_alias(routes, name, path)
+
+    raw_actions = vertical_config.get("actions")
+    if isinstance(raw_actions, dict):
+        for _action_name, config in raw_actions.items():
+            if not isinstance(config, dict):
+                continue
+            if str(config.get("type") or "").lower() not in {"navigate", "route"}:
+                continue
+            path = _observed_navigation_path(config.get("path") or config.get("page_path") or config.get("pagePath"))
+            if not path:
+                continue
+            _add_route_alias(routes, config.get("label"), path)
+
+    for candidate in _safe_list(vertical_config.get("action_candidates")):
+        if not isinstance(candidate, dict):
+            continue
+        path = _observed_navigation_path(candidate.get("path"), candidate.get("origin"))
+        if not path:
+            continue
+        if str(candidate.get("type") or "").lower() not in {"navigate", "route"} and str(candidate.get("kind") or "").lower() != "route":
+            continue
+        _add_route_alias(routes, candidate.get("label"), path)
+
+    for event in _safe_list(vertical_config.get("interaction_events")):
+        if not isinstance(event, dict):
+            continue
+        path = _observed_navigation_path(event.get("href"), event.get("origin"))
+        if not path:
+            continue
+        _add_route_alias(routes, event.get("label"), path)
+        _add_route_alias(routes, event.get("matched_label"), path)
+
+    origin = vertical_config.get("url") or vertical_config.get("origin")
+    for link in _safe_list(vertical_config.get("links")):
+        if not isinstance(link, dict):
+            continue
+        path = _observed_navigation_path(link.get("href"), origin)
+        if not path:
+            continue
+        _add_route_alias(routes, link.get("label"), path)
+        _add_route_alias(routes, link.get("text"), path)
+
+    return routes
+
+
+def _add_route_alias(routes: dict[str, str], alias: Any, raw_path: Any) -> None:
+    path = _observed_navigation_path(raw_path)
+    key = _route_alias_key(alias)
+    if is_generic_route_alias(key):
+        return
+    if key and path:
+        routes.setdefault(key, path)
+        routes.setdefault(path.strip("/").lower(), path)
+        last_segment = path.split("?", 1)[0].split("#", 1)[0].strip("/").split("/")[-1]
+        if last_segment:
+            routes.setdefault(_route_alias_key(last_segment), path)
+        for semantic_alias in semantic_route_alias_keys(key, last_segment):
+            routes.setdefault(semantic_alias, path)
+
+
+def _route_alias_key(value: Any) -> str:
+    return route_alias_key(value)
+
+
+def _observed_navigation_path(value: Any, origin: Any = "") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.lower().startswith(("http://", "https://")):
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(text)
+            if origin:
+                parsed_origin = urlparse(str(origin))
+                if (parsed.scheme, parsed.netloc) != (parsed_origin.scheme, parsed_origin.netloc):
+                    return ""
+            return _clean_same_origin_path(f"{parsed.path or '/'}{('?' + parsed.query) if parsed.query else ''}{('#' + parsed.fragment) if parsed.fragment else ''}")
+        except Exception:
+            return ""
+    return _clean_same_origin_path(text)
+
+
+def _safe_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
 
 
 def _client_vertical_config(site_id: str) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-"""WebSocket transport for the voice shopping loop.
+"""WebSocket transport for the voice sales loop.
 
 The stable HTTP endpoint remains the source of truth. This module wraps the
 existing orchestrator stream in a non-blocking WebSocket session so the browser
@@ -19,8 +19,10 @@ import psycopg
 
 from agent import orchestrator
 from agent.page_context import sanitize_page_context
+from api.action_truth import annotate_ui_actions, new_action_turn_id
 from api.turn_logging import print_turn_summary, turn_timer
 from db import admin as admin_db
+from db.session_memory import get_session_summary, update_session_summary
 import config
 
 logger = logging.getLogger(__name__)
@@ -59,6 +61,7 @@ class WebSocketShopSession:
         self.session_id = _safe_session_id(session_id, self.site_id)
         self.history: list[dict[str, str]] = []
         self.audio_chunks: list[bytes] = []
+        self.audio_mime_type = ""
         self.page_context: dict[str, Any] = {}
 
     async def run(self) -> None:
@@ -83,13 +86,17 @@ class WebSocketShopSession:
                     continue
 
                 if message_type == WS_TYPE_AUDIO_CHUNK:
+                    self.audio_mime_type = _safe_audio_mime_type(payload.get("mime_type")) or self.audio_mime_type
                     self.audio_chunks.append(_decode_audio_chunk(payload))
                     continue
 
                 if message_type == WS_TYPE_AUDIO_END:
+                    self.audio_mime_type = _safe_audio_mime_type(payload.get("mime_type")) or self.audio_mime_type
                     audio = b"".join(self.audio_chunks)
+                    audio_filename = _audio_filename_for_mime(self.audio_mime_type)
                     self.audio_chunks = []
-                    await self.process_turn(audio_bytes=audio or None)
+                    self.audio_mime_type = ""
+                    await self.process_turn(audio_bytes=audio or None, audio_filename=audio_filename)
                     continue
 
                 if message_type == WS_TYPE_TEXT:
@@ -122,6 +129,7 @@ class WebSocketShopSession:
         *,
         audio_bytes: bytes | None = None,
         text_input: str | None = None,
+        audio_filename: str = DEFAULT_AUDIO_FILENAME,
     ) -> None:
         if not audio_bytes and not (text_input or "").strip():
             await self.send({"type": WS_TYPE_ERROR, "message": ERROR_NO_AUDIO_OR_TEXT})
@@ -133,19 +141,22 @@ class WebSocketShopSession:
             return
 
         started_at = turn_timer()
+        action_turn_id = new_action_turn_id()
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
         def worker() -> None:
             try:
+                session_summary = get_session_summary(self.site_id, self.session_id)
                 for event in orchestrator.run_stream(
                     site_id=self.site_id,
                     audio_bytes=audio_bytes,
                     text_input=text_input,
-                    audio_filename=DEFAULT_AUDIO_FILENAME,
+                    audio_filename=audio_filename,
                     skip_tts=False,
                     conversation_history=self.history,
                     page_context=self.page_context,
+                    session_summary=session_summary,
                 ):
                     asyncio.run_coroutine_threadsafe(queue.put(event), loop).result()
             except RECOVERABLE_WS_ERRORS as exc:  # pragma: no cover - defensive bridge
@@ -179,7 +190,7 @@ class WebSocketShopSession:
                 continue
 
             if event_name == WS_TYPE_ACTIONS:
-                ui_actions = data.get("ui_actions") or []
+                ui_actions = annotate_ui_actions(data.get("ui_actions"), turn_id=action_turn_id)
                 continue
 
             if event_name == WS_TYPE_RESPONSE:
@@ -230,6 +241,13 @@ class WebSocketShopSession:
             status=status,
         )
         self.record_usage(transcript, response_text or error_message, ui_actions, latency_ms, status)
+        update_session_summary(
+            self.site_id,
+            self.session_id,
+            history=self.history,
+            transcript=transcript or (text_input or ""),
+            response_text=response_text or error_message,
+        )
 
     def update_history(self, transcript: str, response_text: str) -> None:
         if transcript:
@@ -266,7 +284,7 @@ class WebSocketShopSession:
 
 
 async def ws_shop_handler(websocket: WebSocket, site_id: str, session_id: str = "") -> None:
-    """Handle one hub-spoke voice shopping WebSocket session."""
+    """Handle one hub-spoke voice sales WebSocket session."""
 
     await WebSocketShopSession(websocket, site_id, session_id).run()
 
@@ -279,6 +297,24 @@ def _decode_audio_chunk(payload: dict[str, Any]) -> bytes:
         return base64.b64decode(data, validate=True)
     except (binascii.Error, ValueError):
         return b""
+
+
+def _safe_audio_mime_type(value: Any) -> str:
+    text = str(value or "").lower().strip()
+    if not text.startswith("audio/"):
+        return ""
+    return text[:80]
+
+
+def _audio_filename_for_mime(mime_type: str) -> str:
+    text = _safe_audio_mime_type(mime_type)
+    if "mp4" in text or "mpeg" in text:
+        return "audio.mp4"
+    if "ogg" in text:
+        return "audio.ogg"
+    if "wav" in text:
+        return "audio.wav"
+    return DEFAULT_AUDIO_FILENAME
 
 
 def _sanitize_history(raw_history: Any) -> list[dict[str, str]]:

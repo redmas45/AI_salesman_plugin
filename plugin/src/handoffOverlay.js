@@ -1,7 +1,7 @@
 import { ACTION_PARAMS, ACTIONS, OVERLAY_COLLAPSE_DELAY_MS } from "./constants";
 
-const PANEL_ID = "shopbot-handoff-panel";
-const STYLES_ID = "shopbot-handoff-overlay-styles";
+const PANEL_ID = "mayabot-handoff-panel";
+const STYLES_ID = "mayabot-handoff-overlay-styles";
 const CONTACT_ROUTE_KEYS = Object.freeze(["contact", "support", "help"]);
 const CHECKOUT_ROUTE_KEYS = Object.freeze(["checkout", "cart"]);
 
@@ -100,18 +100,18 @@ function ensureStyles() {
       opacity: 1;
       pointer-events: auto;
     }
-    .shopbot-handoff-body {
+    .mayabot-handoff-body {
       display: grid;
       gap: 12px;
       padding: 16px;
     }
-    .shopbot-handoff-top {
+    .mayabot-handoff-top {
       display: flex;
       align-items: start;
       justify-content: space-between;
       gap: 14px;
     }
-    .shopbot-handoff-title {
+    .mayabot-handoff-title {
       margin: 0;
       color: #161615;
       font-size: 16px;
@@ -119,7 +119,7 @@ function ensureStyles() {
       line-height: 1.25;
       letter-spacing: 0;
     }
-    .shopbot-handoff-close {
+    .mayabot-handoff-close {
       display: grid;
       place-items: center;
       width: 34px;
@@ -133,13 +133,13 @@ function ensureStyles() {
       font-size: 20px;
       line-height: 1;
     }
-    .shopbot-handoff-text {
+    .mayabot-handoff-text {
       margin: 0;
       color: #534d44;
       font-size: 14px;
       line-height: 1.45;
     }
-    .shopbot-handoff-reason {
+    .mayabot-handoff-reason {
       margin: 0;
       border-left: 3px solid #d9b66f;
       padding: 8px 10px;
@@ -149,7 +149,7 @@ function ensureStyles() {
       line-height: 1.35;
       overflow-wrap: anywhere;
     }
-    .shopbot-handoff-meta {
+    .mayabot-handoff-meta {
       display: grid;
       gap: 4px;
       margin: 0;
@@ -158,17 +158,17 @@ function ensureStyles() {
       line-height: 1.35;
       overflow-wrap: anywhere;
     }
-    .shopbot-handoff-meta strong {
+    .mayabot-handoff-meta strong {
       color: #161615;
       font-weight: 760;
     }
-    .shopbot-handoff-actions {
+    .mayabot-handoff-actions {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
       justify-content: flex-end;
     }
-    .shopbot-handoff-actions button {
+    .mayabot-handoff-actions button {
       min-height: 38px;
       border: 1px solid rgba(22, 22, 21, 0.12);
       border-radius: 8px;
@@ -180,7 +180,7 @@ function ensureStyles() {
       line-height: 1;
       padding: 0 14px;
     }
-    .shopbot-handoff-actions button.secondary {
+    .mayabot-handoff-actions button.secondary {
       background: #ffffff;
       color: #161615;
     }
@@ -266,7 +266,7 @@ function flowMetaMarkup(flow) {
 
   if (!rows.length) return "";
   return `
-    <p class="shopbot-handoff-meta">
+    <p class="mayabot-handoff-meta">
       ${rows.map(([label, value]) => `<span><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</span>`).join("")}
     </p>
   `;
@@ -278,8 +278,8 @@ function closePanel(panel) {
 
 function collapseVoiceBubble() {
   window.setTimeout(() => {
-    const chat = document.getElementById("shopbot-chat");
-    const messages = document.getElementById("shopbot-msgs");
+    const chat = document.getElementById("mayabot-chat");
+    const messages = document.getElementById("mayabot-msgs");
     if (messages) messages.innerHTML = "";
     if (chat) chat.classList.remove("visible");
   }, OVERLAY_COLLAPSE_DELAY_MS);
@@ -303,21 +303,21 @@ export function showHandoffOverlay(actionName, params = {}) {
   const reason = flowReason(flow, params);
 
   panel.innerHTML = `
-    <div class="shopbot-handoff-body">
-      <div class="shopbot-handoff-top">
-        <h2 class="shopbot-handoff-title">${escapeHtml(title)}</h2>
-        <button class="shopbot-handoff-close" type="button" aria-label="Close handoff">&times;</button>
+    <div class="mayabot-handoff-body">
+      <div class="mayabot-handoff-top">
+        <h2 class="mayabot-handoff-title">${escapeHtml(title)}</h2>
+        <button class="mayabot-handoff-close" type="button" aria-label="Close handoff">&times;</button>
       </div>
-      <p class="shopbot-handoff-text">${escapeHtml(message)}</p>
+      <p class="mayabot-handoff-text">${escapeHtml(message)}</p>
       ${flowMetaMarkup(flow)}
-      ${reason ? `<p class="shopbot-handoff-reason">${escapeHtml(reason)}</p>` : ""}
-      <div class="shopbot-handoff-actions">
+      ${reason ? `<p class="mayabot-handoff-reason">${escapeHtml(reason)}</p>` : ""}
+      <div class="mayabot-handoff-actions">
         <button type="button" class="secondary" data-close-handoff>Close</button>
         ${targetPath ? `<button type="button" data-open-handoff>${escapeHtml(copy.primary)}</button>` : ""}
       </div>
     </div>
   `;
-  panel.querySelector(".shopbot-handoff-close")?.addEventListener("click", () => closePanel(panel));
+  panel.querySelector(".mayabot-handoff-close")?.addEventListener("click", () => closePanel(panel));
   panel.querySelector("[data-close-handoff]")?.addEventListener("click", () => closePanel(panel));
   panel.querySelector("[data-open-handoff]")?.addEventListener("click", () => {
     window.location.href = targetPath;

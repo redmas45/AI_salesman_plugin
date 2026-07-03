@@ -122,5 +122,5 @@ function elementTouchesControls(node) {
 
 function isWidgetNode(node) {
   const element = node?.nodeType === 1 ? node : node?.parentElement;
-  return Boolean(element?.closest?.("#shopbot-widget, #shopbot-product-panel"));
+  return Boolean(element?.closest?.("#mayabot-widget, #mayabot-product-panel"));
 }

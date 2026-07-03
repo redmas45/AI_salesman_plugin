@@ -1,0 +1,451 @@
+"""Product response formatting and grounding services for ecommerce turns."""
+
+from __future__ import annotations
+
+import html
+import re
+from collections.abc import Callable
+from typing import Any
+
+from api.models import ACTION_SHOW_COMPARISON, ACTION_SHOW_PRODUCTS, PRODUCT_IDS_PARAM
+
+
+class ProductSearchQueryCleaner:
+    """Build short host-site search queries from noisy speech transcripts."""
+
+    _stopwords = frozenset(
+        {
+            "a",
+            "about",
+            "actually",
+            "again",
+            "alright",
+            "am",
+            "an",
+            "and",
+            "any",
+            "are",
+            "ask",
+            "asked",
+            "asking",
+            "best",
+            "better",
+            "bro",
+            "buy",
+            "can",
+            "compare",
+            "comparison",
+            "could",
+            "did",
+            "difference",
+            "differences",
+            "do",
+            "does",
+            "find",
+            "for",
+            "get",
+            "give",
+            "have",
+            "hello",
+            "help",
+            "hey",
+            "hi",
+            "i",
+            "im",
+            "instead",
+            "is",
+            "it",
+            "just",
+            "like",
+            "looking",
+            "man",
+            "me",
+            "mean",
+            "meant",
+            "need",
+            "not",
+            "ok",
+            "okay",
+            "on",
+            "only",
+            "option",
+            "options",
+            "please",
+            "product",
+            "products",
+            "purchase",
+            "recommend",
+            "said",
+            "say",
+            "saying",
+            "search",
+            "show",
+            "should",
+            "so",
+            "some",
+            "tell",
+            "that",
+            "the",
+            "this",
+            "to",
+            "uh",
+            "um",
+            "versus",
+            "vs",
+            "want",
+            "wanna",
+            "wanted",
+            "we",
+            "what",
+            "which",
+            "with",
+            "why",
+            "would",
+            "yeah",
+            "yep",
+            "yes",
+            "you",
+            "your",
+        }
+    )
+
+    def display_search_query(self, transcript: str, products: list[dict] | None = None) -> str:
+        words = self.search_query_words(transcript)
+        if words:
+            return " ".join(words[:4])
+        return self.display_search_query_from_products(products or [])
+
+    def search_query_words(self, value: Any) -> list[str]:
+        text = self._remove_negative_corrections(normalize_lookup_text(value))
+        words: list[str] = []
+        seen: set[str] = set()
+        for word in text.split():
+            canonical = self._canonical_query_word(word)
+            if canonical in self._stopwords or (len(canonical) <= 1 and not canonical.isdigit()):
+                continue
+            if canonical in seen:
+                continue
+            seen.add(canonical)
+            words.append(canonical)
+        return words
+
+    def _remove_negative_corrections(self, text: str) -> str:
+        return re.sub(r"\b(?:i\s+)?did\s+not\s+ask\s+for\s+(?:a\s+|an\s+)?[a-z0-9]+\b", " ", text)
+
+    def _canonical_query_word(self, word: str) -> str:
+        if word in {"phone", "phones", "mobile", "mobiles"}:
+            return "phone"
+        if word in {"book", "books"}:
+            return "books"
+        return word
+
+    def should_bypass_ecommerce_answer_cache(self, transcript: str) -> bool:
+        text = normalize_lookup_text(transcript)
+        if not text:
+            return True
+        if any(
+            phrase_in_text(phrase, text)
+            for phrase in (
+                "asked for",
+                "i asked",
+                "i said",
+                "i meant",
+                "not this",
+                "not that",
+                "wrong",
+            )
+        ):
+            return True
+
+        words = self.search_query_words(text)
+        if words and len(words) < len(text.split()) and len(words) <= 4:
+            return True
+
+        return bool(
+            re.search(
+                r"\b(show|find|search|browse|look|looking|need|want|get)\b"
+                r".{0,60}\b(products?|items?|options?|books?|phones?|mobiles?|"
+                r"shirts?|shoes?|watches?|electronics?|fashion|beauty|grocery|stationery)\b",
+                text,
+            )
+        )
+
+    def display_search_query_from_products(self, products: list[dict]) -> str:
+        for product in products:
+            for key in ("category_name", "subcategory", "brand", "name", "title"):
+                value = normalize_lookup_text(product.get(key))
+                words = [word for word in value.split() if len(word) > 2]
+                if words:
+                    return " ".join(words[:3])
+        return "products"
+
+
+class ProductCatalogFormatter:
+    """Format source-backed product facts without inventing missing data."""
+
+    def answer_text(self, products: list[dict]) -> str:
+        if len(products) == 1:
+            product = products[0]
+            details = self.fact_parts(product)
+            detail_text = " ".join(details) if details else "I found it in the catalog."
+            return f"Based on the catalog, {self.display_name(product)} is worth considering. {detail_text}"
+
+        bullets = [
+            f"- {self.display_name(product)}: {' '.join(self.fact_parts(product)) or 'catalog item'}"
+            for product in products[:3]
+        ]
+        return "Here are source-backed options to consider:\n" + "\n".join(bullets)
+
+    def search_text(self, products: list[dict]) -> str:
+        shown = products[:3]
+        prefix = (
+            "I found this matching product:"
+            if len(products) == 1
+            else f"I found {len(products)} matching products:"
+        )
+        bullets = [
+            f"- {self.display_name(product)}: {' '.join(self.search_fact_parts(product)) or 'catalog item'}"
+            for product in shown
+        ]
+        if len(products) > len(shown):
+            bullets.append("I can show more options too.")
+        return prefix + "\n" + "\n".join(bullets)
+
+    def with_accessory_recommendation(self, text: str, products: list[dict]) -> str:
+        product = products[0] if products else {}
+        product_name = self.display_name(product)
+        return (
+            f"{text} For the accessory, I would add a protective case with {product_name}; "
+            "it protects the phone and is the safest first add-on."
+        )
+
+    def comparison_text(self, products: list[dict]) -> str:
+        names = " and ".join(self.display_name(product) for product in products[:2])
+        bullets = [
+            f"- {self.display_name(product)}: {self.comparison_fact_text(product)}"
+            for product in products[:4]
+        ]
+        return f"I found {names}. Here is a source-backed comparison:\n" + "\n".join(bullets)
+
+    def comparison_fact_text(self, product: dict) -> str:
+        parts = self.fact_parts(product)
+        if self.price(product) is None:
+            parts.append("Price not published in retrieved data.")
+        return " ".join(parts) if parts else "Only basic catalog data is published for this item."
+
+    def search_fact_parts(self, product: dict) -> list[str]:
+        parts: list[str] = []
+        brand = str(product.get("brand") or product.get("vendor") or "").strip()
+        price = self.price(product)
+        stock = self.stock(product)
+        if brand:
+            parts.append(f"Brand: {brand}.")
+        if price is not None and price > 0:
+            parts.append(f"Price: {price:g}.")
+        if stock is not None:
+            parts.append("In stock." if stock > 0 else "Sold out.")
+        return parts
+
+    def fact_parts(self, product: dict) -> list[str]:
+        parts: list[str] = []
+        brand = str(product.get("brand") or product.get("vendor") or "").strip()
+        category = str(product.get("category_name") or product.get("category") or product.get("subcategory") or "").strip()
+        description = concise_text(plain_text(product.get("description") or product.get("summary") or ""))
+        price = self.price(product)
+        stock = self.stock(product)
+        if brand:
+            parts.append(f"Brand: {brand}.")
+        if category:
+            parts.append(f"Category: {category}.")
+        if price is not None and price > 0:
+            parts.append(f"Price: {price:g}.")
+        if stock is not None:
+            parts.append("In stock." if stock > 0 else "Currently sold out.")
+        if description:
+            parts.append(description[:140])
+        return parts
+
+    def stock(self, product: dict) -> int | None:
+        raw_stock = product.get("stock")
+        if raw_stock is None:
+            return None
+        try:
+            return max(0, int(float(raw_stock)))
+        except (TypeError, ValueError):
+            return None
+
+    def price(self, product: dict) -> float | None:
+        candidates = [
+            product.get("price"),
+            product.get("amount"),
+            product.get("cost"),
+            product.get("premium"),
+        ]
+        for container_key in ("pricing", "attributes"):
+            container = product.get(container_key)
+            if not isinstance(container, dict):
+                continue
+            candidates.extend(
+                [
+                    container.get("price"),
+                    container.get("amount"),
+                    container.get("cost"),
+                    container.get("premium"),
+                    container.get("premium_min"),
+                    container.get("monthly_premium"),
+                    container.get("annual_premium"),
+                    container.get("min_price"),
+                    container.get("starting_price"),
+                    container.get("fare"),
+                    container.get("fee"),
+                    container.get("rate"),
+                ]
+            )
+        for value in candidates:
+            number = numeric_value(value)
+            if number is not None:
+                return number
+        return None
+
+    def display_name(self, product: dict) -> str:
+        return str(product.get("name") or product.get("title") or "That item")
+
+    def cart_confirmation_text(self, product: dict, quantity: int) -> str:
+        name = self.display_name(product)
+        if quantity > 1:
+            return f"I'll try to add {quantity} x {name} to your cart now."
+        return f"I'll try to add {name} to your cart now."
+
+
+class ProductDisplayGrounder:
+    """Rewrite product display responses from selected retrieved rows."""
+
+    def __init__(self, formatter: ProductCatalogFormatter) -> None:
+        self._formatter = formatter
+
+    def ground_response(
+        self,
+        response: dict[str, Any],
+        transcript: str,
+        retrieved_products: list[dict],
+        *,
+        wants_comparison: Callable[[str], bool],
+        wants_source_answer: Callable[[str], bool],
+    ) -> None:
+        actions = response.get("ui_actions")
+        if not isinstance(actions, list):
+            return
+
+        display_action, display_action_name = self._first_display_action(actions)
+        if not display_action:
+            return
+
+        selected = self.products_selected_by_display_action(display_action, retrieved_products)
+        if not selected:
+            return
+
+        if display_action_name == ACTION_SHOW_COMPARISON or wants_comparison(transcript):
+            response["intent"] = "product_compare"
+            response["response_text"] = self._formatter.comparison_text(selected)
+            return
+
+        if len(selected) == 1 and wants_source_answer(transcript):
+            response["intent"] = "product_detail"
+            response_text = self._formatter.answer_text(selected)
+            if self._wants_accessory_recommendation(transcript):
+                response_text = self._formatter.with_accessory_recommendation(response_text, selected)
+            response["response_text"] = response_text
+            return
+
+        if str(response.get("intent") or "") not in {"product_detail", "product_compare"}:
+            response["intent"] = "product_search"
+        response_text = self._formatter.search_text(selected)
+        if self._wants_accessory_recommendation(transcript):
+            response_text = self._formatter.with_accessory_recommendation(response_text, selected)
+        response["response_text"] = response_text
+
+    def products_selected_by_display_action(
+        self,
+        action: dict[str, Any],
+        retrieved_products: list[dict],
+    ) -> list[dict]:
+        params = action.get("params") if isinstance(action.get("params"), dict) else {}
+        requested_ids = params.get(PRODUCT_IDS_PARAM)
+        if not isinstance(requested_ids, list):
+            requested_ids = []
+
+        by_id = {
+            str(product.get("id")): product
+            for product in retrieved_products
+            if product.get("id") is not None
+        }
+        selected = [
+            by_id[str(product_id)]
+            for product_id in requested_ids
+            if str(product_id) in by_id
+        ]
+        if selected:
+            return selected
+
+        action_name = str(action.get("action") or "").upper()
+        fallback_limit = 4 if action_name == ACTION_SHOW_COMPARISON else 6
+        return [product for product in retrieved_products if product.get("id") is not None][:fallback_limit]
+
+    def _first_display_action(self, actions: list[Any]) -> tuple[dict[str, Any] | None, str]:
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            action_name = str(action.get("action") or "").upper()
+            if action_name in {ACTION_SHOW_PRODUCTS, ACTION_SHOW_COMPARISON}:
+                return action, action_name
+        return None, ""
+
+    def _wants_accessory_recommendation(self, transcript: str) -> bool:
+        text = normalize_lookup_text(transcript)
+        return bool(re.search(r"\b(accessory|accessories|case|cover|screen protector|charger|add on|addon)\b", text))
+
+
+def normalize_lookup_text(value: Any) -> str:
+    text = str(value or "").lower()
+    text = text.replace("t-shirt", "t shirt").replace("tee-shirt", "tee shirt")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def plain_text(value: Any) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def concise_text(value: str, limit: int = 140) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text if text.endswith((".", "!", "?")) else f"{text}."
+
+    truncated = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    sentence_end = max(truncated.rfind("."), truncated.rfind("!"), truncated.rfind("?"))
+    if sentence_end >= 40:
+        return truncated[: sentence_end + 1]
+    return f"{truncated}."
+
+
+def phrase_in_text(phrase: str, text: str) -> bool:
+    return f" {phrase} " in f" {text} "
+
+
+def numeric_value(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        return number if number == number else None
+    match = re.search(r"-?\d+(?:\.\d+)?", str(value).replace(",", ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None

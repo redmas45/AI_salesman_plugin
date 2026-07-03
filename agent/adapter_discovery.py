@@ -320,6 +320,8 @@ def generated_system_prompt(data: DiscoveryInput, vertical_key: str) -> str:
             _actions_prompt_block(actions),
             _form_prompt_block(data.forms),
             _barrier_prompt_block(barriers),
+            _conversation_intelligence_prompt_block(vertical.key),
+            _generated_few_shots_prompt_block(data, actions),
             _vertical_sales_prompt_block(vertical.key),
             "## RAG Grounding Rules\n"
             "- Treat retrieved knowledge rows, catalog records, policy pages, source URLs, and live browser context as the only facts.\n"
@@ -331,6 +333,7 @@ def generated_system_prompt(data: DiscoveryInput, vertical_key: str) -> str:
             "## Conversation Style\n"
             "- Speak as Maya in a calm professional female sales-assistant voice.\n"
             "- Ask short follow-up questions only when required information is missing for the next supported action.\n"
+            "- Do not ask for details already stated by the user; acknowledge them naturally and move to the next missing step.\n"
             "- Prefer useful guidance over generic disclaimers, but add a boundary when the vertical is regulated or the website does not confirm an outcome.\n"
             "- Be specific to this client and its detected pages, forms, labels, and records. Do not answer like a generic chatbot.",
         )
@@ -349,6 +352,8 @@ def generated_developer_rules(vertical_key: str, actions: dict[str, dict[str, An
         "- Use only actions supported by the adapter config or runtime capability engine.\n"
         "- For page movement, prefer NAVIGATE_TO with a discovered route key.\n"
         f"- For record display, use SHOW_ENTITIES, COMPARE_ENTITIES, OPEN_ENTITY_DETAIL, FILTER_ENTITIES, or SORT_ENTITIES for {vertical.entity_label_plural}.\n"
+        "- Before asking for missing action params, extract matching values from the latest user message, conversation history, session profile, and live page context.\n"
+        "- Do not ask again for params the user already supplied in natural language; emit the supported action with those params when all required fields are known.\n"
         "- If confidence is low, explain the exact missing website data and offer handoff or a safe next click instead of pretending the action completed.\n"
     )
     if vertical.risk_level == "high":
@@ -358,6 +363,127 @@ def generated_developer_rules(vertical_key: str, actions: dict[str, dict[str, An
             + "- You may explain website-published information and start website-supported forms, but final outcomes require the website/provider/human confirmation."
         )
     return base
+
+
+def _conversation_intelligence_prompt_block(vertical_key: str) -> str:
+    lines = [
+        "## Conversation Intelligence And Slot Filling",
+        "- Convert natural user statements into action params before asking follow-up questions.",
+        "- Reuse facts from the latest message, previous turns, session profile, and live browser context.",
+        "- Use discovered action fields, labels, select/radio options, and required params as the source of truth for slot filling.",
+        "- Ask only for exact missing fields required by the next supported website action.",
+        "- This applies across domains: map user facts to whatever field names the current website exposes, not to hardcoded site or industry assumptions.",
+        "- Treat buy/get/start/book/apply/request language as intent to run the supported website flow, not as a request to go home.",
+        "- Example: if a discovered action requires fields named 'Start location', 'End location', 'Service date', and 'Party size', and the user gives those values, emit the action with those params instead of asking again.",
+    ]
+    return "\n".join(lines)
+
+
+def _generated_few_shots_prompt_block(data: DiscoveryInput, actions: dict[str, dict[str, Any]]) -> str:
+    rows: list[str] = []
+    for action_name, action_config in sorted(actions.items())[:3]:
+        params = _few_shot_params_for_action(action_config)
+        label = clean_text(action_config.get("label") or action_config.get("title") or action_name.replace("_", " ").title())
+        user = _few_shot_user_request(label, params)
+        answer = {
+            "response_text": _few_shot_response_text(action_name, params),
+            "intent": "lead_capture" if params else "navigate",
+            "confidence": 0.92,
+            "answer_scope": "website_action",
+            "ui_actions": [{"action": action_name, "params": params}],
+        }
+        rows.append(f"User: {user}\nAssistant JSON: {json.dumps(answer, ensure_ascii=False)}")
+
+    if data.text_sample:
+        answer = {
+            "response_text": "I can answer from the website data I have, or help you open the relevant page.",
+            "intent": "discovery",
+            "confidence": 0.8,
+            "answer_scope": "grounded_fact",
+            "ui_actions": [],
+        }
+        rows.append(
+            "User: What can this website help me with?\n"
+            f"Assistant JSON: {json.dumps(answer, ensure_ascii=False)}"
+        )
+
+    if not rows:
+        return ""
+    return (
+        "## Setup-Generated Few-Shot Examples\n"
+        "These examples are generated from this website's detected routes, labels, and action schema. Follow the pattern, not the literal domain wording.\n"
+        + "\n".join(f"- {row}" for row in rows)
+    )
+
+
+def _few_shot_params_for_action(action_config: dict[str, Any]) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for field in _few_shot_field_specs(action_config)[:5]:
+        param = clean_text(field.get("param") or field.get("name") or "")
+        if not param:
+            continue
+        params[param] = _few_shot_value_for_field(param, field)
+    return params
+
+
+def _few_shot_field_specs(action_config: dict[str, Any]) -> list[dict[str, Any]]:
+    specs: list[dict[str, Any]] = []
+    field_schema = action_config.get("field_schema")
+    if isinstance(field_schema, list):
+        specs.extend(item for item in field_schema if isinstance(item, dict))
+    for param in action_config.get("required_fields") or []:
+        if str(param or "").strip():
+            specs.append({"param": str(param).strip()})
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for spec in specs:
+        key = clean_text(spec.get("param") or spec.get("name") or "").lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(spec)
+    return unique
+
+
+def _few_shot_value_for_field(param: str, field: dict[str, Any]) -> str:
+    options = field.get("options")
+    if isinstance(options, list):
+        for option in options:
+            if isinstance(option, dict):
+                value = clean_text(option.get("value") or option.get("label"))
+            else:
+                value = clean_text(option)
+            if value:
+                return value
+    text = clean_text(param).lower()
+    if "age" in text:
+        return "34"
+    if any(term in text for term in ("city", "location", "area", "station", "port")):
+        return "Pune"
+    if any(term in text for term in ("date", "day", "when")):
+        return "tomorrow"
+    if any(term in text for term in ("email",)):
+        return "customer@example.com"
+    if any(term in text for term in ("phone", "mobile")):
+        return "[PHONE]"
+    if any(term in text for term in ("count", "guest", "traveler", "passenger", "quantity", "size")):
+        return "2"
+    return "customer provided value"
+
+
+def _few_shot_user_request(label: str, params: dict[str, str]) -> str:
+    if not params:
+        return f"Please open {label or 'that page'}."
+    details = ", ".join(f"{param}: {value}" for param, value in params.items())
+    return f"I want to start {label or 'this website flow'}; {details}."
+
+
+def _few_shot_response_text(action_name: str, params: dict[str, str]) -> str:
+    if params:
+        return "I have those details. Starting the website flow now."
+    if action_name == "NAVIGATE_TO":
+        return "Opening that page now."
+    return "I can start that website action now."
 
 
 def _site_evidence_prompt_block(data: DiscoveryInput) -> str:
@@ -583,9 +709,9 @@ def form_action_candidates(
                 "confidence": confidence,
                 "source": "browser_form",
                 "fields": field_param_names(form.fields),
-                "required_fields": required_field_params(form.fields),
+                "required_fields": action_required_field_params(form, action_name),
                 "required_fields_known": bool(form.fields),
-                "field_schema": form_field_schema(form.fields),
+                "field_schema": form_field_schema(form.fields, action_required_field_params(form, action_name)),
             }
         )
     return rows
@@ -736,7 +862,7 @@ def add_search_action(actions: dict[str, dict[str, Any]], data: DiscoveryInput, 
     page_path = path_from_href(data.url, data.origin)
     sequence_steps = form_sequence_steps(form, action_name) if should_generate_sequence_action(action_name) else []
     if sequence_steps:
-        field_config = form_action_field_config(form)
+        field_config = form_action_field_config(form, action_name)
         actions[action_name] = {
             "type": "sequence",
             "steps": sequence_steps,
@@ -747,7 +873,7 @@ def add_search_action(actions: dict[str, dict[str, Any]], data: DiscoveryInput, 
             **field_config,
         }
         return
-    field_config = form_action_field_config(form)
+    field_config = form_action_field_config(form, action_name)
     actions[action_name] = {
         "type": "form",
         "form": form.selector,
@@ -797,7 +923,7 @@ def add_form_action(
     steps = form_sequence_steps(form, action_name)
     if not steps:
         return
-    field_config = form_action_field_config(form)
+    field_config = form_action_field_config(form, action_name)
     actions[action_name] = {
         "type": "sequence",
         "steps": steps,
@@ -875,10 +1001,11 @@ def is_handoff_action(action_name: str) -> bool:
 def form_sequence_steps(form: ObservedElement, action_name: str) -> list[dict[str, Any]]:
     steps: list[dict[str, Any]] = []
     seen_checkable_params: set[str] = set()
+    force_required = form_submit_mode(action_name, form) == "submit"
     for field in form.fields:
         if should_skip_duplicate_checkable_step(field, seen_checkable_params):
             continue
-        step = form_field_step(field)
+        step = form_field_step(field, force_required=force_required)
         if step:
             steps.append(step)
     if form_submit_mode(action_name, form) == "submit" and form.submit_selector:
@@ -902,19 +1029,20 @@ def should_generate_sequence_action(action_name: str) -> bool:
     return bool(action and action.family == "lead")
 
 
-def form_field_step(field: dict[str, Any]) -> dict[str, Any]:
+def form_field_step(field: dict[str, Any], *, force_required: bool = False) -> dict[str, Any]:
     selector = clean_selector(field.get("selector"))
     if not selector:
         return {}
     field_type = clean_text(field.get("type")).lower()
     param = field_param_name(field)
+    optional = not (force_required or field_required(field))
     if field_type in {"file", "submit", "button"}:
         return {}
     if field_type in {"checkbox", "radio"}:
-        return {"op": "check", "selector": selector, "param": param, "optional": not field_required(field)}
+        return {"op": "check", "selector": selector, "param": param, "optional": optional}
     if field_type == "select":
-        return {"op": "select", "selector": selector, "param": param, "optional": not field_required(field)}
-    return {"op": "fill", "selector": selector, "param": param, "optional": not field_required(field)}
+        return {"op": "select", "selector": selector, "param": param, "optional": optional}
+    return {"op": "fill", "selector": selector, "param": param, "optional": optional}
 
 
 def field_param_name(field: dict[str, Any]) -> str:
@@ -959,10 +1087,10 @@ def looks_like_example_placeholder(value: str) -> bool:
     )
 
 
-def form_action_field_config(form: ObservedElement) -> dict[str, Any]:
+def form_action_field_config(form: ObservedElement, action_name: str = "") -> dict[str, Any]:
     fields = field_param_names(form.fields)
-    required_fields = required_field_params(form.fields)
-    field_schema = form_field_schema(form.fields)
+    required_fields = action_required_field_params(form, action_name)
+    field_schema = form_field_schema(form.fields, required_fields)
     config: dict[str, Any] = {}
     if fields:
         config["fields"] = fields
@@ -983,8 +1111,15 @@ def required_field_params(fields: tuple[dict[str, Any], ...]) -> list[str]:
     return sorted({field_param_name(field) for field in fields if field_required(field)})
 
 
-def form_field_schema(fields: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
-    rows = [form_field_schema_item(field) for field in fields]
+def action_required_field_params(form: ObservedElement, action_name: str = "") -> list[str]:
+    if action_name and form_submit_mode(action_name, form) == "submit":
+        return field_param_names(form.fields)
+    return required_field_params(form.fields)
+
+
+def form_field_schema(fields: tuple[dict[str, Any], ...], required_fields: list[str] | None = None) -> list[dict[str, Any]]:
+    required = set(required_fields or [])
+    rows = [form_field_schema_item(field, force_required=field_param_name(field) in required) for field in fields]
     return merged_field_schema([row for row in rows if row])
 
 
@@ -1022,11 +1157,11 @@ def merged_field_options(*groups: Any) -> list[dict[str, str]]:
     return list(merged.values())
 
 
-def form_field_schema_item(field: dict[str, Any]) -> dict[str, Any]:
+def form_field_schema_item(field: dict[str, Any], *, force_required: bool = False) -> dict[str, Any]:
     param = field_param_name(field)
     if not param:
         return {}
-    row: dict[str, Any] = {"param": param, "required": field_required(field)}
+    row: dict[str, Any] = {"param": param, "required": force_required or field_required(field)}
     for key in ("label", "name", "placeholder", "type", "autocomplete"):
         value = clean_text(field.get(key))[:120]
         if value and key != "name":

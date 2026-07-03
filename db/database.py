@@ -550,3 +550,70 @@ def get_variant_by_id(site_id: str, variant_id: int) -> dict[str, Any] | None:
         ).fetchone()
     return dict(row) if row else None
 
+
+def rebuild_search_vectors(site_id: str) -> int:
+    """Populate the search_vector tsvector column for all products.
+
+    Combines name (weight A), brand + category (weight B), description +
+    tags + color (weight C) into a single tsvector for fast full-text search.
+    Returns the number of rows updated.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+    init_tenant_schema(site_id)
+    with get_db(site_id) as conn:
+        try:
+            result = conn.execute(
+                """
+                UPDATE products p SET search_vector =
+                    setweight(to_tsvector('english', COALESCE(p.name, '')), 'A') ||
+                    setweight(to_tsvector('english',
+                        COALESCE(p.brand, '') || ' ' ||
+                        COALESCE((SELECT c.name FROM categories c WHERE c.id = p.category_id), '')
+                    ), 'B') ||
+                    setweight(to_tsvector('english',
+                        COALESCE(p.description, '') || ' ' ||
+                        COALESCE(p.tags, '') || ' ' ||
+                        COALESCE(p.color, '')
+                    ), 'C')
+                WHERE p.is_active = 1
+                """
+            )
+            count = result.rowcount or 0
+            logger.info("DB | Rebuilt search_vector for %d products in tenant %s", count, site_id)
+            return count
+        except Exception as exc:
+            logger.warning("DB | search_vector rebuild failed for %s: %s", site_id, exc)
+            return 0
+
+
+def rebuild_knowledge_search_vectors(site_id: str) -> int:
+    """Populate the search_vector tsvector column for all knowledge items."""
+    import logging
+
+    logger = logging.getLogger(__name__)
+    init_tenant_schema(site_id)
+    with get_db(site_id) as conn:
+        try:
+            result = conn.execute(
+                """
+                UPDATE knowledge_items SET search_vector =
+                    setweight(to_tsvector('english', COALESCE(title, '')), 'A') ||
+                    setweight(to_tsvector('english',
+                        COALESCE(entity_type, '') || ' ' ||
+                        COALESCE(subtitle, '')
+                    ), 'B') ||
+                    setweight(to_tsvector('english',
+                        COALESCE(summary, '') || ' ' ||
+                        COALESCE(body, '')
+                    ), 'C')
+                WHERE is_active = 1
+                """
+            )
+            count = result.rowcount or 0
+            logger.info("DB | Rebuilt knowledge search_vector for %d items in tenant %s", count, site_id)
+            return count
+        except Exception as exc:
+            logger.warning("DB | knowledge search_vector rebuild failed for %s: %s", site_id, exc)
+            return 0

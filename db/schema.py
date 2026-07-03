@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS hub_conversation_sessions (
     token_limit INTEGER NOT NULL DEFAULT 1000,
     token_used INTEGER NOT NULL DEFAULT 0,
     turn_count INTEGER NOT NULL DEFAULT 0,
+    summary_text TEXT NOT NULL DEFAULT '',
+    summary_updated_at TIMESTAMPTZ,
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (site_id, session_id)
@@ -81,6 +83,56 @@ CREATE TABLE IF NOT EXISTS hub_provider_events (
 
 CREATE INDEX IF NOT EXISTS idx_hub_provider_events_created
     ON hub_provider_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS hub_audit_events (
+    id BIGSERIAL PRIMARY KEY,
+    site_id TEXT NOT NULL DEFAULT '',
+    actor_type TEXT NOT NULL DEFAULT 'system',
+    event_type TEXT NOT NULL,
+    event_scope TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'ok',
+    request_id TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_hub_audit_events_site_created
+    ON hub_audit_events(site_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hub_audit_events_type_created
+    ON hub_audit_events(event_type, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS hub_action_events (
+    id BIGSERIAL PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    request_id TEXT NOT NULL DEFAULT '',
+    turn_id TEXT NOT NULL DEFAULT '',
+    sequence INTEGER NOT NULL DEFAULT 0,
+    action TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'unknown',
+    stage TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    requested_url TEXT NOT NULL DEFAULT '',
+    final_url TEXT NOT NULL DEFAULT '',
+    duration_ms REAL NOT NULL DEFAULT 0,
+    param_keys_json TEXT NOT NULL DEFAULT '[]',
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE hub_action_events
+    ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+CREATE INDEX IF NOT EXISTS idx_hub_action_events_site_created
+    ON hub_action_events(site_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hub_action_events_request
+    ON hub_action_events(site_id, request_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hub_action_events_turn
+    ON hub_action_events(site_id, turn_id, sequence);
 
 CREATE TABLE IF NOT EXISTS hub_settings (
     key TEXT PRIMARY KEY,
@@ -172,6 +224,10 @@ ALTER TABLE hub_usage_events
     ADD COLUMN IF NOT EXISTS transcript TEXT NOT NULL DEFAULT '';
 ALTER TABLE hub_usage_events
     ADD COLUMN IF NOT EXISTS response_text TEXT NOT NULL DEFAULT '';
+ALTER TABLE hub_conversation_sessions
+    ADD COLUMN IF NOT EXISTS summary_text TEXT NOT NULL DEFAULT '';
+ALTER TABLE hub_conversation_sessions
+    ADD COLUMN IF NOT EXISTS summary_updated_at TIMESTAMPTZ;
 
 ALTER TABLE hub_prompt_profiles
     ADD COLUMN IF NOT EXISTS site_id TEXT NOT NULL DEFAULT '';
@@ -197,6 +253,13 @@ CREATE TABLE IF NOT EXISTS site_selectors (
 );
 """
 
+LEGACY_ACTION_EVENT_CLEANUP_SQL = """
+UPDATE hub_clients
+SET vertical_config_json = (vertical_config_json::jsonb - 'action_events')::TEXT,
+    updated_at = now()
+WHERE vertical_config_json LIKE '%"action_events"%';
+"""
+
 _admin_schema_lock = threading.Lock()
 _admin_schema_initialized = False
 
@@ -217,5 +280,6 @@ def init_admin_schema() -> None:
             return
         with _connect() as conn:
             conn.execute(ADMIN_SCHEMA_SQL)
+            conn.execute(LEGACY_ACTION_EVENT_CLEANUP_SQL)
             conn.commit()
         _admin_schema_initialized = True

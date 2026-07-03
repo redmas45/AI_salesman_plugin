@@ -54,6 +54,9 @@ CRAWL_STATUS_NOT_STARTED = "not_started"
 CRAWL_STATUS_RUNNING = "crawling"
 CRAWL_STATUS_OK = "ok"
 CRAWL_STATUS_ERROR = "error"
+SETUP_STATUS_RUNNING = "running"
+SETUP_STATUS_CANCELED = "canceled"
+SETUP_STATUS_TIMED_OUT = "timed_out"
 DEFAULT_PLAN = "Generic AI plan"
 DEFAULT_ADAPTER_NAME = "generic_adapter.js"
 DEFAULT_DEPLOY_MODE = "public-ip"
@@ -91,6 +94,8 @@ VALIDATION_REPAIR_THRESHOLD = 0.65
 ACTION_HEALTH_FAILURE_THRESHOLD = 3
 ACTION_HEALTH_EVENT_WINDOW = 12
 ACTION_HEALTH_FAILURE_STATUSES = frozenset({"failed", "error"})
+ACTION_EVENT_TERMINAL_STATUSES = frozenset({"succeeded", "failed", "blocked", "skipped", "error"})
+MAX_DURABLE_ACTION_EVENT_ROWS = 1000
 RUNTIME_STATUS_TIMEOUT_SECONDS = 0.6
 RUNTIME_STATUS_CACHE_SECONDS = 8.0
 RUNTIME_STATUS_ONLINE = "online"
@@ -98,7 +103,6 @@ RUNTIME_STATUS_OFFLINE = "offline"
 RUNTIME_STATUS_UNKNOWN = "unknown"
 _runtime_status_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 DISCOVERY_PRESERVED_KEYS = frozenset({
-    "action_events",
     "action_health",
     "action_proposals",
     "action_proposal_reviews",
@@ -118,6 +122,7 @@ DISCOVERY_DIRECT_KEYS = frozenset({
     "platform",
     "runtime_capabilities",
 })
+SYNTHETIC_DEMO_URL_PATTERN = r"^https?://([^/]+\.)?example\.(com|test|org)(/|$)"
 
 
 def _default_client_vertical_key(site_id: str) -> str:
@@ -186,6 +191,31 @@ def ensure_default_client() -> None:
             ),
         )
         conn.commit()
+
+
+def cleanup_synthetic_demo_clients() -> int:
+    """Hide stale example-domain installs that are useful in tests but noisy in local demos."""
+    init_admin_schema()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE hub_clients
+            SET status = %s, updated_at = now()
+            WHERE status = %s
+              AND (
+                COALESCE(store_url, '') ~* %s
+                OR COALESCE(allowed_origin, '') ~* %s
+              )
+            """,
+            (
+                CLIENT_STATUS_DELETED,
+                CLIENT_STATUS_AVAILABLE,
+                SYNTHETIC_DEMO_URL_PATTERN,
+                SYNTHETIC_DEMO_URL_PATTERN,
+            ),
+        )
+        conn.commit()
+        return max(0, int(cursor.rowcount or 0))
 
 
 def create_client(
@@ -424,8 +454,14 @@ def get_client_detail(site_id: str) -> dict[str, Any]:
 
 
 def remove_client(site_id: str) -> None:
-    """Remove a client from the current roster while keeping tenant data."""
+    """Hide a client from CRM lists while keeping tenant data for traceability."""
+    _update_client_status(site_id, CLIENT_STATUS_DELETED)
+
+
+def move_client_to_available(site_id: str) -> dict[str, Any]:
+    """Move a current/disabled client back to the Available board."""
     _update_client_status(site_id, CLIENT_STATUS_AVAILABLE)
+    return get_client_detail(site_id)
 
 
 def activate_client(site_id: str) -> dict[str, Any]:
@@ -478,6 +514,15 @@ def update_client_vertical(site_id: str, vertical_key: str) -> dict[str, Any]:
         conn.commit()
     if cursor.rowcount <= 0:
         raise LookupError(f"Client {clean_site_id} was not found.")
+    _record_audit_event_safely(
+        site_id=clean_site_id,
+        actor_type="crm_admin",
+        event_type="client_vertical_updated",
+        event_scope="client_config",
+        status="ok",
+        message=f"Vertical changed to {vertical.key}.",
+        metadata={"vertical_key": vertical.key, "risk_level": vertical.risk_level},
+    )
     return get_client_detail(clean_site_id)
 
 
@@ -523,6 +568,15 @@ def update_client_discovery_config(
         conn.commit()
     if cursor.rowcount <= 0:
         raise LookupError(f"Client {clean_site_id} was not found.")
+    _record_audit_event_safely(
+        site_id=clean_site_id,
+        actor_type="widget",
+        event_type="discovery_config_updated",
+        event_scope="discovery",
+        status="ok",
+        message="Widget discovery config updated.",
+        metadata={"vertical_key": vertical.key, "adapter_name": adapter_name},
+    )
     return get_client_detail(clean_site_id)
 
 
@@ -536,6 +590,15 @@ def update_client_adapter_actions(site_id: str, actions: dict[str, Any]) -> dict
         "updated": True,
     }
     _write_client_vertical_config(clean_site_id, vertical_config)
+    _record_audit_event_safely(
+        site_id=clean_site_id,
+        actor_type="crm_admin",
+        event_type="adapter_actions_updated",
+        event_scope="adapter",
+        status="ok",
+        message="Adapter action map updated.",
+        metadata={"action_count": len(vertical_config["actions"]), "actions": sorted(vertical_config["actions"])},
+    )
     return get_client_detail(clean_site_id)
 
 
@@ -644,12 +707,41 @@ def _merge_discovery_vertical_config(
         **_dict_config(existing.get("routes")),
         **_dict_config(fresh.get("routes")),
     }
-    merged["actions"] = _merge_discovery_actions(existing, fresh, vertical_changed=vertical_changed)
     merged["action_candidates"] = _merge_discovery_rows(
         fresh.get("action_candidates"),
         existing.get("action_candidates"),
         ("kind", "action", "selector", "path", "label"),
     )
+    merged["actions"] = _merge_discovery_actions(existing, fresh, vertical_changed=vertical_changed)
+    # Auto-approve action candidates with confidence >= 0.75
+    candidates = merged.get("action_candidates")
+    if isinstance(candidates, list):
+        actions = merged["actions"].copy()
+        action_reviews = list(merged.get("action_reviews") or [])
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            confidence = 0.0
+            try:
+                confidence = float(candidate.get("confidence") or 0.0)
+            except (ValueError, TypeError):
+                pass
+
+            review_status = str(candidate.get("review") or "").lower()
+            action_name = str(candidate.get("action") or "")
+            if confidence >= 0.75 and review_status != "reject" and action_name:
+                candidate["review"] = "approve"
+                try:
+                    action_config = _action_config_from_candidate(candidate, actions.get(action_name))
+                    actions[action_name] = action_config
+
+                    review = _action_candidate_review(candidate, "approve", action_name=action_name)
+                    action_reviews = _merge_action_reviews(review, action_reviews)
+                except Exception:
+                    pass
+        merged["actions"] = actions
+        merged["action_reviews"] = action_reviews
+
     merged["prompt_suggestions"] = _merge_discovery_texts(
         fresh.get("prompt_suggestions"),
         existing.get("prompt_suggestions"),
@@ -948,7 +1040,10 @@ def save_adapter_validation_report(site_id: str, report: dict[str, Any]) -> dict
     validation = _validated_adapter_validation(report)
     vertical_config["validation"] = validation
     _apply_validation_repairs(vertical_config, validation)
-    _refresh_action_health(vertical_config)
+    _refresh_action_health(
+        vertical_config,
+        events=list_client_action_events({clean_site_id}, limit=ACTION_HEALTH_EVENT_WINDOW).get(clean_site_id, []),
+    )
     _refresh_flow_repair_proposals(clean_site_id, vertical_config)
     _write_client_vertical_config(clean_site_id, vertical_config)
     return get_client_detail(clean_site_id)
@@ -1003,9 +1098,133 @@ def save_client_initialization_report(site_id: str, initialization_report: dict[
     if not isinstance(initialization_report, dict):
         raise ValueError("Initialization report must be a JSON object.")
     vertical_config = _client_vertical_config(clean_site_id)
-    vertical_config["initialization"] = _validated_initialization_report(initialization_report)
+    existing_initialization = _dict_config(vertical_config.get("initialization"))
+    next_initialization = _validated_initialization_report(initialization_report)
+    if (
+        str(existing_initialization.get("status") or "").lower() in {SETUP_STATUS_CANCELED, SETUP_STATUS_TIMED_OUT}
+        and _same_setup_run(existing_initialization, next_initialization)
+    ):
+        return get_client_detail(clean_site_id)
+    if (
+        next_initialization.get("status") == SETUP_STATUS_RUNNING
+        and existing_initialization.get("cancel_requested")
+        and _same_setup_run(existing_initialization, next_initialization)
+    ):
+        next_initialization["cancel_requested"] = True
+        next_initialization["cancel_requested_at"] = _safe_action_text(existing_initialization.get("cancel_requested_at"))
+    vertical_config["initialization"] = next_initialization
     _write_client_vertical_config(clean_site_id, vertical_config)
+    _record_audit_event_safely(
+        site_id=clean_site_id,
+        actor_type="setup_runner",
+        event_type="setup_run_status",
+        event_scope="setup",
+        status=next_initialization["status"],
+        request_id=next_initialization["run_id"],
+        message=next_initialization["error"] or next_initialization["status"],
+        metadata={
+            "stage_count": len(next_initialization["stages"]),
+            "duration_ms": next_initialization["duration_ms"],
+            "cancel_requested": next_initialization["cancel_requested"],
+        },
+    )
     return get_client_detail(clean_site_id)
+
+
+def setup_cancel_requested(site_id: str, run_id: str = "") -> bool:
+    """Return whether the current setup run has a persisted stop request."""
+    initialization = _dict_config(_client_vertical_config(_safe_site_id(site_id)).get("initialization"))
+    if not initialization.get("cancel_requested"):
+        return False
+    return not run_id or _same_setup_run(initialization, {"run_id": run_id})
+
+
+def request_client_setup_cancel(site_id: str) -> dict[str, Any]:
+    """Persist a cooperative stop request for the active setup run."""
+    clean_site_id = _safe_site_id(site_id)
+    vertical_config = _client_vertical_config(clean_site_id)
+    initialization = _dict_config(vertical_config.get("initialization")).copy()
+    if str(initialization.get("status") or "").lower() != SETUP_STATUS_RUNNING:
+        raise ValueError("No setup run is running for this client.")
+    if not initialization.get("cancel_requested"):
+        initialization["cancel_requested"] = True
+        initialization["cancel_requested_at"] = _utc_timestamp()
+        vertical_config["initialization"] = _validated_initialization_report(initialization)
+        _write_client_vertical_config(clean_site_id, vertical_config)
+        _record_audit_event_safely(
+            site_id=clean_site_id,
+            actor_type="crm_admin",
+            event_type="setup_cancel_requested",
+            event_scope="setup",
+            status="requested",
+            request_id=_safe_action_text(initialization.get("run_id")),
+            message="Setup stop requested from CRM.",
+        )
+    return get_client_detail(clean_site_id)
+
+
+def expire_stale_client_initialization_runs(max_age_seconds: int) -> int:
+    """Mark stored setup runs as timed out when no background task can still own them."""
+    max_age = max(60, int(max_age_seconds or config.SETUP_RUN_TIMEOUT_SECONDS or 7200))
+    now_epoch = time.time()
+    now_text = _utc_timestamp()
+    expired = 0
+    init_admin_schema()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT site_id, vertical_config_json
+            FROM hub_clients
+            WHERE status <> %s
+            """,
+            (CLIENT_STATUS_DELETED,),
+        ).fetchall()
+        for row in rows:
+            site_id = _safe_site_id(row.get("site_id"))
+            vertical_config = _json_object(row.get("vertical_config_json"))
+            initialization = _dict_config(vertical_config.get("initialization")).copy()
+            if str(initialization.get("status") or "").lower() != SETUP_STATUS_RUNNING:
+                continue
+            started_epoch = _timestamp_value(initialization.get("started_at"))
+            try:
+                saved_duration_ms = max(0.0, float(initialization.get("duration_ms") or 0.0))
+            except (TypeError, ValueError):
+                saved_duration_ms = 0.0
+            age_seconds = (now_epoch - started_epoch) if started_epoch > 0 else (saved_duration_ms / 1000 if saved_duration_ms > 0 else max_age + 1)
+            if age_seconds < max_age:
+                continue
+            message = f"Setup run timed out after {max_age} seconds."
+            initialization["status"] = SETUP_STATUS_TIMED_OUT
+            initialization["completed_at"] = now_text
+            initialization["duration_ms"] = max(saved_duration_ms, age_seconds * 1000)
+            initialization["error"] = message
+            initialization["stages"] = _setup_stages_with_stop_status(
+                initialization.get("stages"),
+                SETUP_STATUS_TIMED_OUT,
+                message,
+                now_text,
+            )
+            vertical_config["initialization"] = _validated_initialization_report(initialization)
+            conn.execute(
+                """
+                UPDATE hub_clients
+                SET vertical_config_json = %s,
+                    last_crawl_status = %s,
+                    last_crawl_message = %s,
+                    updated_at = now()
+                WHERE site_id = %s AND status <> %s
+                """,
+                (
+                    json.dumps(vertical_config, ensure_ascii=False, default=str),
+                    CRAWL_STATUS_ERROR,
+                    message[:500],
+                    site_id,
+                    CLIENT_STATUS_DELETED,
+                ),
+            )
+            expired += 1
+        conn.commit()
+    return expired
 
 
 def save_client_assistant_smoke_report(site_id: str, smoke_report: dict[str, Any]) -> dict[str, Any]:
@@ -1016,6 +1235,16 @@ def save_client_assistant_smoke_report(site_id: str, smoke_report: dict[str, Any
     vertical_config = _client_vertical_config(clean_site_id)
     vertical_config["assistant_smoke_tests"] = _validated_assistant_smoke_report(smoke_report)
     _write_client_vertical_config(clean_site_id, vertical_config)
+    report = vertical_config["assistant_smoke_tests"]
+    _record_audit_event_safely(
+        site_id=clean_site_id,
+        actor_type="setup_runner",
+        event_type="assistant_smoke_report",
+        event_scope="prompt_checks",
+        status=report["status"],
+        message=report["message"],
+        metadata={"total": report["total"], "passed": report["passed"], "failed": report["failed"]},
+    )
     return get_client_detail(clean_site_id)
 
 
@@ -1024,10 +1253,21 @@ def save_client_policy_event(site_id: str, event: dict[str, Any]) -> dict[str, A
     clean_site_id = _safe_site_id(site_id)
     if not isinstance(event, dict):
         raise ValueError("Policy event must be a JSON object.")
+    clean_event = _validated_policy_event(event)
+    record_audit_event(
+        site_id=clean_site_id,
+        actor_type="browser_runtime",
+        event_type="policy_event",
+        event_scope="runtime",
+        status=clean_event["status"],
+        action=clean_event["action"],
+        message=clean_event["reason"],
+        metadata={"url": clean_event["url"], "policy": clean_event["policy"]},
+    )
     vertical_config = _client_vertical_config(clean_site_id)
     existing = vertical_config.get("policy_events")
     events = existing if isinstance(existing, list) else []
-    vertical_config["policy_events"] = [_validated_policy_event(event), *_safe_flow_list(events, 29)]
+    vertical_config["policy_events"] = [clean_event, *_safe_flow_list(events, 29)]
     _write_client_vertical_config(clean_site_id, vertical_config)
     return get_client_detail(clean_site_id)
 
@@ -1037,11 +1277,32 @@ def save_client_action_event(site_id: str, event: dict[str, Any]) -> dict[str, A
     clean_site_id = _safe_site_id(site_id)
     if not isinstance(event, dict):
         raise ValueError("Action execution event must be a JSON object.")
+    clean_event = _validated_action_event(event)
+    _insert_client_action_event(clean_site_id, clean_event)
+    if clean_event["status"] in ACTION_EVENT_TERMINAL_STATUSES:
+        record_audit_event(
+            site_id=clean_site_id,
+            actor_type="browser_runtime",
+            event_type="action_terminal",
+            event_scope="runtime_action",
+            status=clean_event["status"],
+            request_id=clean_event["request_id"],
+            action=clean_event["action"],
+            message=clean_event["reason"],
+            metadata={
+                "turn_id": clean_event["turn_id"],
+                "sequence": clean_event["sequence"],
+                "stage": clean_event["stage"],
+                "requested_url": clean_event["requested_url"],
+                "final_url": clean_event["final_url"],
+            },
+        )
     vertical_config = _client_vertical_config(clean_site_id)
-    existing = vertical_config.get("action_events")
-    events = existing if isinstance(existing, list) else []
-    vertical_config["action_events"] = [_validated_action_event(event), *_safe_flow_list(events, 49)]
-    _refresh_action_health(vertical_config)
+    recent_events = list_client_action_events({clean_site_id}, limit=ACTION_HEALTH_EVENT_WINDOW).get(clean_site_id, [])
+    if not recent_events:
+        recent_events = [clean_event]
+    _refresh_action_health(vertical_config, events=recent_events)
+    vertical_config.pop("action_events", None)
     _write_client_vertical_config(clean_site_id, vertical_config)
     return get_client_detail(clean_site_id)
 
@@ -1069,6 +1330,179 @@ def save_client_interaction_event(site_id: str, event: dict[str, Any]) -> dict[s
         )
     _write_client_vertical_config(clean_site_id, vertical_config)
     return get_client_detail(clean_site_id)
+
+
+def record_audit_event(
+    *,
+    site_id: str = "",
+    actor_type: str = "system",
+    event_type: str,
+    event_scope: str = "",
+    status: str = "ok",
+    request_id: str = "",
+    action: str = "",
+    message: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Append one durable server-owned audit event."""
+    clean_site_id = _safe_site_id(site_id) if site_id else ""
+    clean_metadata = _safe_json_value(metadata or {})
+    init_admin_schema()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO hub_audit_events
+                (
+                    site_id, actor_type, event_type, event_scope, status,
+                    request_id, action, message, metadata_json
+                )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                clean_site_id,
+                _safe_action_text(actor_type) or "system",
+                _safe_action_text(event_type) or "event",
+                _safe_action_text(event_scope),
+                _safe_audit_status(status),
+                _safe_action_text(request_id),
+                normalize_action_name(_safe_action_text(action)),
+                _safe_action_text(message),
+                json.dumps(clean_metadata, ensure_ascii=False, default=str),
+            ),
+        )
+        conn.commit()
+
+
+def _record_audit_event_safely(**kwargs: Any) -> None:
+    try:
+        record_audit_event(**kwargs)
+    except Exception as exc:
+        logger.warning("Audit event write skipped: %s", exc)
+
+
+def list_client_action_events(site_ids: list[str] | set[str], *, limit: int = 500) -> dict[str, list[dict[str, Any]]]:
+    """Return durable browser action events grouped by site ID."""
+    clean_site_ids = sorted({_safe_site_id(site_id) for site_id in site_ids if str(site_id or "").strip()})
+    if not clean_site_ids:
+        return {}
+    placeholders = ", ".join(["%s"] * len(clean_site_ids))
+    row_limit = max(1, min(int(limit or 500), MAX_DURABLE_ACTION_EVENT_ROWS))
+    init_admin_schema()
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                site_id,
+                request_id,
+                turn_id,
+                sequence,
+                action,
+                status,
+                stage,
+                reason,
+                origin,
+                url,
+                requested_url,
+                final_url,
+                duration_ms,
+                param_keys_json,
+                evidence_json,
+                occurred_at::TEXT AS occurred_at
+            FROM hub_action_events
+            WHERE site_id IN ({placeholders})
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT %s
+            """,
+            (*clean_site_ids, row_limit),
+        ).fetchall()
+    events_by_site: dict[str, list[dict[str, Any]]] = {site_id: [] for site_id in clean_site_ids}
+    for row in rows:
+        event = _action_event_row_to_dict(dict(row))
+        events_by_site.setdefault(event["site_id"], []).append(event)
+    return events_by_site
+
+
+def _insert_client_action_event(site_id: str, event: dict[str, Any]) -> None:
+    """Store one normalized browser action event in durable Postgres rows."""
+    init_admin_schema()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO hub_action_events
+                (
+                    site_id, request_id, turn_id, sequence, action, status, stage,
+                    reason, origin, url, requested_url, final_url, duration_ms,
+                    param_keys_json, evidence_json, occurred_at
+                )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, now()))
+            """,
+            (
+                site_id,
+                event["request_id"],
+                event["turn_id"],
+                event["sequence"],
+                event["action"],
+                event["status"],
+                event["stage"],
+                event["reason"],
+                event["origin"],
+                event["url"],
+                event["requested_url"],
+                event["final_url"],
+                event["duration_ms"],
+                json.dumps(event["param_keys"], ensure_ascii=False, default=str),
+                json.dumps(event["evidence"], ensure_ascii=False, default=str),
+                _event_datetime(event.get("occurred_at")),
+            ),
+        )
+        conn.commit()
+
+
+def _action_event_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "site_id": _safe_site_id(row.get("site_id")),
+        "source": "server_durable",
+        "origin": _safe_action_text(row.get("origin")),
+        "url": _safe_action_text(row.get("url")),
+        "occurred_at": _safe_action_text(row.get("occurred_at")),
+        "request_id": _safe_action_text(row.get("request_id")),
+        "turn_id": _safe_action_text(row.get("turn_id")),
+        "sequence": _safe_int(row.get("sequence")),
+        "action": normalize_action_name(_safe_action_text(row.get("action"))),
+        "status": _safe_action_status(row.get("status")),
+        "stage": _safe_action_stage(row.get("stage")),
+        "reason": _safe_action_text(row.get("reason")),
+        "duration_ms": _safe_duration_ms(row.get("duration_ms")),
+        "param_keys": _safe_text_list(_json_list(row.get("param_keys_json")), 20),
+        "requested_url": _safe_action_text(row.get("requested_url")),
+        "final_url": _safe_action_text(row.get("final_url")),
+        "evidence": _safe_json_value(_json_object(row.get("evidence_json"))),
+    }
+
+
+def _event_datetime(value: Any) -> datetime | None:
+    text = _safe_action_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _json_list(raw: Any) -> list[Any]:
+    if isinstance(raw, list):
+        return raw
+    if not raw:
+        return []
+    try:
+        data = json.loads(str(raw))
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
 
 
 def verify_client_panel_password(site_id: str, password: str) -> dict[str, Any]:
@@ -1113,6 +1547,15 @@ def update_client_panel_password(site_id: str, password: str) -> dict[str, Any]:
         conn.commit()
     if cursor.rowcount <= 0:
         raise LookupError(f"Client {clean_site_id} was not found.")
+    _record_audit_event_safely(
+        site_id=clean_site_id,
+        actor_type="crm_admin",
+        event_type="client_panel_password_updated",
+        event_scope="security",
+        status="ok",
+        message="Client panel password updated.",
+        metadata={"password_configured": True},
+    )
     return get_client_detail(clean_site_id)
 
 
@@ -1316,6 +1759,9 @@ def overview() -> dict[str, Any]:
     from agent.provider_status import provider_usage_status
     usage = _usage_summary()
     products_indexed = sum(int(client["catalog"]["active_products"]) for client in current_clients)
+    cache_hits = sum(int((client.get("answer_cache") or {}).get("hits") or 0) for client in current_clients)
+    cache_fresh = sum(int((client.get("answer_cache") or {}).get("fresh") or 0) for client in current_clients)
+    tokens_saved = sum(int((client.get("answer_cache") or {}).get("estimated_tokens_saved") or 0) for client in current_clients)
     return {
         "health": _health_snapshot(),
         "provider_usage": provider_usage_status(),
@@ -1326,6 +1772,9 @@ def overview() -> dict[str, Any]:
             "products_indexed": products_indexed,
             "avg_latency_ms": usage["avg_latency_ms"],
             "tokens_estimated": usage["tokens_estimated"],
+            "answer_cache_hits": cache_hits,
+            "answer_cache_fresh": cache_fresh,
+            "answer_cache_tokens_saved": tokens_saved,
         },
         "clients": clients,
         "recent_activity": _recent_usage_events(),
@@ -1471,6 +1920,8 @@ def _client_vertical_config(site_id: str) -> dict[str, Any]:
 
 def _write_client_vertical_config(site_id: str, vertical_config: dict[str, Any]) -> None:
     init_admin_schema()
+    clean_vertical_config = dict(vertical_config)
+    clean_vertical_config.pop("action_events", None)
     with _connect() as conn:
         cursor = conn.execute(
             """
@@ -1480,7 +1931,7 @@ def _write_client_vertical_config(site_id: str, vertical_config: dict[str, Any])
             WHERE site_id = %s AND status <> %s
             """,
             (
-                json.dumps(vertical_config, ensure_ascii=False, default=str),
+                json.dumps(clean_vertical_config, ensure_ascii=False, default=str),
                 _safe_site_id(site_id),
                 CLIENT_STATUS_DELETED,
             ),
@@ -1488,6 +1939,12 @@ def _write_client_vertical_config(site_id: str, vertical_config: dict[str, Any])
         conn.commit()
     if cursor.rowcount <= 0:
         raise LookupError(f"Client {site_id} was not found.")
+    try:
+        from db.answer_cache import bump_data_version
+
+        bump_data_version(site_id, reason="client_runtime_config_changed")
+    except Exception as exc:
+        logger.warning("Answer cache invalidation skipped for %s: %s", site_id, exc)
 
 
 def _validated_action_map(raw_actions: dict[str, Any]) -> dict[str, Any]:
@@ -1563,15 +2020,54 @@ def _validated_initialization_report(raw_report: dict[str, Any]) -> dict[str, An
     return {
         "source": _safe_action_text(report.get("source")) or "widget_registration",
         "status": _safe_action_text(report.get("status")) or "unknown",
+        "run_id": _safe_action_text(report.get("run_id")),
         "site_id": _safe_action_text(report.get("site_id")),
         "site_url": _safe_action_text(report.get("site_url")),
         "vertical_key": _safe_action_text(report.get("vertical_key")),
         "started_at": _safe_action_text(report.get("started_at")),
         "completed_at": _safe_action_text(report.get("completed_at")),
         "duration_ms": max(0.0, float(report.get("duration_ms") or 0.0)),
+        "timeout_seconds": max(0, int(report.get("timeout_seconds") or 0)),
+        "cancel_requested": bool(report.get("cancel_requested")),
+        "cancel_requested_at": _safe_action_text(report.get("cancel_requested_at")),
         "stages": _safe_flow_list(report.get("stages"), MAX_ADAPTER_ACTIONS),
         "error": _safe_action_text(report.get("error")),
     }
+
+
+def _same_setup_run(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_run_id = _safe_action_text(left.get("run_id"))
+    right_run_id = _safe_action_text(right.get("run_id"))
+    return bool(left_run_id and right_run_id and left_run_id == right_run_id)
+
+
+def _setup_stages_with_stop_status(raw_stages: Any, status: str, message: str, completed_at: str) -> list[dict[str, Any]]:
+    stages = _safe_flow_list(raw_stages, MAX_ADAPTER_ACTIONS)
+    if stages:
+        updated = [dict(stage) for stage in stages]
+        if str(updated[-1].get("status") or "").lower() == SETUP_STATUS_RUNNING:
+            updated[-1] = {
+                **updated[-1],
+                "status": status,
+                "message": message,
+                "completed_at": completed_at,
+            }
+        elif not any(str(stage.get("status") or "").lower() in {status, "failed"} for stage in updated):
+            updated.append({
+                "name": "setup_stopped",
+                "status": status,
+                "message": message,
+                "started_at": completed_at,
+                "completed_at": completed_at,
+            })
+        return updated[:MAX_ADAPTER_ACTIONS]
+    return [{
+        "name": "setup_stopped",
+        "status": status,
+        "message": message,
+        "started_at": completed_at,
+        "completed_at": completed_at,
+    }]
 
 
 def _validated_assistant_smoke_report(raw_report: dict[str, Any]) -> dict[str, Any]:
@@ -1613,20 +2109,26 @@ def _validated_action_event(raw_event: dict[str, Any]) -> dict[str, Any]:
         "origin": _safe_action_text(event.get("origin")),
         "url": _safe_action_text(event.get("url")),
         "occurred_at": _safe_action_text(event.get("occurred_at")),
+        "request_id": _safe_action_text(event.get("request_id")),
+        "turn_id": _safe_action_text(event.get("turn_id")),
+        "sequence": _safe_int(event.get("sequence")),
         "action": normalize_action_name(_safe_action_text(event.get("action"))),
         "status": _safe_action_status(event.get("status")),
         "stage": _safe_action_stage(event.get("stage")),
         "reason": _safe_action_text(event.get("reason")),
         "duration_ms": _safe_duration_ms(event.get("duration_ms")),
         "param_keys": _safe_text_list(event.get("param_keys"), 20),
+        "requested_url": _safe_action_text(event.get("requested_url")),
+        "final_url": _safe_action_text(event.get("final_url")),
+        "evidence": _safe_json_value(event.get("evidence")),
     }
 
 
-def _refresh_action_health(vertical_config: dict[str, Any]) -> None:
-    events = _safe_flow_list(vertical_config.get("action_events"), 50)
+def _refresh_action_health(vertical_config: dict[str, Any], *, events: list[dict[str, Any]] | None = None) -> None:
+    action_events = _safe_flow_list(events, 50)
     validation = _dict_config(vertical_config.get("validation"))
     repair_candidates = _runtime_repair_candidates(vertical_config)
-    health = _action_health_from_events(events, validation, repair_candidates)
+    health = _action_health_from_events(action_events, validation, repair_candidates)
     applied_repairs = _apply_action_health_repairs(vertical_config, health)
     if applied_repairs:
         health = _mark_action_health_repairs_applied(health, applied_repairs)
@@ -1733,10 +2235,12 @@ def _consecutive_failure_count(events: list[dict[str, Any]]) -> int:
 
 
 def _action_health_status(latest_status: str, failure_count: int) -> str:
-    if latest_status == "ok":
+    if latest_status in {"ok", "succeeded"}:
         return "healthy"
     if latest_status == "blocked":
         return "policy_blocked"
+    if latest_status == "needs_handoff":
+        return "handoff_required"
     if failure_count >= ACTION_HEALTH_FAILURE_THRESHOLD:
         return "blocked"
     if failure_count > 0:
@@ -1758,7 +2262,8 @@ def _action_health_payload(
         "last_status": _safe_action_status(latest_event.get("status")),
         "last_stage": _safe_action_stage(latest_event.get("stage")),
         "last_reason": _safe_action_text(latest_event.get("reason")),
-        "last_url": _safe_action_text(latest_event.get("url")),
+        "last_url": _safe_action_text(latest_event.get("final_url")) or _safe_action_text(latest_event.get("url")),
+        "last_request_id": _safe_action_text(latest_event.get("request_id")),
         "last_seen_at": _safe_action_text(latest_event.get("occurred_at")),
     }
     if status in {"needs_repair", "blocked"}:
@@ -1914,7 +2419,25 @@ def _timestamp_value(value: Any) -> float:
 
 def _safe_action_status(value: Any) -> str:
     status = _safe_action_text(value).lower()
-    return status if status in {"ok", "failed", "blocked", "error", "unknown"} else "unknown"
+    allowed = {
+        "ok",
+        "requested",
+        "executing",
+        "succeeded",
+        "failed",
+        "blocked",
+        "needs_handoff",
+        "error",
+        "unknown",
+    }
+    return status if status in allowed else "unknown"
+
+
+def _safe_audit_status(value: Any) -> str:
+    status = re.sub(r"[^a-z0-9_]+", "_", _safe_action_text(value).lower()).strip("_")
+    if not status:
+        return "unknown"
+    return status[:80]
 
 
 def _safe_action_stage(value: Any) -> str:
@@ -2320,8 +2843,9 @@ def _client_summary(client: dict[str, Any]) -> dict[str, Any]:
     return {
         **public_client,
         "script_tag": script_tag_for_site(site_id),
-        "runtime_status": _runtime_status(public_client.get("store_url") or public_client.get("allowed_origin")),
+        "runtime_status": _runtime_status(_runtime_status_source_urls(public_client)),
         "catalog": _safe_catalog_summary(site_id),
+        "answer_cache": _safe_answer_cache_summary(site_id),
         "usage": _usage_summary(site_id),
         "quota": quota_status(site_id),
         "panel_password_configured": _panel_password_configured(panel_password_hash),
@@ -2331,8 +2855,8 @@ def _client_summary(client: dict[str, Any]) -> dict[str, Any]:
 
 def _runtime_status(raw_url: Any) -> dict[str, Any]:
     """Return a short-lived read-only website reachability snapshot for CRM display."""
-    target_url = _runtime_status_url(raw_url)
-    if not target_url:
+    target_urls = _runtime_status_urls(raw_url)
+    if not target_urls:
         return {
             "status": RUNTIME_STATUS_UNKNOWN,
             "label": "No URL",
@@ -2340,7 +2864,10 @@ def _runtime_status(raw_url: Any) -> dict[str, Any]:
             "message": "Client URL is not configured.",
         }
 
-    candidates = _runtime_status_candidates(target_url)
+    candidates = []
+    for target_url in target_urls:
+        candidates.extend(_runtime_status_candidates(target_url))
+    candidates = list(dict.fromkeys(candidates))
     cache_key = "|".join(candidates)
     cached = _runtime_status_cache.get(cache_key)
     now = time.monotonic()
@@ -2350,6 +2877,28 @@ def _runtime_status(raw_url: Any) -> dict[str, Any]:
     status = _probe_runtime_status(candidates)
     _runtime_status_cache[cache_key] = (now, status)
     return dict(status)
+
+
+def _runtime_status_source_urls(client: dict[str, Any]) -> list[str]:
+    vertical_config = client.get("vertical_config") if isinstance(client.get("vertical_config"), dict) else {}
+    runtime = vertical_config.get("runtime_capabilities") if isinstance(vertical_config.get("runtime_capabilities"), dict) else {}
+    discovery = vertical_config.get("discovery") if isinstance(vertical_config.get("discovery"), dict) else {}
+    return [
+        runtime.get("url"),
+        runtime.get("origin"),
+        discovery.get("url"),
+        client.get("store_url"),
+        client.get("allowed_origin"),
+    ]
+
+
+def _runtime_status_urls(raw_url: Any) -> list[str]:
+    if isinstance(raw_url, (list, tuple)):
+        values = raw_url
+    else:
+        values = [raw_url]
+    urls = [_runtime_status_url(value) for value in values]
+    return list(dict.fromkeys(url for url in urls if url))
 
 
 def _runtime_status_url(raw_url: Any) -> str:
@@ -2431,6 +2980,25 @@ def _safe_catalog_summary(site_id: str) -> dict[str, Any]:
         return stats
     except psycopg.Error as exc:
         return _empty_catalog_summary(str(exc))
+
+
+def _safe_answer_cache_summary(site_id: str) -> dict[str, Any]:
+    try:
+        from db.answer_cache import answer_cache_summary
+
+        return answer_cache_summary(site_id, limit=5)
+    except Exception as exc:
+        return {
+            "site_id": site_id,
+            "data_version": 0,
+            "total": 0,
+            "fresh": 0,
+            "stale": 0,
+            "hits": 0,
+            "estimated_tokens_saved": 0,
+            "items": [],
+            "error": str(exc),
+        }
 
 
 def _empty_catalog_summary(message: str = "") -> dict[str, Any]:

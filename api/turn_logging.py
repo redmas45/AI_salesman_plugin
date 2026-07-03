@@ -40,7 +40,7 @@ def print_turn_summary(
         flush=True,
     )
     print(
-        "[SHOPBOT TURN] "
+        "[MAYABOT TURN] "
         f"transport={transport} "
         f"status={status} "
         f"site={site_id} "

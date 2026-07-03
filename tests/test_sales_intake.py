@@ -24,6 +24,7 @@ def test_high_risk_intake_context_requires_professional_handoff() -> None:
     assert "## Sales Intake Plan" in context
     assert "Coverage need" in context
     assert "licensed advisor" in context or "professional handoff" in context
+    assert "Do not ask for a value the user already gave" in context
     assert "passwords" in context
     assert "card numbers" in context
 

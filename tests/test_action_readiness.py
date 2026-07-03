@@ -12,7 +12,7 @@ from agent.action_readiness import action_readiness_for, action_readiness_prompt
 from agent import capabilities
 
 
-def test_action_readiness_maps_required_params_to_vertical_question() -> None:
+def test_action_readiness_maps_required_params_to_exact_question() -> None:
     vertical_config = {
         "actions": {
             "REQUEST_ESTIMATE": {
@@ -29,7 +29,7 @@ def test_action_readiness_maps_required_params_to_vertical_question() -> None:
     assert rows[0]["action"] == "REQUEST_ESTIMATE"
     assert rows[0]["status"] == "requires_params"
     assert rows[0]["required_params"] == ("project_scope", "phone")
-    assert "construction" in rows[0]["question"].lower()
+    assert rows[0]["question"] == "Please provide project scope, phone."
     assert rows[0]["reason"]
 
 
@@ -50,7 +50,7 @@ def test_action_readiness_uses_sequence_params_when_field_list_missing() -> None
     context = action_readiness_prompt_context(vertical_config, "travel")
 
     assert "START_BOOKING requires destination, date" in context
-    assert "What dates or date flexibility should I use?" in context
+    assert "Please provide destination, date." in context
 
 
 def test_action_readiness_sanitizer_drops_unknown_actions() -> None:

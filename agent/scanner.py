@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from agent.actions.registry import normalize_action_name
+from agent.barrier_policy import build_barrier_action_policy
 from agent.local_urls import local_runtime_url_candidates
 from agent.verticals.registry import get_vertical
 from db.database import tenant_catalog_stats
@@ -105,6 +106,7 @@ class SiteCapability:
     supported: bool
     confidence: float
     evidence: str
+    blocking: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -321,6 +323,7 @@ async def _check_variants(
         supported=False,
         confidence=0.4,
         evidence="No variant data detected in product API responses",
+        blocking=False,
     )
 
 
@@ -574,7 +577,7 @@ def _regression_capabilities(vertical_config: dict[str, Any]) -> list[SiteCapabi
     ]
 
 
-def _barrier_capabilities(vertical_config: dict[str, Any]) -> list[SiteCapability]:
+def _barrier_capabilities(vertical_config: dict[str, Any], vertical_key: str) -> list[SiteCapability]:
     barriers = vertical_config.get("barriers")
     if not isinstance(barriers, dict):
         return []
@@ -583,14 +586,19 @@ def _barrier_capabilities(vertical_config: dict[str, Any]) -> list[SiteCapabilit
     high = int(summary.get("high") or 0)
     medium = int(summary.get("medium") or 0)
     keys = summary.get("keys") if isinstance(summary.get("keys"), list) else []
-    supported = high == 0
-    confidence = 0.9 if total == 0 else 0.65 if high == 0 else 0.2
+    action_policy = build_barrier_action_policy(vertical_config, vertical_key)
+    managed = high > 0 and bool(action_policy.get("handoff_flows"))
+    supported = high == 0 or managed
+    confidence = 0.9 if total == 0 else 0.75 if managed else 0.65 if high == 0 else 0.2
+    handoffs = action_policy.get("handoff_actions") if isinstance(action_policy.get("handoff_actions"), list) else []
+    suffix = f" Managed by handoff policy: {', '.join(handoffs[:4])}." if managed and handoffs else ""
     return [
         SiteCapability(
             "flow_barriers",
             supported,
             confidence,
-            f"Discovery detected {total} hard-flow barrier(s): {high} high, {medium} medium. {', '.join(str(key) for key in keys[:6])}",
+            f"Discovery detected {total} hard-flow barrier(s): {high} high, {medium} medium. {', '.join(str(key) for key in keys[:6])}.{suffix}",
+            blocking=not managed,
         )
     ]
 
@@ -811,7 +819,7 @@ async def scan_site(
     adapter_caps = _adapter_action_capabilities(vertical_config or {})
     expected_action_caps = _vertical_expected_action_capabilities(site_id, vertical_key, vertical_config or {}, commerce_caps)
     flow_caps = _flow_capabilities(vertical_config or {})
-    barrier_caps = _barrier_capabilities(vertical_config or {})
+    barrier_caps = _barrier_capabilities(vertical_config or {}, vertical_key)
     rehearsal_caps = _rehearsal_capabilities(vertical_config or {})
     regression_caps = _regression_capabilities(vertical_config or {})
 

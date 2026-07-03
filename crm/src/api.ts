@@ -1,5 +1,6 @@
 import type {
   AnalyticsResponse,
+  AnswerCacheResponse,
   AdapterConfigResponse,
   CatalogProduct,
   CapabilitiesSummary,
@@ -107,6 +108,7 @@ async function publicRequest<T>(path: string, options: RequestInit = {}): Promis
 
 export const crmApi = {
   overview: () => request<Overview>('/overview'),
+  checkProviderUsage: () => request<{ provider_usage: Overview['provider_usage'] }>('/provider-usage/check', { method: 'POST' }),
   settings: () => request<SettingsResponse>('/settings'),
   conversations: (range: string, siteId = '') =>
     request<ConversationsResponse>(
@@ -131,6 +133,10 @@ export const crmApi = {
     }),
   removeClient: (siteId: string) =>
     request<{ status: string }>(`/clients/${encodeURIComponent(siteId)}`, { method: 'DELETE' }),
+  moveClientToAvailable: (siteId: string) =>
+    request<{ client: Client; status: string }>(`/clients/${encodeURIComponent(siteId)}/available`, {
+      method: 'POST',
+    }),
   activateClient: (siteId: string) =>
     request<{ client: Client; status: string; message: string }>(`/clients/${encodeURIComponent(siteId)}/activate`, {
       method: 'POST',
@@ -167,6 +173,11 @@ export const crmApi = {
     request<{ status: string; message: string }>(`/clients/${encodeURIComponent(siteId)}/auto-integrate`, {
       method: 'POST',
     }),
+  cancelAutoIntegrateClient: (siteId: string) =>
+    request<{ status: string; message: string; client: Client }>(
+      `/clients/${encodeURIComponent(siteId)}/auto-integrate/cancel`,
+      { method: 'POST' },
+    ),
   runAssistantSmokeTests: (siteId: string) =>
     request<{ status: string; message: string; report: Record<string, unknown>; client: Client }>(
       `/clients/${encodeURIComponent(siteId)}/assistant-smoke-tests`,
@@ -187,6 +198,10 @@ export const crmApi = {
   getClientKnowledge: (siteId: string, limit = 50) =>
     request<KnowledgeResponse>(
       `/clients/${encodeURIComponent(siteId)}/knowledge?limit=${encodeURIComponent(String(limit))}`,
+    ),
+  getClientAnswerCache: (siteId: string, limit = 20) =>
+    request<AnswerCacheResponse>(
+      `/clients/${encodeURIComponent(siteId)}/answer-cache?limit=${encodeURIComponent(String(limit))}`,
     ),
   getClientAdapter: (siteId: string) =>
     request<AdapterConfigResponse>(`/clients/${encodeURIComponent(siteId)}/adapter`),

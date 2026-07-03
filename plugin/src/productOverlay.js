@@ -1,4 +1,4 @@
-import { fetchHubProductsByIds, resolveProductDetailUrl } from "./productResolver";
+import { fetchProductsForDisplay, resolveProductDetailUrl } from "./productResolver";
 import { executeWithAIHubAdapter, hasAIHubAdapter } from "./adapterBridge";
 import {
   ACTION_PARAMS,
@@ -17,6 +17,7 @@ const PLACEHOLDER_IMAGE = [
   "%3Ctext x='160' y='198' text-anchor='middle' fill='%23686660' font-family='Arial,sans-serif' font-size='16'%3EImage pending%3C/text%3E",
   "%3C/svg%3E",
 ].join("");
+const MAX_EVIDENCE_IDS = 12;
 let currentProducts = [];
 let currentTitle = DEFAULT_RECOMMENDATION_TITLE;
 
@@ -30,18 +31,18 @@ function escapeHtml(value) {
 }
 
 function ensureStyles() {
-  if (document.getElementById("shopbot-product-overlay-styles")) return;
+  if (document.getElementById("mayabot-product-overlay-styles")) return;
 
   const style = document.createElement("style");
-  style.id = "shopbot-product-overlay-styles";
+  style.id = "mayabot-product-overlay-styles";
   style.textContent = `
-    #shopbot-product-panel {
+    #mayabot-product-panel {
       position: fixed;
       left: 50%;
       bottom: 96px;
       z-index: 2147483638;
-      width: min(calc(100vw - 32px), var(--shopbot-panel-width, 720px));
-      max-height: min(72vh, var(--shopbot-panel-max-height, 560px));
+      width: min(calc(100vw - 32px), var(--mayabot-panel-width, 720px));
+      max-height: min(72vh, var(--mayabot-panel-max-height, 560px));
       transform: translate(-50%, calc(100% + 32px));
       opacity: 0;
       pointer-events: none;
@@ -56,16 +57,16 @@ function ensureStyles() {
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
     }
-    #shopbot-product-panel.active {
+    #mayabot-product-panel.active {
       transform: translate(-50%, 0);
       opacity: 1;
       pointer-events: auto;
     }
-    #shopbot-product-panel.count-1 { --shopbot-panel-width: 360px; --shopbot-panel-max-height: 470px; }
-    #shopbot-product-panel.count-2 { --shopbot-panel-width: 600px; --shopbot-panel-max-height: 500px; }
-    #shopbot-product-panel.count-3 { --shopbot-panel-width: 860px; --shopbot-panel-max-height: 520px; }
-    #shopbot-product-panel.count-many { --shopbot-panel-width: 980px; --shopbot-panel-max-height: 620px; }
-    .shopbot-product-header {
+    #mayabot-product-panel.count-1 { --mayabot-panel-width: 360px; --mayabot-panel-max-height: 470px; }
+    #mayabot-product-panel.count-2 { --mayabot-panel-width: 600px; --mayabot-panel-max-height: 500px; }
+    #mayabot-product-panel.count-3 { --mayabot-panel-width: 860px; --mayabot-panel-max-height: 520px; }
+    #mayabot-product-panel.count-many { --mayabot-panel-width: 980px; --mayabot-panel-max-height: 620px; }
+    .mayabot-product-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -73,7 +74,7 @@ function ensureStyles() {
       padding: 14px 16px;
       border-bottom: 1px solid rgba(22, 22, 21, 0.1);
     }
-    .shopbot-product-title {
+    .mayabot-product-title {
       margin: 0;
       color: #161615;
       font-size: 15px;
@@ -81,7 +82,7 @@ function ensureStyles() {
       line-height: 1.25;
       letter-spacing: 0;
     }
-    .shopbot-product-close {
+    .mayabot-product-close {
       display: grid;
       place-items: center;
       width: 34px;
@@ -95,15 +96,15 @@ function ensureStyles() {
       font-size: 20px;
       line-height: 1;
     }
-    .shopbot-product-grid {
+    .mayabot-product-grid {
       display: grid;
-      grid-template-columns: repeat(var(--shopbot-card-count, 2), minmax(0, 1fr));
+      grid-template-columns: repeat(var(--mayabot-card-count, 2), minmax(0, 1fr));
       gap: 12px;
       padding: 14px;
       overflow: auto;
       scrollbar-width: thin;
     }
-    .shopbot-product-card {
+    .mayabot-product-card {
       display: grid;
       grid-template-rows: auto auto auto 1fr;
       gap: 9px;
@@ -113,7 +114,7 @@ function ensureStyles() {
       background: #ffffff;
       padding: 12px;
     }
-    .shopbot-product-image {
+    .mayabot-product-image {
       width: 100%;
       height: clamp(132px, 18vw, 178px);
       object-fit: contain;
@@ -122,7 +123,7 @@ function ensureStyles() {
       padding: 8px;
       mix-blend-mode: multiply;
     }
-    .shopbot-product-name {
+    .mayabot-product-name {
       margin: 0;
       min-height: 38px;
       color: #161615;
@@ -134,21 +135,21 @@ function ensureStyles() {
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
-    .shopbot-product-meta {
+    .mayabot-product-meta {
       margin: 0;
       color: #686660;
       font-size: 13px;
       line-height: 1.35;
       overflow-wrap: anywhere;
     }
-    .shopbot-product-actions {
+    .mayabot-product-actions {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
       align-self: end;
       margin-top: 2px;
     }
-    .shopbot-product-actions button {
+    .mayabot-product-actions button {
       min-height: 36px;
       border: 1px solid rgba(22, 22, 21, 0.12);
       border-radius: 8px;
@@ -159,42 +160,42 @@ function ensureStyles() {
       font-weight: 760;
       line-height: 1;
     }
-    .shopbot-product-actions button.secondary {
+    .mayabot-product-actions button.secondary {
       background: #ffffff;
       color: #161615;
     }
-    .shopbot-product-empty {
+    .mayabot-product-empty {
       margin: 0;
       padding: 14px;
       color: #686660;
       font-size: 14px;
     }
     @media (max-width: 720px) {
-      #shopbot-product-panel {
+      #mayabot-product-panel {
         bottom: 86px;
         width: min(calc(100vw - 20px), 520px);
       }
-      #shopbot-product-panel.count-2,
-      #shopbot-product-panel.count-3,
-      #shopbot-product-panel.count-many {
-        --shopbot-card-count: 2;
+      #mayabot-product-panel.count-2,
+      #mayabot-product-panel.count-3,
+      #mayabot-product-panel.count-many {
+        --mayabot-card-count: 2;
       }
-      .shopbot-product-grid {
+      .mayabot-product-grid {
         padding: 12px;
       }
-      .shopbot-product-image {
+      .mayabot-product-image {
         height: clamp(118px, 32vw, 150px);
       }
     }
     @media (max-width: 430px) {
-      #shopbot-product-panel {
+      #mayabot-product-panel {
         bottom: 82px;
       }
-      #shopbot-product-panel.count-1,
-      #shopbot-product-panel.count-2,
-      #shopbot-product-panel.count-3,
-      #shopbot-product-panel.count-many {
-        --shopbot-card-count: 1;
+      #mayabot-product-panel.count-1,
+      #mayabot-product-panel.count-2,
+      #mayabot-product-panel.count-3,
+      #mayabot-product-panel.count-many {
+        --mayabot-card-count: 1;
       }
     }
   `;
@@ -204,28 +205,24 @@ function ensureStyles() {
 function ensurePanel() {
   ensureStyles();
 
-  let panel = document.getElementById("shopbot-product-panel");
+  let panel = document.getElementById("mayabot-product-panel");
   if (panel) return panel;
 
   panel = document.createElement("div");
-  panel.id = "shopbot-product-panel";
+  panel.id = "mayabot-product-panel";
   panel.setAttribute("aria-live", "polite");
   panel.innerHTML = `
-    <div class="shopbot-product-header">
-      <h2 class="shopbot-product-title">${DEFAULT_RECOMMENDATION_TITLE}</h2>
-      <button class="shopbot-product-close" type="button" aria-label="Close recommendations">&times;</button>
+    <div class="mayabot-product-header">
+      <h2 class="mayabot-product-title">${DEFAULT_RECOMMENDATION_TITLE}</h2>
+      <button class="mayabot-product-close" type="button" aria-label="Close recommendations">&times;</button>
     </div>
-    <div class="shopbot-product-grid"></div>
+    <div class="mayabot-product-grid"></div>
   `;
-  panel.querySelector(".shopbot-product-close").addEventListener("click", () => {
+  panel.querySelector(".mayabot-product-close").addEventListener("click", () => {
     panel.classList.remove("active");
   });
   document.body.appendChild(panel);
   return panel;
-}
-
-async function fetchProductsByIds(productIds) {
-  return fetchHubProductsByIds(productIds);
 }
 
 async function requestAddToCart(productId) {
@@ -245,7 +242,7 @@ async function requestAddToCart(productId) {
     return;
   }
 
-  window.dispatchEvent(new CustomEvent(EVENTS.SHOPBOT_ACTION, { detail }));
+  window.dispatchEvent(new CustomEvent(EVENTS.MAYABOT_ACTION, { detail }));
 }
 
 async function requestProductDetail(productId) {
@@ -268,7 +265,7 @@ async function requestProductDetail(productId) {
     return;
   }
 
-  window.dispatchEvent(new CustomEvent(EVENTS.SHOPBOT_ACTION, { detail }));
+  window.dispatchEvent(new CustomEvent(EVENTS.MAYABOT_ACTION, { detail }));
 }
 
 function countClass(count) {
@@ -284,21 +281,63 @@ function cardCount(count) {
   return 3;
 }
 
+function cleanIds(ids) {
+  const seen = new Set();
+  return (Array.isArray(ids) ? ids : [])
+    .map((id) => String(id ?? "").trim())
+    .filter(Boolean)
+    .filter((id) => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+}
+
+function overlayResult(requestedIds, products, reason = "", meta = {}) {
+  const renderedIds = (Array.isArray(products) ? products : [])
+    .map((product) => String(product?.id ?? "").trim())
+    .filter(Boolean);
+  const renderedCount = renderedIds.length;
+  const requestedCount = requestedIds.length;
+  const status = renderedCount > 0 ? "succeeded" : "failed";
+  return {
+    status,
+    stage: "product_overlay",
+    reason: reason || (status === "succeeded" ? "" : "no_matching_products_rendered"),
+    evidence: {
+      requested_product_count: requestedCount,
+      rendered_product_count: renderedCount,
+      missing_product_count: Math.max(requestedCount - renderedCount, 0),
+      requested_product_ids: requestedIds.slice(0, MAX_EVIDENCE_IDS).join(","),
+      rendered_product_ids: renderedIds.slice(0, MAX_EVIDENCE_IDS).join(","),
+      lookup_source: meta.source || "",
+      search_query: meta.searchQuery || "",
+    },
+  };
+}
+
+function productPriceText(product) {
+  const explicit = String(product?.displayPrice || "").trim();
+  if (explicit) return explicit;
+  const price = Number(product?.price || 0);
+  return Number.isFinite(price) && price > 0 ? price.toLocaleString() : "Price unavailable";
+}
+
 function renderProducts(products, title) {
   const panel = ensurePanel();
-  const grid = panel.querySelector(".shopbot-product-grid");
-  const heading = panel.querySelector(".shopbot-product-title");
+  const grid = panel.querySelector(".mayabot-product-grid");
+  const heading = panel.querySelector(".mayabot-product-title");
   const count = products.length;
   currentProducts = Array.isArray(products) ? [...products] : [];
   currentTitle = title || DEFAULT_RECOMMENDATION_TITLE;
 
   panel.classList.remove("count-1", "count-2", "count-3", "count-many");
   panel.classList.add(countClass(count));
-  panel.style.setProperty("--shopbot-card-count", String(cardCount(count)));
+  panel.style.setProperty("--mayabot-card-count", String(cardCount(count)));
   heading.textContent = currentTitle;
 
   if (!count) {
-    grid.innerHTML = `<p class="shopbot-product-empty">No matching products are currently available.</p>`;
+    grid.innerHTML = `<p class="mayabot-product-empty">No matching products are currently available.</p>`;
     panel.classList.add("active");
     collapseVoiceBubble();
     return;
@@ -308,11 +347,11 @@ function renderProducts(products, title) {
     .map((product) => {
       const safeId = escapeHtml(product.id);
       return `
-        <article class="shopbot-product-card" data-product-id="${safeId}">
-          <img class="shopbot-product-image" src="${escapeHtml(product.imageUrl || PLACEHOLDER_IMAGE)}" alt="${escapeHtml(product.name)}">
-          <h3 class="shopbot-product-name">${escapeHtml(product.name)}</h3>
-          <p class="shopbot-product-meta">${escapeHtml(product.brand)} - $${Number(product.price || 0).toFixed(2)} USD</p>
-          <div class="shopbot-product-actions">
+        <article class="mayabot-product-card" data-product-id="${safeId}">
+          <img class="mayabot-product-image" src="${escapeHtml(product.imageUrl || PLACEHOLDER_IMAGE)}" alt="${escapeHtml(product.name)}">
+          <h3 class="mayabot-product-name">${escapeHtml(product.name || product.title || "Product")}</h3>
+          <p class="mayabot-product-meta">${escapeHtml(product.brand)} - ${escapeHtml(productPriceText(product))}</p>
+          <div class="mayabot-product-actions">
             <button type="button" data-add="${safeId}">Add</button>
             <button type="button" class="secondary" data-view="${safeId}">View</button>
           </div>
@@ -338,22 +377,29 @@ function renderProducts(products, title) {
 
 function collapseVoiceBubble() {
   window.setTimeout(() => {
-    const chat = document.getElementById("shopbot-chat");
-    const messages = document.getElementById("shopbot-msgs");
+    const chat = document.getElementById("mayabot-chat");
+    const messages = document.getElementById("mayabot-msgs");
     if (messages) messages.innerHTML = "";
     if (chat) chat.classList.remove("visible");
   }, OVERLAY_COLLAPSE_DELAY_MS);
 }
 
-export async function showProductOverlay(productIds, title = DEFAULT_RECOMMENDATION_TITLE) {
+export async function showProductOverlay(productIds, title = DEFAULT_RECOMMENDATION_TITLE, options = {}) {
+  const requestedIds = cleanIds(productIds);
+  const searchQuery = String(options.searchQuery || "").trim();
+  if (!requestedIds.length && !searchQuery) {
+    renderProducts([], title);
+    return overlayResult([], [], "missing_product_ids");
+  }
+
   try {
-    const products = await fetchProductsByIds(productIds);
+    const { products, source, reason } = await fetchProductsForDisplay(requestedIds, searchQuery);
     renderProducts(products, title);
-    return true;
+    return overlayResult(requestedIds, products, reason, { source, searchQuery });
   } catch (err) {
     console.warn("[AI Hub Widget] Product overlay failed:", err);
     renderProducts([], title);
-    return true;
+    return overlayResult(requestedIds, [], "product_overlay_fetch_failed", { searchQuery });
   }
 }
 

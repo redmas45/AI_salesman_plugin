@@ -15,3 +15,8 @@ def test_prompt_handles_cart_tray_as_cart_not_inventory():
     assert "CART/TRAY LANGUAGE" in SYSTEM_PROMPT_TEMPLATE
     assert "tray" in SYSTEM_PROMPT_TEMPLATE
     assert "do NOT say the store inventory is empty" in SYSTEM_PROMPT_TEMPLATE
+
+
+def test_prompt_uses_browser_action_results_as_execution_proof():
+    assert "BROWSER_ACTION_RESULTS" in SYSTEM_PROMPT_TEMPLATE
+    assert "browser execution proof" in SYSTEM_PROMPT_TEMPLATE

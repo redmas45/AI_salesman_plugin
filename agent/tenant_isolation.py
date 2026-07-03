@@ -13,6 +13,7 @@ def build_tenant_isolation_audit(
     runtime_config: dict[str, Any],
     prompt_profile: dict[str, Any],
     knowledge: dict[str, Any],
+    answer_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return explicit isolation checks for one client runtime."""
     checks = [
@@ -23,6 +24,7 @@ def build_tenant_isolation_audit(
         _check("prompt_versions_scope", _prompt_versions_scoped(prompt_profile), "Prompt versions belong to the active profile."),
         _check("knowledge_tenant_schema", isinstance(knowledge.get("stats"), dict), "Knowledge stats loaded from tenant schema."),
         _check("knowledge_items_shape", _knowledge_items_scoped(knowledge), "Knowledge preview is tenant-local and contains no site override field."),
+        _check("answer_cache_tenant_schema", _answer_cache_scoped(answer_cache or {}, site_id), "Answer cache summary loaded from tenant schema for the requested site."),
     ]
     failed = [row for row in checks if row["status"] == "failed"]
     return {
@@ -67,6 +69,15 @@ def _prompt_versions_scoped(prompt_profile: dict[str, Any]) -> bool:
 
 def _knowledge_items_scoped(knowledge: dict[str, Any]) -> bool:
     items = knowledge.get("items") if isinstance(knowledge.get("items"), list) else []
+    return all(isinstance(item, dict) and "site_id" not in item for item in items[:50])
+
+
+def _answer_cache_scoped(answer_cache: dict[str, Any], site_id: str) -> bool:
+    if not isinstance(answer_cache, dict):
+        return False
+    if _text(answer_cache.get("site_id")) not in {"", site_id}:
+        return False
+    items = answer_cache.get("items") if isinstance(answer_cache.get("items"), list) else []
     return all(isinstance(item, dict) and "site_id" not in item for item in items[:50])
 
 

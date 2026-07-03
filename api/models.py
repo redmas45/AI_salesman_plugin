@@ -61,6 +61,9 @@ OPEN_PARAMETER_ACTIONS = {
 class UIAction(BaseModel):
     action: str = Field(..., description="UI action type")
     params: dict[str, Any] = Field(default_factory=dict)
+    request_id: str = Field(default="", description="Browser execution correlation ID")
+    turn_id: str = Field(default="", description="Assistant turn correlation ID")
+    sequence: int = Field(default=0, ge=0, description="1-based action order within the turn")
 
     @model_validator(mode="after")
     def validate_params(self) -> Self:
@@ -129,6 +132,7 @@ class ShopResponse(BaseModel):
     response_text: str = Field(..., description="Assistant's spoken response")
     intent: str = Field(..., description="Detected customer intent")
     confidence: float = Field(..., ge=0.0, le=1.0)
+    answer_scope: str = Field("", description="Grounding/action scope used by Maya for this turn")
     ui_actions: list[UIAction] = Field(default_factory=list)
     audio_b64: str = Field("", description="Base64-encoded WAV audio")
     latency_ms: dict[str, float] = Field(default_factory=dict)

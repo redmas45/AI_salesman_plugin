@@ -324,7 +324,7 @@ def test_filter_actions_reports_missing_required_params(monkeypatch):
     assert report["actions"] == []
     assert notice["reason"] == "missing_required_params"
     assert notice["missing_params"] == ("phone",)
-    assert "coverage" in notice["question"].lower()
+    assert "phone" in notice["question"].lower()
     assert "one more detail" in action_filter_response_note(report)
 
 
@@ -434,11 +434,14 @@ def test_generic_prompt_has_no_cart_or_product_instructions(monkeypatch):
 
     assert "Vertical: Insurance" in prompt
     assert "SHOW_ENTITIES" in prompt
+    assert "## Conversation Intelligence" in prompt
+    assert "action field schema as the source of truth" in prompt
+    assert "Never ask again for a required field already supplied" in prompt
     assert "ADD_TO_CART" not in prompt
     assert "shopping cart" not in prompt.lower()
 
 
-def test_llm_uses_generic_prompt_for_insurance_without_shopbot(monkeypatch):
+def test_llm_uses_generic_prompt_for_insurance_without_mayabot(monkeypatch):
     captured = {}
 
     monkeypatch.setattr(llm, "get_client_vertical_key", lambda site_id: "insurance")
@@ -470,7 +473,7 @@ def test_llm_uses_generic_prompt_for_insurance_without_shopbot(monkeypatch):
     prompt = captured["system_prompt"]
     assert response["intent"] == "compare"
     assert "Vertical: Insurance" in prompt
-    assert "ShopBot" not in prompt
+    assert "MayaBot" not in prompt
     assert "ADD_TO_CART" not in prompt
     assert "shopping cart" not in prompt.lower()
 
@@ -782,8 +785,8 @@ def test_crm_client_isolation_audit_endpoint(monkeypatch):
         lambda site, api_base_url: {
             "site_id": site,
             "install": {
-                "adapter_script": f"https://hub.example.com/shopbot-adapter.js?site={site}",
-                "widget_script": f"https://hub.example.com/shopbot.js?site={site}",
+                "adapter_script": f"https://hub.example.com/mayabot-adapter.js?site={site}",
+                "widget_script": f"https://hub.example.com/mayabot.js?site={site}",
             },
             "adapter": {},
         },

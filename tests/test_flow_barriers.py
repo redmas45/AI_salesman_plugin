@@ -64,7 +64,8 @@ def test_scanner_barrier_capability_flags_high_severity_blockers() -> None:
                         "keys": ["captcha", "embedded_iframe", "map_widget"],
                     }
                 }
-            }
+            },
+            "generic",
         )
     }
 

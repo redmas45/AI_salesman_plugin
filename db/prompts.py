@@ -8,7 +8,7 @@ from typing import Any
 
 from agent.actions.registry import is_supported_action
 from agent.verticals.registry import DEFAULT_VERTICAL_KEY, get_vertical
-from db.clients import _client_row, _safe_site_id
+from db.clients import _client_row, _safe_site_id, record_audit_event
 from db.schema import _connect, init_admin_schema
 
 PROMPT_STATUS_DRAFT = "draft"
@@ -142,6 +142,14 @@ def save_client_prompt_profile(
             ),
         )
         conn.commit()
+    _bump_prompt_data_version(clean_site_id)
+    _record_prompt_audit_safely(
+        site_id=clean_site_id,
+        event_type="prompt_version_saved",
+        status=status,
+        message=str(changelog or "Prompt version saved."),
+        metadata={"profile_id": profile["id"], "version": version, "published": publish},
+    )
     return get_client_prompt_profile(clean_site_id)
 
 
@@ -151,12 +159,18 @@ def publish_prompt_version(version_id: str) -> dict[str, Any]:
     init_admin_schema()
     with _connect() as conn:
         row = conn.execute(
-            "SELECT profile_id FROM hub_prompt_versions WHERE id = %s",
+            """
+            SELECT v.profile_id, p.site_id
+            FROM hub_prompt_versions v
+            JOIN hub_prompt_profiles p ON p.id = v.profile_id
+            WHERE v.id = %s
+            """,
             (clean_id,),
         ).fetchone()
         if not row:
             raise LookupError(f"Prompt version {clean_id} was not found.")
         profile_id = row["profile_id"]
+        site_id = row["site_id"]
         _archive_published_versions(conn, profile_id)
         conn.execute(
             """
@@ -177,6 +191,14 @@ def publish_prompt_version(version_id: str) -> dict[str, Any]:
             (PROMPT_STATUS_PUBLISHED, profile_id),
         )
         conn.commit()
+    _bump_prompt_data_version(site_id)
+    _record_prompt_audit_safely(
+        site_id=site_id,
+        event_type="prompt_version_published",
+        status=PROMPT_STATUS_PUBLISHED,
+        message="Prompt version published.",
+        metadata={"profile_id": profile_id, "version_id": clean_id},
+    )
     return {"version_id": clean_id, "status": PROMPT_STATUS_PUBLISHED}
 
 
@@ -228,6 +250,37 @@ def _create_prompt_profile(site_id: str, name: str, vertical_key: str) -> dict[s
         ).fetchone()
         conn.commit()
     return dict(row)
+
+
+def _bump_prompt_data_version(site_id: str) -> None:
+    try:
+        from db.answer_cache import bump_data_version
+
+        bump_data_version(site_id, reason="prompt_profile_changed")
+    except Exception:
+        return
+
+
+def _record_prompt_audit_safely(
+    *,
+    site_id: str,
+    event_type: str,
+    status: str,
+    message: str,
+    metadata: dict[str, Any],
+) -> None:
+    try:
+        record_audit_event(
+            site_id=site_id,
+            actor_type="crm_admin",
+            event_type=event_type,
+            event_scope="prompt",
+            status=status,
+            message=message,
+            metadata=metadata,
+        )
+    except Exception:
+        return
 
 
 def _create_prompt_version(

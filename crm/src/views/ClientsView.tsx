@@ -364,6 +364,7 @@ export function ClientsView({
                     busy={busy}
                     activatingSiteId={activatingSiteId}
                     onFilter={setQuery}
+                    onRemoveClient={onRemoveClient}
                   />
                 ) : null}
                 {showOfflineGroup ? (
@@ -378,6 +379,7 @@ export function ClientsView({
                     busy={busy}
                     activatingSiteId={activatingSiteId}
                     onFilter={setQuery}
+                    onRemoveClient={onRemoveClient}
                   />
                 ) : null}
               </div>
@@ -537,6 +539,9 @@ function ClientCard({
         <span className="badge badge-muted">
           {number(client.catalog.active_products)} {vertical.entityLabelPlural}
         </span>
+        <span className="badge badge-muted">
+          {number(client.answer_cache?.hits ?? 0)} cache hits
+        </span>
         <RuntimeStatusPill client={client} />
         <StatusPill value={client.last_crawl_status || 'not_started'} />
       </div>
@@ -608,6 +613,7 @@ function AvailableClientGroup({
   busy,
   activatingSiteId,
   onFilter,
+  onRemoveClient,
 }: {
   title: string;
   description: string;
@@ -619,6 +625,7 @@ function AvailableClientGroup({
   busy: boolean;
   activatingSiteId: string;
   onFilter: (query: string) => void;
+  onRemoveClient: (siteId: string) => void;
 }) {
   return (
     <section className="available-client-group">
@@ -641,6 +648,7 @@ function AvailableClientGroup({
               busy={busy}
               activating={activatingSiteId === client.site_id}
               onFilter={onFilter}
+              onRemoveClient={onRemoveClient}
             />
           ))}
         </div>
@@ -659,6 +667,7 @@ function AvailableClientCard({
   busy,
   activating,
   onFilter,
+  onRemoveClient,
 }: {
   client: Client;
   style?: CSSProperties;
@@ -667,6 +676,7 @@ function AvailableClientCard({
   busy: boolean;
   activating: boolean;
   onFilter: (query: string) => void;
+  onRemoveClient: (siteId: string) => void;
 }) {
   const vertical = getCrmVertical(client.vertical_key);
   const panelUrl = clientPanelHref(client.site_id);
@@ -751,6 +761,16 @@ function AvailableClientCard({
         <a className="btn btn-secondary btn-sm" href={panelUrl} target="_blank" rel="noopener noreferrer">
           <ExternalLink size={14} aria-hidden="true" /> Owner panel
         </a>
+        <Button
+          variant="danger"
+          size="sm"
+          type="button"
+          icon={Trash2}
+          disabled={busy || activating}
+          onClick={() => onRemoveClient(client.site_id)}
+        >
+          Remove
+        </Button>
       </div>
     </article>
   );

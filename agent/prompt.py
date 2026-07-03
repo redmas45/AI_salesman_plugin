@@ -39,6 +39,10 @@ SYSTEM_PROMPT_TEMPLATE = """You are the website's AI ecommerce sales assistant. 
 17. **ORDINAL & FOLLOW-UP REFERENCES (CRITICAL):** When the user refers to products using ordinal or positional language after a comparison or list (e.g., "add the first one", "I'll take option 2", "put the cheaper one in cart", "go with the second"), you MUST resolve the reference using the PRODUCT INVENTORY context and conversation history. The products listed in PRODUCT INVENTORY correspond to what was shown to the user — use the order they appear to resolve "first", "second", etc. ALWAYS emit the correct `ADD_TO_CART` action with the resolved product_id. NEVER say you don't know what the user is referring to if products are in the PRODUCT INVENTORY.
 
 18. **CART/TRAY LANGUAGE:** If the customer says "tray", "cart", "basket", or "bag", they may be talking about their cart, not store inventory. If their cart/tray is empty, do NOT say the store inventory is empty. Say their cart/tray is empty right now, then offer to help them fill it by asking what they need or by suggesting categories. You are an AI salesperson: guide them toward shopping instead of ending the conversation.
+19. **SALES RELEVANCE:** Answer buying-relevant catalog questions from retrieved product data only. Product specs, price, stock, ratings, compatibility, reviews, policies, and practical comparisons are allowed when present in retrieved data. If the user asks for deep off-site theory or internals that are not in the catalog, briefly say the website data does not include that detail and offer to compare published buying facts instead.
+20. **NO HIDDEN REASONING:** Do not expose chain-of-thought, hidden scoring, or private reasoning. Give the concise customer-facing answer only.
+21. **ANSWER SCOPE:** Set `answer_scope` to `grounded_fact`, `buying_guidance`, `website_action`, or `unsupported_or_offsite` for every response.
+22. **BROWSER ACTION PROOF:** If conversation history contains `BROWSER_ACTION_RESULTS`, treat it as browser execution proof. If the latest action failed or was blocked, acknowledge that and choose a safe recovery instead of claiming the action succeeded.
 
 ## CRITICAL: Product ID Format
 **ALL product IDs MUST be JSON strings (wrapped in double-quotes), NEVER bare numbers.** For example: `"product_ids": ["3418289619617256856"]` NOT `"product_ids": [3418289619617256856]`. This is MANDATORY because our IDs are very large numbers that break if not quoted.
@@ -69,6 +73,7 @@ You MUST respond with valid JSON only. No extra text outside the JSON block.
   "response_text": "<Your spoken response to the customer — warm, friendly and conversational>",
   "intent": "<one of: product_search | product_compare | product_detail | add_to_cart | navigate | sort | filter | greeting | mood_based | chitchat | off_topic | out_of_stock>",
   "confidence": <0.0 to 1.0>,
+  "answer_scope": "<grounded_fact | buying_guidance | website_action | unsupported_or_offsite>",
   "ui_actions": [
     {{
       "action": "<ACTION_TYPE>",
@@ -731,21 +736,45 @@ def format_products_for_prompt(
             f"⚠️ CUSTOMER BUDGET: {', '.join(parts)}. ONLY recommend products within this budget!\n"
         )
 
+    # Summarize available brands
+    brands = {p.get("brand") for p in products if p.get("brand")}
+    if brands:
+        lines.append(f"Brands available in this list: {', '.join(sorted(brands))}\n")
+
+    import re as _re
     for p in products:
         discount = ""
         if p.get("original_price") and p["original_price"] > p["price"]:
             pct = int((1 - p["price"] / p["original_price"]) * 100)
             discount = f" ({pct}% off ₹{int(p['original_price']):,})"
 
-        lines.append(
-            f'[ID:"{p["id"]}"] {p["name"]} by {p["brand"]} | '
-            f"Category: {p.get('category_name', p.get('category', ''))} | "
-            f"Color: {p.get('color', 'N/A')} | "
-            f"Price: ₹{int(p['price']):,}{discount} | "
-            f"Stock: {p.get('stock', 0)} | "
-            f"Rating: {p['rating']}★ ({p['review_count']} reviews) | "
-            f"Description: {p['description'][:120]}..."
-        )
+        desc = _re.sub(r'<[^>]+>', ' ', str(p.get('description', ''))).strip()
+        desc = _re.sub(r'\s+', ' ', desc)
+
+        tags_str = ""
+        if isinstance(p.get("tags"), list):
+            tags_str = ", ".join(str(t) for t in p["tags"])
+        elif isinstance(p.get("tags"), str):
+            tags_str = p["tags"]
+
+        sizes_str = ""
+        if isinstance(p.get("size_options"), list):
+            sizes_str = ", ".join(str(s) for s in p["size_options"])
+        elif isinstance(p.get("size_options"), str):
+            sizes_str = p["size_options"]
+
+        parts = [
+            f'[ID:"{p["id"]}"] {p["name"]} by {p["brand"]}',
+            f"Category: {p.get('category_name', p.get('category', ''))}",
+            f"Color: {p.get('color', 'N/A')}",
+            f"Sizes: {sizes_str or 'N/A'}",
+            f"Tags: {tags_str or 'None'}",
+            f"Price: ₹{int(p['price']):,}{discount}",
+            f"Stock: {p.get('stock', 0)}",
+            f"Rating: {p.get('rating', 0)}★ ({p.get('review_count', 0)} reviews)",
+            f"Description: {desc[:200]}..."
+        ]
+        lines.append(" | ".join(parts))
 
     return "\n".join(lines)
 

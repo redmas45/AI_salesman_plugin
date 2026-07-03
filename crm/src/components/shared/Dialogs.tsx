@@ -1,5 +1,5 @@
 import { useState, useEffect, type FormEvent } from 'react';
-import { Copy, RefreshCw, Trash2 } from 'lucide-react';
+import { Copy, RefreshCw, Trash2, Eye, EyeOff } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Field } from '../ui/Field';
 import { NoticeBanner } from './NoticeBanner';
@@ -103,11 +103,15 @@ export function ClientPanelPasswordDialog({
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [message, setMessage] = useState('');
   const [working, setWorking] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
 
   useEffect(() => {
     setPassword('');
     setGeneratedPassword('');
     setMessage('');
+    setShowPassword(false);
+    setShowCurrentPassword(false);
   }, [client?.site_id]);
 
   if (!client) return null;
@@ -124,9 +128,11 @@ export function ClientPanelPasswordDialog({
     setGeneratedPassword('');
     setMessage('');
     try {
-      await onUpdatePassword(activeClient.site_id, nextPassword, false);
+      const returnedPassword = await onUpdatePassword(activeClient.site_id, nextPassword, false);
+      setGeneratedPassword(returnedPassword || nextPassword);
+      setShowCurrentPassword(true);
       setPassword('');
-      setMessage('Password updated.');
+      setMessage('Password updated. Current password is visible below.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Password update failed.');
     } finally {
@@ -135,17 +141,15 @@ export function ClientPanelPasswordDialog({
   }
 
   async function generateAndSetPassword() {
-    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-    let nextPassword = '';
-    for (let i = 0; i < 16; i++) {
-      nextPassword += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    setGeneratedPassword(nextPassword);
-    setPassword(nextPassword);
     setWorking(true);
+    setGeneratedPassword('');
+    setMessage('');
     try {
-      await onUpdatePassword(activeClient.site_id, nextPassword, false);
-      setMessage('Password generated and updated automatically.');
+      const nextPassword = await onUpdatePassword(activeClient.site_id, '', true);
+      setGeneratedPassword(nextPassword);
+      setShowCurrentPassword(true);
+      setPassword('');
+      setMessage('Password generated and set. Current password is visible below.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Password update failed.');
     } finally {
@@ -160,6 +164,7 @@ export function ClientPanelPasswordDialog({
     try {
       await onRevokePassword(activeClient.site_id);
       setPassword('');
+      setShowCurrentPassword(false);
       setMessage('Client panel login is revoked.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Password revoke failed.');
@@ -171,12 +176,17 @@ export function ClientPanelPasswordDialog({
   async function copyGeneratedPassword() {
     if (!generatedPassword) return;
     await navigator.clipboard.writeText(generatedPassword);
-    setMessage('Generated password copied.');
+    setMessage('Current password copied.');
   }
 
   const disabled = busy || working;
+  const passwordStatus = panelPasswordLabel(client);
   const messageTone: 'success' | 'error' | 'info' =
-    message.toLowerCase().includes('failed') || message.toLowerCase().includes('must') ? 'error' : 'info';
+    message.toLowerCase().includes('failed') || message.toLowerCase().includes('must')
+      ? 'error'
+      : message.toLowerCase().includes('updated') || message.toLowerCase().includes('copied') || message.toLowerCase().includes('generated')
+        ? 'success'
+        : 'info';
 
   return (
     <div className="modal-backdrop">
@@ -193,26 +203,60 @@ export function ClientPanelPasswordDialog({
             x
           </button>
         </div>
-        <Field
-          label="New password"
-          type="password"
-          minLength={12}
-          value={password}
-          onChange={(event) => setPassword(event.currentTarget.value)}
-          placeholder="Minimum 12 characters"
-          autoComplete="new-password"
-        />
-        {generatedPassword ? (
-          <div className="generated-password-box">
-            <div>
-              <span className="text-xs font-semibold uppercase text-muted">Generated password</span>
-              <code>{generatedPassword}</code>
-            </div>
-            <Button type="button" variant="secondary" icon={Copy} onClick={copyGeneratedPassword}>
-              Copy
-            </Button>
+        <div className="generated-password-box current-password-box">
+          <div>
+            <span className="text-xs font-semibold uppercase text-muted">Current password</span>
+            {generatedPassword ? (
+              <code>{showCurrentPassword ? generatedPassword : 'Hidden'}</code>
+            ) : (
+              <p className="mt-1 text-sm text-muted">
+                {passwordStatus === 'configured'
+                  ? 'Configured. Set or generate a new password to reveal it here.'
+                  : passwordStatus === 'revoked'
+                    ? 'Revoked. Generate or set a password to enable owner login.'
+                    : 'Not configured yet.'}
+              </p>
+            )}
           </div>
-        ) : null}
+          {generatedPassword ? (
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                icon={showCurrentPassword ? EyeOff : Eye}
+                onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+              >
+                {showCurrentPassword ? 'Hide' : 'Show'}
+              </Button>
+              <Button type="button" variant="secondary" icon={Copy} onClick={copyGeneratedPassword}>
+                Copy
+              </Button>
+            </div>
+          ) : (
+            <span className="password-status-pill">{passwordStatus}</span>
+          )}
+        </div>
+        <div className="flex gap-2 items-end">
+          <div className="flex-1">
+            <Field
+              label="New password"
+              type={showPassword ? 'text' : 'password'}
+              minLength={12}
+              value={password}
+              onChange={(event) => setPassword(event.currentTarget.value)}
+              placeholder="Minimum 12 characters"
+              autoComplete="new-password"
+            />
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            icon={showPassword ? EyeOff : Eye}
+            onClick={() => setShowPassword(!showPassword)}
+          >
+            {showPassword ? 'Hide' : 'Show'}
+          </Button>
+        </div>
         {message ? <NoticeBanner tone={messageTone} message={message} /> : null}
         <div className="modal-footer">
           <Button type="button" variant="danger" icon={Trash2} disabled={disabled} onClick={revokePassword}>

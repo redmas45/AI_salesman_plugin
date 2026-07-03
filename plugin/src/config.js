@@ -3,7 +3,7 @@ import { resolveSiteId, trimTrailingSlash } from "./siteIdentity";
 const currentScript = document.currentScript;
 const embeddedApiUrl = "__AI_PUBLIC_API_URL__";
 const embeddedSiteId = "__AI_DEFAULT_SITE_ID__";
-const SESSION_STORAGE_PREFIX = "shopbot:session:";
+const SESSION_STORAGE_PREFIX = "mayabot:session:";
 const DEFAULT_ASSISTANT_BRAND = "Maya";
 const DEFAULT_ASSISTANT_TITLE = "AI Salesperson";
 const DEFAULT_SPEECH_VOICE_PREFERENCE = "female";
@@ -31,7 +31,7 @@ function resolveApiUrl(url) {
   }
 
   if (url?.origin) {
-    const pathname = url.pathname.replace(/\/shopbot(?:-widget)?\.js$/, "");
+    const pathname = url.pathname.replace(/\/mayabot(?:-widget)?\.js$/, "");
     return trimTrailingSlash(`${url.origin}${pathname}`);
   }
 
@@ -65,7 +65,7 @@ export const config = {
     return resolveSessionId(siteId);
   },
   apiUrl: resolveApiUrl(srcUrl),
-  useWebSocket: clean(currentScript?.getAttribute("data-use-websocket")).toLowerCase() !== "false",
+  useWebSocket: clean(currentScript?.getAttribute("data-use-websocket")).toLowerCase() === "true",
   autoGreet: clean(currentScript?.getAttribute("data-auto-greet")).toLowerCase() !== "false",
   brandName: clean(currentScript?.getAttribute("data-brand")) || DEFAULT_ASSISTANT_BRAND,
   assistantTitle: clean(currentScript?.getAttribute("data-assistant-title")) || DEFAULT_ASSISTANT_TITLE,

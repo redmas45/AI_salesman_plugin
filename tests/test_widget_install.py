@@ -19,14 +19,29 @@ from agent.verticals.registry import list_verticals
 from db import clients as client_db
 
 
+def _mock_durable_action_events(monkeypatch, initial: list[dict] | None = None) -> list[dict]:
+    events = list(initial or [])
+
+    def insert_event(site_id: str, event: dict) -> None:
+        events.insert(0, {**event, "site_id": site_id})
+
+    def list_events(site_ids, *, limit: int = 500):
+        return {site_id: events[:limit] for site_id in site_ids}
+
+    monkeypatch.setattr(client_db, "_insert_client_action_event", insert_event)
+    monkeypatch.setattr(client_db, "record_audit_event", lambda **kwargs: None)
+    monkeypatch.setattr(client_db, "list_client_action_events", list_events)
+    return events
+
+
 def test_install_script_loads_adapter_before_widget() -> None:
     script = client_routes._render_install_script(
         site="ai_kart",
         api_base_url="https://hub.example.com/aihub",
     )
 
-    adapter_index = script.index("shopbot-adapter.js?site=ai_kart")
-    widget_index = script.index("shopbot.js?site=ai_kart")
+    adapter_index = script.index("mayabot-adapter.js?site=ai_kart")
+    widget_index = script.index("mayabot.js?site=ai_kart")
 
     assert "__aihubInstallLoadedSites" in script
     assert adapter_index < widget_index
@@ -39,15 +54,35 @@ def test_universal_install_script_does_not_require_manual_site_id() -> None:
         api_base_url="https://hub.example.com/aihub",
     )
 
-    adapter_index = script.index("shopbot-adapter.js")
-    widget_index = script.index("shopbot.js")
+    adapter_index = script.index("mayabot-adapter.js")
+    widget_index = script.index("mayabot.js")
 
-    assert "shopbot-adapter.js?site=" not in script
-    assert "shopbot.js?site=" not in script
+    assert "mayabot-adapter.js?site=" not in script
+    assert "mayabot.js?site=" not in script
     assert "data-aihub-universal" in script
     assert 'script.setAttribute("data-site-id", siteId)' in script
     assert '"auto:" + window.location.origin' in script
     assert adapter_index < widget_index
+
+
+def test_available_installs_still_load_scripts_for_discovery(monkeypatch) -> None:
+    monkeypatch.setattr(
+        client_routes.admin_db,
+        "get_client_detail",
+        lambda site: {"site_id": site, "status": client_db.CLIENT_STATUS_AVAILABLE},
+    )
+
+    assert client_routes._client_scripts_can_load("policy_website") is True
+
+
+def test_disabled_clients_do_not_load_public_scripts(monkeypatch) -> None:
+    monkeypatch.setattr(
+        client_routes.admin_db,
+        "get_client_detail",
+        lambda site: {"site_id": site, "status": client_db.CLIENT_STATUS_DISABLED},
+    )
+
+    assert client_routes._client_scripts_can_load("policy_website") is False
 
 
 def test_ecommerce_discovery_prefers_add_to_cart_button_over_parent_card_link() -> None:
@@ -118,11 +153,15 @@ def test_generated_insurance_prompt_is_deep_and_client_specific() -> None:
     assert discovery.vertical_key == "insurance"
     assert len(discovery.prompt) > 1800
     assert "## Insurance Sales Playbook" in discovery.prompt
+    assert "## Conversation Intelligence And Slot Filling" in discovery.prompt
+    assert "discovered action fields" in discovery.prompt
+    assert "not to hardcoded site or industry assumptions" in discovery.prompt
     assert "InsureMax" in discovery.prompt
     assert "waiting periods" in discovery.prompt
     assert "Claims" in discovery.prompt
     assert "Get insurance quote" in discovery.prompt
     assert "SORT_ENTITIES" in discovery.developer_rules
+    assert "extract matching values from the latest user message" in discovery.developer_rules
 
 
 def test_plugin_runtime_uses_shared_automatic_site_identity() -> None:
@@ -195,6 +234,8 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
     assert not Path("plugin/src/actions.js").exists()
 
     api_source = Path("plugin/src/api.js").read_text(encoding="utf-8")
+    widget_entry = Path("plugin/src/index.js").read_text(encoding="utf-8")
+    recorder_source = Path("plugin/src/recorder.js").read_text(encoding="utf-8")
     bridge_source = Path("plugin/src/adapterBridge.js").read_text(encoding="utf-8")
     runtime_source = Path("plugin/src/adapter/runtime.js").read_text(encoding="utf-8")
     executor_source = Path("plugin/src/actionExecutor/index.js").read_text(encoding="utf-8")
@@ -206,8 +247,21 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
     entity_overlay = Path("plugin/src/entityOverlay.js").read_text(encoding="utf-8")
     entity_resolver = Path("plugin/src/entityResolver.js").read_text(encoding="utf-8")
     product_overlay = Path("plugin/src/productOverlay.js").read_text(encoding="utf-8")
+    product_resolver = Path("plugin/src/productResolver.js").read_text(encoding="utf-8")
+    dom_actions = Path("plugin/src/adapter/domActions.js").read_text(encoding="utf-8")
 
     assert "from \"./actionExecutor\"" in api_source
+    assert "let processingTurn = false" in widget_entry
+    assert "if (processingTurn) return" in widget_entry
+    assert "elements.btn.disabled = true" in widget_entry
+    assert "elements.btn.disabled = false" in widget_entry
+    assert "BROWSER_ACTION_RESULTS" in widget_entry
+    assert "onActionResults: rememberActionResults" in widget_entry
+    assert "rendered_products=" in widget_entry
+    assert "rendered_records=" in widget_entry
+    assert "let isStarting = false" in recorder_source
+    assert "if (isStarting || isRecording) return" in recorder_source
+    assert "mediaRecorder.onerror" in recorder_source
     assert "executePlatformAction" in executor_source
     assert "executeProviderAction" in executor_source
     assert "executeRuntimeAction" in executor_source
@@ -220,8 +274,33 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
     assert "PRODUCT_OVERLAY_ACTIONS" in runtime_executor
     assert "!PRODUCT_OVERLAY_ACTIONS.has(action.action)" in runtime_executor
     assert "executeProductAction" in executor_source
+    assert "normalizeExecutorResult" in executor_source
+    assert "result.evidence" in executor_source
+    assert "return results" in executor_source
+    assert "final_url: finalUrl" in executor_source
+    assert "callbacks.onActionResults" in api_source
+    assert "const sharedAudioQueue = new AudioQueue()" in api_source
+    assert "speakTextFallback(data.response_text)" in api_source
+    assert "retryBlocked()" in api_source
     assert "SHOW_COMPARISON" in product_executor
     assert "Product comparison" in product_executor
+    assert "syncListing: false" in product_executor
+    assert "executeWithAIHubAdapterResult" in product_executor
+    assert "ACTIONS.FILTER_PRODUCTS" in product_executor
+    assert "listing_sync_status" in product_executor
+    assert "rendered_product_count" in product_overlay
+    assert "no_matching_products_rendered" in product_overlay
+    assert "fetchProductsForDisplay" in product_overlay
+    assert "lookup_source" in product_overlay
+    assert "/api/products?per_page=96" in product_resolver
+    assert "hub_search" in product_resolver
+    assert "host_search" in product_resolver
+    assert "imageCandidateFrom" in product_resolver
+    assert "featuredImage" in product_resolver
+    assert "removeNegativeCorrections" in product_resolver
+    assert "canonicalQueryTerm" in product_resolver
+    assert "url.searchParams.set(\"q\", searchQuery)" in dom_actions
+    assert "navigateToSearchPage(searchQuery, runtimeConfig)" in dom_actions
     assert "executeEntityAction" in executor_source
     assert "executeHandoffAction" in executor_source
     assert "HANDOFF_ACTIONS" in handoff_executor
@@ -238,6 +317,8 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
     assert "COMPARE_ENTITIES" in entity_executor
     assert "OPEN_ENTITY_DETAIL" in entity_executor
     assert "showEntityOverlay" in entity_overlay
+    assert "rendered_entity_count" in entity_overlay
+    assert "no_matching_entities_rendered" in entity_overlay
     assert "fetchHubEntitiesByIds" in entity_resolver
     assert "KNOWLEDGE_BY_IDS" in entity_resolver
     assert "demo.vercel.store" not in entity_overlay
@@ -247,10 +328,12 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
 
 
 def test_widget_action_constants_cover_backend_registry() -> None:
-    source = Path("plugin/src/constants.js").read_text(encoding="utf-8")
+    plugin_source = Path("plugin/src/constants.js").read_text(encoding="utf-8")
+    contract_source = Path("packages/contracts/index.js").read_text(encoding="utf-8")
 
+    assert '@ai-hub/contracts' in plugin_source
     for action_name in sorted(list_action_names()):
-        assert f'{action_name}: "{action_name}"' in source
+        assert f'{action_name}: "{action_name}"' in contract_source
 
 
 def test_adapter_observes_spa_navigation_and_async_dom_changes() -> None:
@@ -264,7 +347,7 @@ def test_adapter_observes_spa_navigation_and_async_dom_changes() -> None:
     assert "MutationObserver" in source
     assert "pageStructureSignature" in source
     assert "MIN_DOM_DISCOVERY_INTERVAL_MS" in source
-    assert "#shopbot-widget" in source
+    assert "#mayabot-widget" in source
     assert "CONTROL_SELECTOR" in source
     assert "searchRoots()" in source
     assert "queryElementsDeep" in source
@@ -432,6 +515,15 @@ def test_adapter_provider_actions_open_only_safe_provider_handoffs() -> None:
     assert "whatsapp" in signatures
 
 
+def test_navigation_fallback_uses_runtime_routes_without_trailing_slash_guess() -> None:
+    source = Path("plugin/src/actionExecutor/navigationActions.js").read_text(encoding="utf-8")
+
+    assert "AIHubAdapterRuntime?.config?.adapter?.routes" in source
+    assert "AIHubAdapter?.config?.adapter?.routes" in source
+    assert "`/${path}`" in source
+    assert "`/${path}/`" not in source
+
+
 def test_public_runtime_config_exposes_adapter_contract(monkeypatch) -> None:
     monkeypatch.setattr(
         client_routes.admin_db,
@@ -487,9 +579,6 @@ def test_public_runtime_config_exposes_adapter_contract(monkeypatch) -> None:
                     "secure_context": True,
                     "microphone_permission": "prompt",
                 },
-                "action_events": [
-                    {"action": "CHECKOUT", "status": "failed", "stage": "dom_fallback"},
-                ],
                 "action_health": {
                     "summary": {"tracked": 1, "needs_repair": 1, "blocked": 0},
                     "needs_repair": [{"action": "CHECKOUT", "status": "needs_repair"}],
@@ -554,6 +643,14 @@ def test_public_runtime_config_exposes_adapter_contract(monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(client_routes.admin_db, "is_client_widget_enabled", lambda site: True)
+    monkeypatch.setattr(
+        client_routes.admin_db,
+        "list_client_action_events",
+        lambda site_ids, limit=80: {
+            site_id: [{"action": "CHECKOUT", "status": "failed", "stage": "dom_fallback"}]
+            for site_id in site_ids
+        },
+    )
 
     payload = client_routes._public_runtime_config(
         site="ai_kart",
@@ -593,7 +690,7 @@ def test_public_runtime_config_exposes_adapter_contract(monkeypatch) -> None:
     assert payload["adapter"]["regression"]["status"] == "stable"
     assert payload["adapter"]["runtime_capabilities"]["microphone_permission"] == "prompt"
     assert payload["adapter"]["selectors"]["add_to_cart"] == "button[data-add]"
-    assert payload["install"]["adapter_script"].endswith("/shopbot-adapter.js?site=ai_kart")
+    assert payload["install"]["adapter_script"].endswith("/mayabot-adapter.js?site=ai_kart")
 
 
 def test_adapter_tab_surfaces_runtime_repair_candidates_and_history() -> None:
@@ -642,7 +739,7 @@ def test_generated_client_script_tag_uses_installer(monkeypatch) -> None:
     script_tag = client_db.script_tag_for_site("AI KART")
 
     assert "install.js?site=ai_kart" in script_tag
-    assert "shopbot.js" not in script_tag
+    assert "mayabot.js" not in script_tag
 
 
 def test_auto_client_rows_collapse_by_origin() -> None:
@@ -804,12 +901,18 @@ def test_widget_action_event_checks_origin_and_saves_event(monkeypatch) -> None:
         origin="https://builder.example.com",
         url="https://builder.example.com/services",
         occurred_at="2026-01-01T00:00:00Z",
+        request_id="turn_demo_1",
+        turn_id="turn_demo",
+        sequence=1,
         action="REQUEST_ESTIMATE",
-        status="failed",
+        status="succeeded",
         stage="configured_action",
-        reason="no_executor_succeeded",
+        reason="",
         duration_ms=25.5,
         param_keys=["phone", "budget"],
+        requested_url="https://builder.example.com/services",
+        final_url="https://builder.example.com/contact",
+        evidence={"url_changed": True, "target_page": "contact", "secret": {"nested": "kept_safe"}},
     )
 
     result = client_routes._process_action_execution_event(req)
@@ -817,6 +920,13 @@ def test_widget_action_event_checks_origin_and_saves_event(monkeypatch) -> None:
     assert result["status"] == "ok"
     assert saved["site_id"] == "builder_demo"
     assert saved["event"]["action"] == "REQUEST_ESTIMATE"
+    assert saved["event"]["request_id"] == "turn_demo_1"
+    assert saved["event"]["turn_id"] == "turn_demo"
+    assert saved["event"]["sequence"] == 1
+    assert saved["event"]["status"] == "succeeded"
+    assert saved["event"]["requested_url"] == "https://builder.example.com/services"
+    assert saved["event"]["final_url"] == "https://builder.example.com/contact"
+    assert saved["event"]["evidence"]["url_changed"] is True
     assert saved["event"]["param_keys"] == ["phone", "budget"]
 
 
@@ -901,9 +1011,8 @@ def test_client_interaction_event_updates_candidates(monkeypatch) -> None:
 
 
 def test_client_action_event_updates_recent_execution_events(monkeypatch) -> None:
-    stored = {
-        "action_events": [],
-    }
+    stored = {}
+    durable_events = _mock_durable_action_events(monkeypatch)
 
     monkeypatch.setattr(client_db, "_client_vertical_config", lambda site: dict(stored))
     monkeypatch.setattr(client_db, "_write_client_vertical_config", lambda site, config: stored.update(config))
@@ -914,33 +1023,46 @@ def test_client_action_event_updates_recent_execution_events(monkeypatch) -> Non
         {
             "origin": "https://builder.example.com",
             "url": "https://builder.example.com/services",
+            "request_id": "turn_demo_1",
+            "turn_id": "turn_demo",
+            "sequence": 1,
             "action": "request_estimate",
-            "status": "failed",
+            "status": "succeeded",
             "stage": "configured-action",
-            "reason": "no_executor_succeeded",
+            "reason": "",
             "duration_ms": "12.345",
             "param_keys": ["phone", "budget"],
+            "requested_url": "https://builder.example.com/services",
+            "final_url": "https://builder.example.com/contact",
+            "evidence": {"url_changed": True, "title": "Contact"},
             "params": {"phone": "secret"},
         },
     )
 
-    event = stored["action_events"][0]
+    event = durable_events[0]
 
     assert event["action"] == "REQUEST_ESTIMATE"
-    assert event["status"] == "failed"
+    assert event["request_id"] == "turn_demo_1"
+    assert event["turn_id"] == "turn_demo"
+    assert event["sequence"] == 1
+    assert event["status"] == "succeeded"
     assert event["stage"] == "configured_action"
     assert event["duration_ms"] == 12.35
     assert event["param_keys"] == ["phone", "budget"]
+    assert event["requested_url"] == "https://builder.example.com/services"
+    assert event["final_url"] == "https://builder.example.com/contact"
+    assert event["evidence"]["url_changed"] is True
     assert "params" not in event
-    assert stored["action_health"]["summary"]["needs_repair"] == 1
-    assert stored["action_health"]["needs_repair"][0]["action"] == "REQUEST_ESTIMATE"
+    assert "action_events" not in stored
+    assert stored["action_health"]["summary"]["needs_repair"] == 0
+    assert stored["action_health"]["actions"]["REQUEST_ESTIMATE"]["status"] == "healthy"
+    assert stored["action_health"]["actions"]["REQUEST_ESTIMATE"]["last_request_id"] == "turn_demo_1"
     assert stored["action_health"]["blocked_actions"] == []
 
 
 def test_repeated_action_failures_block_runtime_policy(monkeypatch) -> None:
-    stored = {
-        "action_events": [],
-    }
+    stored = {}
+    _mock_durable_action_events(monkeypatch)
 
     monkeypatch.setattr(client_db, "_client_vertical_config", lambda site: dict(stored))
     monkeypatch.setattr(client_db, "_write_client_vertical_config", lambda site, config: stored.update(config))
@@ -983,8 +1105,8 @@ def test_action_failure_applies_runtime_repair_from_recent_interaction(monkeypat
                 "inference_confidence": 0.92,
             }
         ],
-        "action_events": [],
     }
+    _mock_durable_action_events(monkeypatch)
 
     monkeypatch.setattr(client_db, "_client_vertical_config", lambda site: dict(stored))
     monkeypatch.setattr(client_db, "_write_client_vertical_config", lambda site, config: stored.update(config))
@@ -1027,8 +1149,8 @@ def test_action_failure_does_not_replace_crm_override(monkeypatch) -> None:
                 "inference_confidence": 0.92,
             }
         ],
-        "action_events": [],
     }
+    _mock_durable_action_events(monkeypatch)
 
     monkeypatch.setattr(client_db, "_client_vertical_config", lambda site: dict(stored))
     monkeypatch.setattr(client_db, "_write_client_vertical_config", lambda site, config: stored.update(config))
@@ -1055,29 +1177,30 @@ def test_action_failure_does_not_replace_crm_override(monkeypatch) -> None:
 
 
 def test_newer_validation_clears_action_health_block(monkeypatch) -> None:
+    durable_events = [
+        {
+            "action": "REQUEST_ESTIMATE",
+            "status": "failed",
+            "stage": "all",
+            "occurred_at": "2026-01-01T00:02:00Z",
+        },
+        {
+            "action": "REQUEST_ESTIMATE",
+            "status": "failed",
+            "stage": "all",
+            "occurred_at": "2026-01-01T00:01:00Z",
+        },
+        {
+            "action": "REQUEST_ESTIMATE",
+            "status": "failed",
+            "stage": "all",
+            "occurred_at": "2026-01-01T00:00:00Z",
+        },
+    ]
     stored = {
         "actions": {"REQUEST_ESTIMATE": {"type": "click", "selector": "button.old"}},
-        "action_events": [
-            {
-                "action": "REQUEST_ESTIMATE",
-                "status": "failed",
-                "stage": "all",
-                "occurred_at": "2026-01-01T00:02:00Z",
-            },
-            {
-                "action": "REQUEST_ESTIMATE",
-                "status": "failed",
-                "stage": "all",
-                "occurred_at": "2026-01-01T00:01:00Z",
-            },
-            {
-                "action": "REQUEST_ESTIMATE",
-                "status": "failed",
-                "stage": "all",
-                "occurred_at": "2026-01-01T00:00:00Z",
-            },
-        ],
     }
+    _mock_durable_action_events(monkeypatch, durable_events)
 
     monkeypatch.setattr(client_db, "_client_vertical_config", lambda site: dict(stored))
     monkeypatch.setattr(client_db, "_write_client_vertical_config", lambda site, config: stored.update(config))
@@ -1455,7 +1578,6 @@ def test_browser_rediscovery_preserves_learned_runtime_state() -> None:
         "flow": {"summary": {"pages": 4}},
         "rehearsal": {"summary": {"supported": 2}},
         "regression": {"status": "stable"},
-        "action_events": [{"action": "REQUEST_ESTIMATE", "status": "failed", "stage": "configured_action"}],
         "action_health": {"summary": {"needs_repair": 1}, "blocked_actions": []},
         "policy_events": [{"action": "CHECKOUT", "status": "blocked"}],
         "interaction_events": [{"event_type": "click", "label": "Book site visit"}],
@@ -1488,7 +1610,7 @@ def test_browser_rediscovery_preserves_learned_runtime_state() -> None:
     assert merged["flow"] == existing["flow"]
     assert merged["rehearsal"] == existing["rehearsal"]
     assert merged["regression"] == existing["regression"]
-    assert merged["action_events"] == existing["action_events"]
+    assert "action_events" not in merged
     assert merged["action_health"] == existing["action_health"]
     assert merged["policy_events"] == existing["policy_events"]
     assert merged["interaction_events"] == existing["interaction_events"]
@@ -1679,6 +1801,64 @@ def test_widget_registration_creates_available_client_without_integration(monkey
     assert response["flow_scheduled"] is False
     assert response["rehearsal_scheduled"] is False
     assert scheduled == []
+
+
+def test_widget_registration_refreshes_existing_client_origin(monkeypatch) -> None:
+    class FakeDiscovery:
+        vertical_key = "insurance"
+        confidence = 0.82
+        vertical_config = {
+            "actions": {"START_QUOTE": {"type": "navigate", "path": "/insurance/health"}},
+            "prompt_suggestions": ["Help me compare insurance plans."],
+            "intake_questions": [{"key": "coverage", "question": "What coverage do you need?"}],
+            "discovery": {"source": "widget_register"},
+        }
+        selectors = {"buttons": []}
+        prompt = "insurance prompt"
+        developer_rules = "insurance rules"
+
+    existing_client = {
+        "site_id": "policy_website",
+        "name": "Policy Website",
+        "store_url": "http://127.0.0.1:5183",
+        "allowed_origin": "http://127.0.0.1:5183",
+        "deploy_mode": client_db.DEFAULT_DEPLOY_MODE,
+        "plan": client_db.DEFAULT_PLAN,
+        "vertical_key": "insurance",
+        "status": client_db.CLIENT_STATUS_AVAILABLE,
+        "last_crawl_status": client_db.CRAWL_STATUS_NOT_STARTED,
+        "catalog": {"active_products": 0},
+        "vertical_config": {},
+    }
+    refreshed: dict[str, object] = {}
+
+    def fake_discover_available_client(**kwargs):
+        refreshed.update(kwargs)
+        return {**existing_client, "store_url": kwargs["store_url"], "allowed_origin": kwargs["store_url"]}
+
+    monkeypatch.setattr(client_routes, "build_discovery", lambda payload: FakeDiscovery())
+    monkeypatch.setattr(client_routes.admin_db, "get_client_detail", lambda site_id: existing_client)
+    monkeypatch.setattr(client_routes.admin_db, "discover_available_client", fake_discover_available_client)
+    monkeypatch.setattr(
+        client_routes.admin_db,
+        "update_client_discovery_config",
+        lambda site_id, **kwargs: {**existing_client, "vertical_key": kwargs["vertical_key"], "vertical_config": kwargs["vertical_config"]},
+    )
+    monkeypatch.setattr(client_routes.admin_db, "save_site_selectors", lambda *args, **kwargs: None)
+    monkeypatch.setattr(client_routes, "_seed_generated_prompt_once", lambda *args, **kwargs: None)
+
+    client_routes._process_widget_registration(
+        client_routes.WidgetRegisterRequest(
+            site_id="policy_website",
+            origin="http://localhost:5173",
+            url="http://localhost:5173/insurance/health",
+            title="Policy Website",
+        ),
+        BackgroundTasks(),
+    )
+
+    assert refreshed["site_id"] == "policy_website"
+    assert refreshed["store_url"] == "http://localhost:5173"
 
 
 def test_widget_registration_initialization_plan_is_manual() -> None:
@@ -2076,6 +2256,40 @@ def test_adapter_product_navigation_uses_adapter_config_not_widget_config() -> N
     assert "/api/products?per_page=96" in source
     assert "/products.json" in source
     assert "/wp-json/wc/store/products?per_page=96" in source
+    assert "imageCandidateFrom" in source
+    assert "featuredImage" in source
+
+
+def test_discovery_config_audit_does_not_reference_quota_locals() -> None:
+    source = Path("db/clients.py").read_text(encoding="utf-8")
+    section = source[
+        source.index("def update_client_discovery_config("):source.index("def update_client_adapter_actions(")
+    ]
+
+    assert "clean_limit" not in section
+    assert 'event_type="discovery_config_updated"' in section
+    assert 'event_scope="discovery"' in section
+
+
+def test_widget_voice_runtime_uses_stable_http_path_by_default() -> None:
+    config_source = Path("plugin/src/config.js").read_text(encoding="utf-8")
+    api_source = Path("plugin/src/api.js").read_text(encoding="utf-8")
+    recorder_source = Path("plugin/src/recorder.js").read_text(encoding="utf-8")
+
+    assert 'data-use-websocket")).toLowerCase() === "true"' in config_source
+    assert "audioFilenameForBlob(blob)" in api_source
+    assert "supportedAudioMimeType()" in recorder_source
+    assert "MIN_AUDIO_BYTES" in recorder_source
+    assert "mediaRecorder.start(RECORDING_TIMESLICE_MS)" in recorder_source
+
+
+def test_public_widget_cors_covers_overlay_data_endpoints() -> None:
+    source = Path("api/main.py").read_text(encoding="utf-8")
+    cors_block = source[source.index("PUBLIC_WIDGET_CORS_PATHS"):source.index("def _is_public_widget_cors_path")]
+
+    assert '"/v1/products"' in cors_block
+    assert '"/v1/products/by-ids"' in cors_block
+    assert '"/v1/knowledge/by-ids"' in cors_block
 
 
 def test_pending_action_store_is_short_lived_and_site_scoped() -> None:
@@ -2392,6 +2606,10 @@ def test_registration_prefers_visible_labels_for_anonymous_form_params() -> None
     assert action["steps"][0]["param"] == "age_of_eldest_member"
     assert action["steps"][1]["param"] == "city"
     assert [field["param"] for field in action["field_schema"]] == ["age_of_eldest_member", "city"]
+    assert action["required_fields"] == ["age_of_eldest_member", "city"]
+    assert all(field["required"] is True for field in action["field_schema"])
+    assert action["steps"][0]["optional"] is False
+    assert action["steps"][1]["optional"] is False
     assert "e_g_mumbai" not in action["fields"]
     assert "value" not in action["fields"]
     assert action["submit_mode"] == "submit"
@@ -2441,6 +2659,9 @@ def test_low_sensitivity_result_quote_form_is_allowed_to_submit() -> None:
     assert action["type"] == "sequence"
     assert action["submit_mode"] == "submit"
     assert action["fields"] == ["age_of_eldest_member", "city"]
+    assert action["required_fields"] == ["age_of_eldest_member", "city"]
+    assert action["steps"][0]["optional"] is False
+    assert action["steps"][1]["optional"] is False
     assert action["steps"][-1] == {"op": "submit", "selector": "button.get-quotes"}
 
 
@@ -2486,6 +2707,9 @@ def test_submit_text_label_allows_anonymous_quote_form_to_submit() -> None:
 
     assert action["submit_mode"] == "submit"
     assert action["fields"] == ["age_of_eldest_member", "city"]
+    assert action["required_fields"] == ["age_of_eldest_member", "city"]
+    assert action["steps"][0]["optional"] is False
+    assert action["steps"][1]["optional"] is False
     assert action["steps"][-1] == {"op": "submit", "selector": "button.w-full.inline-flex"}
 
 

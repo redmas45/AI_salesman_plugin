@@ -997,6 +997,24 @@ code {
   white-space: nowrap;
 }
 
+.current-password-box {
+  background: linear-gradient(135deg, var(--soft), color-mix(in srgb, var(--blue-soft) 55%, var(--panel)));
+}
+
+.password-status-pill {
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--line));
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 7px 9px;
+  text-transform: uppercase;
+}
+
 .install-script {
   max-width: 100%;
 }
@@ -4330,6 +4348,18 @@ kbd {
   outline: none;
 }
 
+.dashboard-provider-alert-actions button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.provider-check-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
 .dashboard-attention-card {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -4567,6 +4597,12 @@ kbd {
 .provider-usage-actions button:focus-visible {
   color: var(--ink);
   outline: none;
+}
+
+.provider-usage-footer button:disabled,
+.provider-usage-actions button:disabled {
+  cursor: wait;
+  opacity: 0.62;
 }
 
 .provider-usage-details {
@@ -7786,6 +7822,68 @@ button.health-summary-card:focus-visible {
   margin-top: 4px;
   color: var(--muted);
   font-size: 11px;
+}
+
+.turn-action-evidence {
+  display: grid;
+  gap: 8px;
+  margin-left: 42px;
+}
+
+.turn-action-event {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 9px 10px;
+}
+
+.turn-action-event.ok {
+  border-color: color-mix(in srgb, var(--green) 30%, var(--line));
+}
+
+.turn-action-event.warn {
+  border-color: color-mix(in srgb, var(--amber) 34%, var(--line));
+}
+
+.turn-action-event.bad {
+  border-color: color-mix(in srgb, var(--red) 34%, var(--line));
+}
+
+.turn-action-event-head,
+.turn-action-event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.turn-action-event-head strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.turn-action-event-head > span:not(.badge) {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.turn-action-event-meta,
+.turn-action-event small {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.turn-action-event code {
+  max-width: min(52vw, 360px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pagination-control {

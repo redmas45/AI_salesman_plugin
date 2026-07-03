@@ -7,6 +7,7 @@ from agent.extractor import extract_selectors_from_html
 from agent.client_initialization import run_widget_initialization
 from agent.scanner import (
     SiteCapability,
+    _barrier_capabilities,
     _check_cart,
     _check_checkout,
     _client_hook_capabilities,
@@ -111,6 +112,29 @@ def test_ecommerce_expected_action_readiness_uses_product_rendering(monkeypatch)
     assert caps_with_checkout["expected_action:CHECKOUT"].supported
     assert "detected checkout capability" in caps_with_checkout["expected_action:CHECKOUT"].evidence
     assert caps_with_checkout["domain_action_coverage"].supported
+
+
+def test_auth_barrier_readiness_is_supported_when_handoff_policy_exists() -> None:
+    caps = _barrier_capabilities(
+        {
+            "barriers": {
+                "summary": {"total": 1, "high": 1, "medium": 0, "keys": ["auth_required"]},
+                "findings": [
+                    {
+                        "key": "auth_required",
+                        "severity": "high",
+                        "handling": "Require login before quote flow.",
+                    }
+                ],
+            }
+        },
+        "insurance",
+    )
+
+    assert caps[0].name == "flow_barriers"
+    assert caps[0].supported is True
+    assert caps[0].blocking is False
+    assert "handoff policy" in caps[0].evidence
 
 
 @pytest.mark.asyncio
@@ -308,6 +332,73 @@ def test_auto_initialization_persists_live_stage_progress(monkeypatch) -> None:
     assert running_readiness["stages"][0]["status"] == "ok"
 
 
+def test_auto_initialization_stops_when_cancel_requested(monkeypatch) -> None:
+    from agent import client_initialization
+
+    saved_reports = []
+    cancel_requested = {"value": False}
+
+    monkeypatch.setattr(client_initialization, "_save_report", lambda site_id, report: saved_reports.append(report))
+    monkeypatch.setattr(client_initialization, "_client_detail", lambda site_id: {"site_id": site_id, "vertical_config": {}})
+    monkeypatch.setattr(client_initialization.admin_db, "setup_cancel_requested", lambda site_id, run_id="": cancel_requested["value"])
+    monkeypatch.setattr(client_initialization.admin_db, "update_client_crawl_status", lambda *args, **kwargs: None)
+
+    def fake_crawl(*args, **kwargs):
+        cancel_requested["value"] = True
+        return {"name": "crawl", "status": "ok", "message": "crawl done"}
+
+    monkeypatch.setattr(client_initialization, "_crawl_stage", fake_crawl)
+    monkeypatch.setattr(
+        client_initialization,
+        "_readiness_stage",
+        lambda *args, **kwargs: {"name": "readiness_scan", "status": "ok", "message": "should not run"},
+    )
+
+    report = run_widget_initialization(
+        "policy_site",
+        "https://policy.example.com",
+        vertical_key="insurance",
+        run_crawl=True,
+        run_flow=False,
+        run_rehearsal=False,
+        crawl_max_pages=5,
+        crawl_max_depth=2,
+        run_readiness=True,
+    )
+
+    assert report["status"] == "canceled"
+    assert report["error"] == "Setup run canceled by admin."
+    assert [stage["name"] for stage in report["stages"]] == ["crawl", "setup_stopped"]
+    assert saved_reports[-1]["run_id"]
+    assert saved_reports[-1]["timeout_seconds"] > 0
+
+
+def test_initialization_save_does_not_overwrite_terminal_same_run(monkeypatch) -> None:
+    from db import clients as clients_db
+
+    writes = []
+    monkeypatch.setattr(
+        clients_db,
+        "_client_vertical_config",
+        lambda site_id: {"initialization": {"status": "timed_out", "run_id": "run-1", "error": "old timeout"}},
+    )
+    monkeypatch.setattr(clients_db, "_write_client_vertical_config", lambda site_id, vertical_config: writes.append(vertical_config))
+    monkeypatch.setattr(clients_db, "get_client_detail", lambda site_id: {"site_id": site_id, "status": "live"})
+
+    result = clients_db.save_client_initialization_report(
+        "demo_site",
+        {
+            "status": "running",
+            "run_id": "run-1",
+            "site_id": "demo_site",
+            "stages": [{"name": "crawl", "status": "ok", "message": "late write"}],
+        },
+    )
+
+    assert result == {"site_id": "demo_site", "status": "live"}
+    assert writes == []
+
+
 def test_auto_initialization_runs_assistant_smoke_stage_when_requested(monkeypatch) -> None:
     saved_reports = []
 
@@ -365,6 +456,43 @@ def test_assistant_smoke_cases_cover_registered_verticals() -> None:
         assert all(case.get("expected_actions") for case in cases)
         if vertical.key in domain_specific:
             assert {case["name"] for case in cases} != generic_names
+
+
+def test_assistant_smoke_cases_include_required_action_schema(monkeypatch) -> None:
+    from agent import client_initialization
+
+    monkeypatch.setattr(
+        client_initialization,
+        "_client_detail",
+        lambda site_id: {
+            "site_id": site_id,
+            "vertical_config": {
+                "actions": {
+                    "RUN_CALCULATOR": {
+                        "type": "sequence",
+                        "fields": ["primary_value", "secondary_value", "requested_date", "quantity"],
+                        "required_fields": ["primary_value", "secondary_value", "requested_date", "quantity"],
+                        "required_fields_known": True,
+                        "field_schema": [
+                            {"param": "primary_value", "label": "Primary value", "type": "text", "required": True},
+                            {"param": "secondary_value", "label": "Secondary value", "type": "text", "required": True},
+                            {"param": "requested_date", "label": "Requested date", "type": "date", "required": True},
+                            {"param": "quantity", "label": "Quantity", "type": "number", "required": True},
+                        ],
+                    }
+                }
+            },
+        },
+    )
+
+    cases = client_initialization._assistant_smoke_cases("schema_demo", "generic")
+    availability_case = next(case for case in cases if "RUN_CALCULATOR" in case["expected_actions"])
+
+    assert availability_case["schema_enriched"] is True
+    assert "primary value: Sample primary value" in availability_case["prompt"]
+    assert "secondary value: Sample secondary value" in availability_case["prompt"]
+    assert "requested date: 2026-08-15" in availability_case["prompt"]
+    assert "quantity: 2" in availability_case["prompt"]
 
 
 def test_assistant_smoke_stage_passes_when_expected_actions_return(monkeypatch) -> None:
@@ -570,6 +698,54 @@ def test_assistant_smoke_stage_fails_when_prompt_has_no_ui_action(monkeypatch) -
     assert "without emitting one of" in stage["tests"][0]["recommended_fix"]
 
 
+def test_assistant_smoke_cases_do_not_call_external_llm(monkeypatch) -> None:
+    from agent import client_initialization
+
+    monkeypatch.setattr(client_initialization.config, "OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(client_initialization, "_action_contract_smoke_cases", lambda site_id: [])
+
+    cases = client_initialization._assistant_smoke_cases("ai_kart", "ecommerce")
+
+    assert [case["name"] for case in cases] == [
+        "compare_apple_samsung_phone",
+        "sort_phones_low_to_high",
+        "recommend_phone_accessory",
+    ]
+
+
+def test_assistant_smoke_result_reports_runtime_filter_failures() -> None:
+    from agent import client_initialization
+
+    result = client_initialization._assistant_smoke_result(
+        {
+            "name": "start_quote",
+            "prompt": "Start my quote.",
+            "expected_actions": ["START_QUOTE", "HANDOFF_TO_AGENT"],
+        },
+        {
+            "response_text": "I will start the quote.",
+            "intent": "quote",
+            "ui_actions": [],
+            "action_filter": {
+                "status": "changed",
+                "actions": [],
+                "removed_actions": [
+                    {
+                        "action": "START_QUOTE",
+                        "reason": "blocked_by_policy",
+                        "message": "START_QUOTE is blocked by this site's safety policy.",
+                    }
+                ],
+            },
+        },
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_kind"] == "blocked_action_filtered"
+    assert result["filtered_actions"][0]["action"] == "START_QUOTE"
+    assert "handoff" in result["recommended_fix"].lower()
+
+
 def test_shopify_variant_id_preserves_large_integer() -> None:
     raw = {
         "id": 123,
@@ -679,8 +855,8 @@ def test_tenant_isolation_audit_passes_scoped_runtime_prompt_and_knowledge() -> 
         runtime_config={
             "site_id": "builder_demo",
             "install": {
-                "adapter_script": "https://hub.example.com/shopbot-adapter.js?site=builder_demo",
-                "widget_script": "https://hub.example.com/shopbot.js?site=builder_demo",
+                "adapter_script": "https://hub.example.com/mayabot-adapter.js?site=builder_demo",
+                "widget_script": "https://hub.example.com/mayabot.js?site=builder_demo",
             },
         },
         prompt_profile={
@@ -703,7 +879,7 @@ def test_tenant_isolation_audit_fails_cross_site_runtime() -> None:
         client={"site_id": "builder_demo"},
         runtime_config={
             "site_id": "other_site",
-            "install": {"adapter_script": "https://hub.example.com/shopbot-adapter.js?site=other_site"},
+            "install": {"adapter_script": "https://hub.example.com/mayabot-adapter.js?site=other_site"},
         },
         prompt_profile={"profile": {"id": "profile_1", "site_id": "builder_demo"}, "versions": []},
         knowledge={"stats": {}, "items": []},
