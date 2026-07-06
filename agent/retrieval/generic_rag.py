@@ -14,7 +14,8 @@ from agent.rag import _embed, _clean_query_for_fts, _build_tsquery
 from db.database import get_db, init_tenant_schema
 
 logger = logging.getLogger(__name__)
-DEFAULT_RETRIEVAL_LIMIT = 8
+DEFAULT_RETRIEVAL_LIMIT = 50
+MAX_RETRIEVAL_LIMIT = 100
 VECTORIZE_BATCH_SIZE = 256
 SEMANTIC_SCORE_FLOOR = 0.22
 LEXICAL_SCAN_LIMIT = 250
@@ -60,7 +61,7 @@ def retrieve_knowledge(
 ) -> list[dict[str, Any]]:
     """Retrieve source-backed knowledge items for a non-ecommerce client using hybrid search."""
     init_tenant_schema(site_id)
-    safe_limit = max(1, min(int(limit or config.RAG_TOP_N or DEFAULT_RETRIEVAL_LIMIT), 20))
+    safe_limit = max(1, min(int(limit or config.RAG_TOP_N or DEFAULT_RETRIEVAL_LIMIT), MAX_RETRIEVAL_LIMIT))
     clean_types = [item for item in (entity_types or []) if item]
 
     # 1. Lexical search via FTS

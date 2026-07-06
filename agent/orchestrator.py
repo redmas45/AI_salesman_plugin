@@ -3463,7 +3463,7 @@ def _extract_inventory_type_query(transcript: str) -> str | None:
 
 def _clean_inventory_type_term(raw: str) -> str:
     term = re.sub(
-        r"\b(products?|items?|types?|kinds?|options?|varieties|stock|inventory|catalog|catalogue)\b",
+        r"\b(additional|another|different|else|more|other|products?|items?|types?|kinds?|options?|varieties|stock|inventory|catalog|catalogue)\b",
         " ",
         raw or "",
     )

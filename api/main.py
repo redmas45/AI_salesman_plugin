@@ -669,6 +669,10 @@ def _raise_if_client_disabled(site_id: str) -> None:
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=CLIENT_DISABLED_MESSAGE)
 
 
+def _runtime_site_id(site_id: str) -> str:
+    return admin_db._safe_site_id(site_id)
+
+
 def _raise_if_quota_exceeded(site_id: str, session_id: str) -> None:
     try:
         admin_db.assert_usage_allowed(site_id, session_id)
@@ -706,6 +710,7 @@ async def shop(
     - `ui_actions`: list of website control commands for the injected runtime
     - `audio_b64`: base64-encoded WAV of the spoken response
     """
+    site_id = _runtime_site_id(site_id)
     _raise_if_client_disabled(site_id)
     _raise_if_quota_exceeded(site_id, session_id)
     payload = await _build_runtime_turn_payload(
@@ -767,6 +772,7 @@ async def shop_stream(
     session_id: str = Form("", description="Browser conversation session ID"),
 ) -> StreamingResponse:
     """Stream transcript, response, UI action, metric, and audio events for one assistant turn."""
+    site_id = _runtime_site_id(site_id)
     _raise_if_client_disabled(site_id)
     _raise_if_quota_exceeded(site_id, session_id)
     payload = await _build_runtime_turn_payload(
@@ -795,6 +801,7 @@ async def websocket_shop(
     session_id: str = "",
 ) -> None:
     """Persistent one-script voice transport for spoke websites."""
+    site_id = _runtime_site_id(site_id)
     if not admin_db.is_client_widget_enabled(site_id):
         await websocket.accept()
         await websocket.send_json({"type": "error", "message": CLIENT_DISABLED_MESSAGE})
@@ -824,7 +831,7 @@ async def websocket_chat(websocket: WebSocket) -> None:
 
             raw_history = payload.get("conversation_history", [])
             parsed_history = _parse_conversation_history(json.dumps(raw_history))
-            site_id = payload.get("site_id", config.DEFAULT_SITE_ID)
+            site_id = _runtime_site_id(payload.get("site_id", config.DEFAULT_SITE_ID))
             session_id = str(payload.get("session_id") or "")
             if not admin_db.is_client_widget_enabled(site_id):
                 await websocket.send_json({"event": "error", "data": {"error": CLIENT_DISABLED_MESSAGE}})

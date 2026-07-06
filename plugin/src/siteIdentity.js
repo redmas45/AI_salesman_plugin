@@ -45,7 +45,11 @@ function inferredSiteId() {
   const source = siteIdentitySource();
   const storageKey = `${AUTO_SITE_STORAGE_PREFIX}${source}`;
   const stored = storageValue(storageKey);
-  if (stored) return stored;
+  if (stored) {
+    const canonical = canonicalAutoSiteId(stored);
+    if (canonical !== stored) storeValue(storageKey, canonical);
+    return canonical;
+  }
 
   const host = clean(window.location.host || window.location.hostname || "site");
   const scope = inferredPathScope();
@@ -111,13 +115,19 @@ function safeDecode(value) {
 function safeSiteSlug(value) {
   const slug = clean(value)
     .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "");
   return slug || "site";
 }
 
 function truncateSiteId(value) {
   return clean(value).slice(0, SITE_ID_MAX_LENGTH).replace(/_+$/g, "") || DEFAULT_SITE_ID;
+}
+
+function canonicalAutoSiteId(value) {
+  const text = clean(value);
+  if (!text.startsWith("auto_")) return text;
+  return truncateSiteId(text.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""));
 }
 
 function hash36(value) {

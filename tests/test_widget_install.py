@@ -178,6 +178,8 @@ def test_plugin_runtime_uses_shared_automatic_site_identity() -> None:
     assert "from \"../siteIdentity\"" in adapter_config
     assert "export function resolveSiteId" in site_identity
     assert "aihub:auto-site-id:" in site_identity
+    assert "canonicalAutoSiteId" in site_identity
+    assert ".replace(/[^a-z0-9]+/g, \"_\")" in site_identity
     assert "hostNeedsPathScope" not in site_identity
     assert "basePathScope" not in site_identity
     assert "data-aihub-site-id" in site_identity
@@ -723,6 +725,9 @@ def test_adapter_tab_surfaces_runtime_repair_candidates_and_history() -> None:
     assert "verticalDecisionLabel" in source
     assert "Initialization" in source
     assert "initializationSummary" in source
+    assert "Runtime permissions" in source
+    assert "Live action candidates (pending review)" not in source
+    assert "reviewActionCandidate" not in source
     assert "reviewClientAdapterActionProposal" in source
     assert "Approve" in source
     assert "Reject" in source

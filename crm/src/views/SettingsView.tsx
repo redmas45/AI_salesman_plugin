@@ -28,6 +28,13 @@ const NUMERIC_SETTING_LABELS: Record<string, string> = {
   HTTPS_PORT: 'HTTPS port',
 };
 
+const INTEGER_SETTING_RANGES: Record<string, [number, number]> = {
+  RAG_TOP_K: [1, 100],
+  RAG_TOP_N: [1, 100],
+  CRAWL_MAX_PAGES: [1, 10000],
+  CRAWL_MAX_DEPTH: [0, 20],
+};
+
 const SETTING_GROUPS = [
   {
     title: 'Speech-to-text',
@@ -454,6 +461,10 @@ function validateSettings(values: Record<string, string>) {
     if (key === 'LLM_TEMPERATURE') continue;
     const value = values[key];
     if (value && !Number.isFinite(Number(value))) return `${label} must be numeric.`;
+    const range = INTEGER_SETTING_RANGES[key];
+    if (value && range && !isIntegerInRange(value, range[0], range[1])) {
+      return `${label} must be a whole number between ${range[0]} and ${range[1]}.`;
+    }
   }
   return '';
 }
@@ -461,4 +472,9 @@ function validateSettings(values: Record<string, string>) {
 function isNumberInRange(value: string, min: number, max: number) {
   const numberValue = Number(value);
   return Number.isFinite(numberValue) && numberValue >= min && numberValue <= max;
+}
+
+function isIntegerInRange(value: string, min: number, max: number) {
+  const numberValue = Number(value);
+  return Number.isInteger(numberValue) && numberValue >= min && numberValue <= max;
 }

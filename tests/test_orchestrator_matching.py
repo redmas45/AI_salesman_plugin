@@ -1056,6 +1056,45 @@ def test_exact_products_from_query_falls_back_to_product_type(monkeypatch):
     assert matches[0]["_lexical_query_match"] is True
 
 
+def test_exact_products_from_query_prioritizes_explicit_iphone_over_generic_android(monkeypatch):
+    products = [
+        {
+            "id": "android-1",
+            "name": "OPPO Active Android Budget 9",
+            "brand": "OPPO",
+            "category_name": "Electronics",
+            "description": "Android smartphone.",
+            "tags": ["smartphone", "phone", "android"],
+            "stock": 9,
+        },
+        {
+            "id": "iphone-air",
+            "name": "iPhone Air",
+            "brand": "Apple",
+            "category_name": "Electronics",
+            "description": "Thin, light premium iPhone.",
+            "tags": ["electronics"],
+            "stock": 18,
+        },
+        {
+            "id": "iphone-17",
+            "name": "iPhone 17",
+            "brand": "Apple",
+            "category_name": "Electronics",
+            "description": "Latest iPhone.",
+            "tags": ["electronics"],
+            "stock": 8,
+        },
+    ]
+
+    monkeypatch.setattr("db.database.get_all_products", lambda site_id, limit=1000: products)
+
+    matches = orchestrator._exact_products_from_query("I want to buy iPhone.", "ai_kart")
+
+    assert [product["id"] for product in matches[:2]] == ["iphone-17", "iphone-air"]
+    assert "android-1" not in [product["id"] for product in matches[:2]]
+
+
 def test_named_comparison_response_is_forced_when_llm_misses_exact_products():
     response = {
         "response_text": "We do not have that sticker.",

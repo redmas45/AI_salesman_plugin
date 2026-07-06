@@ -60,6 +60,20 @@ LOOKUP_STOPWORDS = frozenset(
         "you",
     }
 )
+INVENTORY_TYPE_FILLER_TERMS = frozenset(
+    {
+        "additional",
+        "another",
+        "any",
+        "available",
+        "different",
+        "else",
+        "more",
+        "other",
+        "right",
+        "stock",
+    }
+)
 
 
 class ProductCatalogMatcher:
@@ -137,14 +151,20 @@ class ProductCatalogMatcher:
         return mentioned
 
     def matching_inventory_products(self, products: list[dict], item_type: str) -> list[dict]:
-        normalized_type = normalize_lookup_text(item_type)
+        normalized_type = self._clean_inventory_type(item_type)
         if not normalized_type:
             return []
-        return [
-            product
-            for product in products
-            if normalized_type in self.product_search_text(product)
-        ]
+        requested_types = self._requested_product_type_aliases(normalized_type)
+        query_tokens = self._significant_lookup_tokens(normalized_type)
+        scored: list[tuple[int, int, dict]] = []
+        for index, product in enumerate(products):
+            search_text = self.product_search_text(product)
+            score = self._inventory_product_score(product, search_text, normalized_type, requested_types, query_tokens)
+            if score <= 0:
+                continue
+            scored.append((score + self._stock_score(product), index, product))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [product for _score, _index, product in scored]
 
     def product_search_text(self, product: dict) -> str:
         values = [
@@ -307,6 +327,51 @@ class ProductCatalogMatcher:
                 score += 18
         return score
 
+    def _clean_inventory_type(self, item_type: str) -> str:
+        normalized = normalize_lookup_text(item_type)
+        if not normalized:
+            return ""
+        tokens = [token for token in normalized.split() if token not in INVENTORY_TYPE_FILLER_TERMS]
+        return " ".join(tokens)
+
+    def _inventory_product_score(
+        self,
+        product: dict,
+        search_text: str,
+        normalized_type: str,
+        requested_types: set[str],
+        query_tokens: set[str],
+    ) -> int:
+        name = normalize_lookup_text(product.get("name") or product.get("title") or "")
+        brand = normalize_lookup_text(product.get("brand") or product.get("vendor") or "")
+        score = 0
+
+        if phrase_in_text(normalized_type, name):
+            score += 120
+            if name.startswith(normalized_type):
+                score += 80
+        elif phrase_in_text(normalized_type, brand):
+            score += 70
+        elif phrase_in_text(normalized_type, search_text):
+            score += 45
+
+        for alias in requested_types:
+            if phrase_in_text(alias, name):
+                score += 70
+                if name.startswith(alias):
+                    score += 50
+            elif phrase_in_text(alias, brand):
+                score += 60
+            elif phrase_in_text(alias, search_text):
+                score += 35 if alias in {"android", "ios", "iphone", "galaxy"} else 55
+
+        for token in query_tokens:
+            if phrase_in_text(token, name):
+                score += 24
+            elif phrase_in_text(token, search_text):
+                score += 12
+        return score
+
     def _stock_score(self, product: dict) -> int:
         try:
             stock = float(product.get("stock") or 0)
@@ -315,9 +380,13 @@ class ProductCatalogMatcher:
         return 5 if bool(product.get("in_stock")) or stock > 0 else 0
 
     def _requested_product_type_aliases(self, normalized_query: str) -> set[str]:
-        phone_aliases = {"phone", "phones", "smartphone", "smartphones", "mobile", "mobiles", "iphone", "galaxy"}
+        if any(phrase_in_text(alias, normalized_query) for alias in {"iphone", "iphones", "ios"}):
+            return {"iphone", "iphones", "ios", "apple"}
+        if any(phrase_in_text(alias, normalized_query) for alias in {"galaxy", "samsung galaxy"}):
+            return {"galaxy", "samsung", "android"}
+        phone_aliases = {"phone", "phones", "smartphone", "smartphones", "mobile", "mobiles"}
         if any(phrase_in_text(alias, normalized_query) for alias in phone_aliases):
-            return phone_aliases | {"android", "ios"}
+            return phone_aliases | {"android", "ios", "iphone", "galaxy"}
         return set()
 
     def _requested_catalog_brands(self, normalized_query: str, products: list[dict]) -> list[str]:

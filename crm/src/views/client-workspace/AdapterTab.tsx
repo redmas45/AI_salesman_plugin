@@ -23,7 +23,6 @@ export function AdapterTab({ client, vertical }: AdapterTabProps) {
   const [discoveringFlow, setDiscoveringFlow] = useState(false);
   const [rehearsingFlow, setRehearsingFlow] = useState(false);
   const [refreshingProposals, setRefreshingProposals] = useState(false);
-  const [reviewingCandidate, setReviewingCandidate] = useState('');
   const [reviewingProposal, setReviewingProposal] = useState('');
   const [reviewingFlowProposal, setReviewingFlowProposal] = useState('');
   const [actionDraft, setActionDraft] = useState('{}');
@@ -90,12 +89,6 @@ export function AdapterTab({ client, vertical }: AdapterTabProps) {
   const actionProposals = recordList(adapter?.runtime_config.adapter.action_proposals);
   const actionProposalReviews = recordList(adapter?.runtime_config.adapter.action_proposal_reviews);
   const actionReviews = recordList(adapter?.runtime_config.adapter.action_reviews);
-  const pendingCandidates = useMemo(() => {
-    return actionCandidates.filter((candidate) => {
-      const reviewLabel = candidateReviewLabel(candidate, actionReviews);
-      return reviewLabel === 'pending';
-    });
-  }, [actionCandidates, actionReviews]);
   const flowRepairProposals = recordList(adapter?.runtime_config.adapter.flow_repair_proposals);
   const flowRepairReviews = recordList(adapter?.runtime_config.adapter.flow_repair_reviews);
   const adapterPrompts = stringList(adapter?.runtime_config.adapter.prompt_suggestions);
@@ -165,22 +158,6 @@ export function AdapterTab({ client, vertical }: AdapterTabProps) {
       setMessage(error instanceof Error ? error.message : 'Flow rehearsal failed.');
     } finally {
       setRehearsingFlow(false);
-    }
-  }
-
-  async function reviewActionCandidate(candidate: Record<string, unknown>, decision: 'approve' | 'reject') {
-    const key = candidateReviewKey(candidate);
-    setReviewingCandidate(`${decision}:${key}`);
-    setMessage('');
-    try {
-      const response = await crmApi.reviewClientAdapterAction(client.site_id, { candidate, decision });
-      setAdapter(response);
-      setActionDraft(formatActionJson(response));
-      setMessage(decision === 'approve' ? 'Action candidate approved.' : 'Action candidate rejected.');
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Action candidate review failed.');
-    } finally {
-      setReviewingCandidate('');
     }
   }
 
@@ -308,48 +285,64 @@ export function AdapterTab({ client, vertical }: AdapterTabProps) {
         </div>
 
         <div className="grid gap-4 align-start">
-          <Panel title="Live action candidates (pending review)">
-            {pendingCandidates.length ? (
-              <div className="grid gap-3">
-                {pendingCandidates.slice(0, 12).map((candidate) => (
-                  <div
-                    key={`${String(candidate.kind)}-${String(candidate.action)}-${String(candidate.selector)}-${String(candidate.path)}`}
-                    className="rounded-md border border-line p-3 bg-card"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <strong className="text-sm">{candidateLabel(candidate)}</strong>
-                      <StatusPill value={String(candidate.type || candidate.kind || 'candidate')} />
-                    </div>
-                    <div className="mt-2 grid gap-1 text-sm text-muted">
-                      <span>Action: {String(candidate.action || 'unmapped')}</span>
-                      <span>Target: {candidateTarget(candidate)}</span>
-                      <span>Confidence: {formatConfidence(candidate.confidence)}</span>
-                    </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <Button
-                        size="sm"
-                        icon={CheckCircle2}
-                        disabled={Boolean(reviewingCandidate)}
-                        onClick={() => reviewActionCandidate(candidate, 'approve')}
-                      >
-                        {reviewingCandidate === `approve:${candidateReviewKey(candidate)}` ? 'Approving...' : 'Approve'}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        icon={XCircle}
-                        disabled={Boolean(reviewingCandidate)}
-                        onClick={() => reviewActionCandidate(candidate, 'reject')}
-                      >
-                        {reviewingCandidate === `reject:${candidateReviewKey(candidate)}` ? 'Rejecting...' : 'Reject'}
-                      </Button>
-                    </div>
+          <Panel title="Runtime permissions" action={<ShieldCheck size={16} aria-hidden="true" />}>
+            <div className="grid gap-3">
+              <details className="crm-disclosure" open>
+                <summary>
+                  <span>Allowed browser actions</span>
+                  <strong>{actionNames.length}</strong>
+                </summary>
+                {actionNames.length ? (
+                  <div className="action-chip-grid p-3">
+                    {actionNames.map((action) => (
+                      <span key={action} className="action-chip">
+                        {action}
+                      </span>
+                    ))}
                   </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyState text="All action candidates have been approved or reviewed automatically!" />
-            )}
+                ) : (
+                  <div className="p-3">
+                    <EmptyState text="No generated actions yet. Open the client site with the install script, then run setup." />
+                  </div>
+                )}
+              </details>
+
+              <details className="crm-disclosure">
+                <summary>
+                  <span>Restricted or handoff actions</span>
+                  <strong>{blockedActions.length + runtimeBlockedActions.length + handoffActions.length}</strong>
+                </summary>
+                <div className="grid gap-2 p-3 text-sm">
+                  <KeyValue label="Blocked" value={blockedActions.length ? blockedActions.join(', ') : 'none'} />
+                  <KeyValue label="Runtime repair blocked" value={runtimeBlockedActions.length ? runtimeBlockedActions.join(', ') : 'none'} />
+                  <KeyValue label="Handoff" value={handoffActions.length ? handoffActions.join(', ') : 'none'} />
+                </div>
+              </details>
+
+              <details className="crm-disclosure">
+                <summary>
+                  <span>Script capabilities</span>
+                  <strong>{capabilitySummary(runtimeCapabilities)}</strong>
+                </summary>
+                {runtimeCapabilityRows.length ? (
+                  <div className="grid gap-2 p-3 text-sm">
+                    {runtimeCapabilityRows.map((row) => (
+                      <KeyValue key={row.label} label={row.label} value={row.value} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="p-3">
+                    <EmptyState text="Open the client site with the install script to report runtime capabilities." />
+                  </div>
+                )}
+              </details>
+
+              {actionCandidates.length ? (
+                <p className="text-xs text-muted">
+                  Low-confidence discoveries are kept as diagnostics only. Confident actions are approved automatically during setup.
+                </p>
+              ) : null}
+            </div>
           </Panel>
 
           <Panel title="Action map editor">
@@ -919,34 +912,10 @@ function actionTarget(config: Record<string, unknown>) {
   return String(config.path || config.selector || config.form || config.input || '-');
 }
 
-function candidateLabel(candidate: Record<string, unknown>) {
-  return String(candidate.label || candidate.action || candidate.kind || 'Candidate');
-}
-
 function candidateTarget(candidate: Record<string, unknown>) {
   const fields = Array.isArray(candidate.fields) ? candidate.fields.map(String).filter(Boolean) : [];
   if (fields.length) return `fields: ${fields.slice(0, 6).join(', ')}`;
   return String(candidate.selector || candidate.path || '-');
-}
-
-function candidateReviewKey(candidate: Record<string, unknown>) {
-  return [
-    candidate.action,
-    candidate.kind,
-    candidate.type,
-    candidate.selector,
-    candidate.path,
-    candidate.label,
-  ]
-    .map((item) => String(item || '').trim())
-    .join('|');
-}
-
-function candidateReviewLabel(candidate: Record<string, unknown>, reviews: Record<string, unknown>[]) {
-  const key = candidateReviewKey(candidate);
-  const review = reviews.find((item) => candidateReviewKey(item) === key);
-  if (!review) return 'pending';
-  return `${String(review.decision || 'reviewed')} ${String(review.reviewed_at || '')}`.trim();
 }
 
 function proposalTarget(proposal: Record<string, unknown>) {

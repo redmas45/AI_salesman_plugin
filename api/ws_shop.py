@@ -336,7 +336,7 @@ def _sanitize_history(raw_history: Any) -> list[dict[str, str]]:
 
 
 def _safe_site_id(raw: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in (raw or "").strip().lower())[:80] or config.DEFAULT_SITE_ID
+    return admin_db._safe_site_id(raw or config.DEFAULT_SITE_ID)
 
 
 def _safe_session_id(raw: str, site_id: str) -> str:

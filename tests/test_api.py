@@ -130,6 +130,42 @@ class TestShopEndpoint:
         assert "latency_ms" in data
         assert data["latency_ms"]["total_ms"] > 0
 
+    def test_shop_canonicalizes_auto_site_ids_before_runtime(self, client, monkeypatch):
+        from api import main
+
+        captured = {}
+        monkeypatch.setattr(main.admin_db, "is_client_widget_enabled", lambda site_id: True)
+        monkeypatch.setattr(main.admin_db, "assert_usage_allowed", lambda site_id, session_id: None)
+        monkeypatch.setattr(main, "get_session_summary", lambda site_id, session_id: {})
+        monkeypatch.setattr(main, "_record_usage_result", lambda **kwargs: None)
+
+        def fake_run(**kwargs):
+            captured["site_id"] = kwargs["site_id"]
+            return {
+                "transcript": kwargs.get("text_input") or "",
+                "response_text": "ok",
+                "intent": "test",
+                "confidence": 1.0,
+                "answer_scope": "grounded_fact",
+                "ui_actions": [],
+                "audio_b64": "",
+                "latency_ms": {"total_ms": 1},
+            }
+
+        monkeypatch.setattr(main.orchestrator, "run", fake_run)
+
+        res = client.post(
+            "/v1/shop",
+            data={
+                "site_id": "auto_vercel-website-frontend_vercel_app_1m8d6rk",
+                "text": "I want to buy iPhone.",
+                "skip_tts": "true",
+            },
+        )
+
+        assert res.status_code == 200
+        assert captured["site_id"] == "auto_vercel_website_frontend_vercel_app_1m8d6rk"
+
     def test_off_topic_query(self, client):
         res = client.post(
             "/v1/shop",

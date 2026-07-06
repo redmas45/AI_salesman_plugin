@@ -164,7 +164,7 @@ class WidgetInteractionEventRequest(BaseModel):
 
 
 def _safe_site_id(raw: str) -> str:
-    return re.sub(r"[^a-z0-9_-]", "_", (raw or "").strip().lower())[:80] or "site_1"
+    return admin_db._safe_site_id(raw or "site_1")
 
 
 def _safe_script_base_url(raw: str) -> str:
