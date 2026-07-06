@@ -65,6 +65,11 @@ def test_universal_install_script_does_not_require_manual_site_id() -> None:
     assert adapter_index < widget_index
 
 
+def test_public_widget_base_url_upgrades_public_http_hosts() -> None:
+    assert client_routes._public_script_base_url("http://demo1.ergobite.com") == "https://demo1.ergobite.com"
+    assert client_routes._public_script_base_url("http://127.0.0.1:5176") == "http://127.0.0.1:5176"
+
+
 def test_available_installs_still_load_scripts_for_discovery(monkeypatch) -> None:
     monkeypatch.setattr(
         client_routes.admin_db,

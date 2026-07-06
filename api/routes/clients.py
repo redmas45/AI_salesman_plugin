@@ -176,6 +176,34 @@ def _safe_script_base_url(raw: str) -> str:
     return ""
 
 
+def _public_script_base_url(raw: str) -> str:
+    safe_url = _safe_script_base_url(raw)
+    if not safe_url:
+        return ""
+    parsed_url = urlparse(safe_url)
+    hostname = (parsed_url.hostname or "").lower()
+    if parsed_url.scheme == "http" and not _is_local_script_host(hostname):
+        return f"https://{safe_url[len('http://'):]}"
+    return safe_url
+
+
+def _is_local_script_host(hostname: str) -> bool:
+    return (
+        hostname == "localhost"
+        or hostname.startswith("127.")
+        or hostname.startswith("10.")
+        or hostname.startswith("192.168.")
+        or hostname in {"0.0.0.0", "::1"}
+        or hostname.startswith("172.16.")
+        or hostname.startswith("172.17.")
+        or hostname.startswith("172.18.")
+        or hostname.startswith("172.19.")
+        or hostname.startswith("172.2")
+        or hostname.startswith("172.30.")
+        or hostname.startswith("172.31.")
+    )
+
+
 def _request_public_base_url(request: Request | None = None) -> str:
     if request is None:
         return ""
@@ -185,17 +213,17 @@ def _request_public_base_url(request: Request | None = None) -> str:
     forwarded_prefix = request.headers.get("x-forwarded-prefix", "").strip().rstrip("/")
     scheme = forwarded_proto or request.url.scheme
     host = forwarded_host or request.headers.get("host", "") or request.url.netloc
-    return _safe_script_base_url(f"{scheme}://{host}{forwarded_prefix}") if scheme and host else ""
+    return _public_script_base_url(f"{scheme}://{host}{forwarded_prefix}") if scheme and host else ""
 
 
 def _public_widget_base_url(request: Request | None = None) -> str:
     return (
         _request_public_base_url(request)
-        or _safe_script_base_url(os.environ.get("HUB_PUBLIC_URL", ""))
-        or _safe_script_base_url(os.environ.get("PUBLIC_API_URL", ""))
-        or _safe_script_base_url(config.PUBLIC_API_URL)
-        or _safe_script_base_url(config.HUB_PUBLIC_URL)
-        or _safe_script_base_url(config.VOICE_ORB_API_URL or "")
+        or _public_script_base_url(os.environ.get("HUB_PUBLIC_URL", ""))
+        or _public_script_base_url(os.environ.get("PUBLIC_API_URL", ""))
+        or _public_script_base_url(config.PUBLIC_API_URL)
+        or _public_script_base_url(config.HUB_PUBLIC_URL)
+        or _public_script_base_url(config.VOICE_ORB_API_URL or "")
     )
 
 
