@@ -31,16 +31,21 @@ class ProductSearchQueryCleaner:
             "best",
             "better",
             "bro",
+            "budget",
+            "below",
             "buy",
             "can",
             "compare",
             "comparison",
+            "cost",
             "could",
             "did",
             "difference",
             "differences",
             "do",
             "does",
+            "don",
+            "dont",
             "find",
             "for",
             "get",
@@ -52,10 +57,12 @@ class ProductSearchQueryCleaner:
             "hi",
             "i",
             "im",
+            "inr",
             "instead",
             "is",
             "it",
             "just",
+            "know",
             "like",
             "looking",
             "man",
@@ -66,15 +73,22 @@ class ProductSearchQueryCleaner:
             "not",
             "ok",
             "okay",
+            "of",
             "on",
             "only",
             "option",
             "options",
             "please",
+            "price",
+            "pricing",
             "product",
             "products",
             "purchase",
+            "range",
             "recommend",
+            "rs",
+            "rupee",
+            "rupees",
             "said",
             "say",
             "saying",
@@ -83,13 +97,17 @@ class ProductSearchQueryCleaner:
             "should",
             "so",
             "some",
+            "something",
+            "t",
             "tell",
             "that",
             "the",
+            "than",
             "this",
             "to",
             "uh",
             "um",
+            "under",
             "versus",
             "vs",
             "want",
@@ -117,10 +135,13 @@ class ProductSearchQueryCleaner:
 
     def search_query_words(self, value: Any) -> list[str]:
         text = self._remove_negative_corrections(normalize_lookup_text(value))
+        budget_context = self._is_budget_context(text)
         words: list[str] = []
         seen: set[str] = set()
         for word in text.split():
             canonical = self._canonical_query_word(word)
+            if budget_context and canonical.isdigit():
+                continue
             if canonical in self._stopwords or (len(canonical) <= 1 and not canonical.isdigit()):
                 continue
             if canonical in seen:
@@ -133,11 +154,19 @@ class ProductSearchQueryCleaner:
         return re.sub(r"\b(?:i\s+)?did\s+not\s+ask\s+for\s+(?:a\s+|an\s+)?[a-z0-9]+\b", " ", text)
 
     def _canonical_query_word(self, word: str) -> str:
-        if word in {"phone", "phones", "mobile", "mobiles"}:
+        if word in {"phone", "phones", "mobile", "mobiles", "smartphone", "smartphones"}:
             return "phone"
         if word in {"book", "books"}:
             return "books"
         return word
+
+    def _is_budget_context(self, text: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(budget|rupees?|rs|inr|under|below|less than|price|pricing|cost)\b",
+                text,
+            )
+        )
 
     def should_bypass_ecommerce_answer_cache(self, transcript: str) -> bool:
         text = normalize_lookup_text(transcript)
@@ -172,9 +201,8 @@ class ProductSearchQueryCleaner:
 
     def display_search_query_from_products(self, products: list[dict]) -> str:
         for product in products:
-            for key in ("category_name", "subcategory", "brand", "name", "title"):
-                value = normalize_lookup_text(product.get(key))
-                words = [word for word in value.split() if len(word) > 2]
+            for key in ("subcategory", "category_name", "category", "name", "title", "brand"):
+                words = self.search_query_words(product.get(key))
                 if words:
                     return " ".join(words[:3])
         return "products"

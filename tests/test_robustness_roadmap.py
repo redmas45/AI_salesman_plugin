@@ -1012,6 +1012,12 @@ def test_settings_validation_accepts_model_temperature_update() -> None:
     assert _validated_settings({"LLM_TEMPERATURE": "0.3"}) == {"LLM_TEMPERATURE": "0.3"}
 
 
+def test_settings_validation_accepts_action_auto_approve_threshold() -> None:
+    assert _validated_settings({"ACTION_AUTO_APPROVE_CONFIDENCE": "0.6"}) == {
+        "ACTION_AUTO_APPROVE_CONFIDENCE": "0.6",
+    }
+
+
 def test_settings_validation_accepts_openai_provider_usage_settings() -> None:
     assert _validated_settings(
         {
@@ -1029,6 +1035,11 @@ def test_settings_validation_accepts_openai_provider_usage_settings() -> None:
 def test_settings_validation_rejects_invalid_model_temperature() -> None:
     with pytest.raises(ValueError, match="LLM_TEMPERATURE must be between 0 and 2"):
         _validated_settings({"LLM_TEMPERATURE": "3"})
+
+
+def test_settings_validation_rejects_invalid_action_auto_approve_threshold() -> None:
+    with pytest.raises(ValueError, match="ACTION_AUTO_APPROVE_CONFIDENCE must be between 0 and 1"):
+        _validated_settings({"ACTION_AUTO_APPROVE_CONFIDENCE": "1.2"})
 
 
 def test_settings_validation_rejects_non_integer_ports() -> None:

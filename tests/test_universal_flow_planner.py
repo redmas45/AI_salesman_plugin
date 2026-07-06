@@ -66,6 +66,26 @@ def test_ecommerce_buy_ambiguous_item_asks_one_clarification(monkeypatch) -> Non
     assert "Which one" in result["response_text"]
 
 
+def test_ecommerce_buy_recommendation_stays_in_product_discovery(monkeypatch) -> None:
+    monkeypatch.setattr(capabilities, "get_allowed_actions", lambda site_id: {"ADD_TO_CART"})
+    monkeypatch.setattr(
+        "agent.flow_planner.get_client_detail",
+        lambda site_id: _client_with_actions({"ADD_TO_CART": {"type": "click", "label": "Add to cart"}}),
+    )
+
+    result = plan_universal_flow(
+        site_id="shop_demo",
+        transcript="I want to buy a phone. Can you recommend me something?",
+        retrieved_items=[
+            {"id": "p1", "name": "OPPO Active Android Budget 9"},
+            {"id": "p2", "name": "Realme Pro Android Budget 2"},
+        ],
+        ecommerce_runtime=True,
+    )
+
+    assert result is None
+
+
 def test_quote_flow_uses_discovered_action_contract(monkeypatch) -> None:
     monkeypatch.setattr(capabilities, "get_allowed_actions", lambda site_id: {"START_QUOTE"})
     monkeypatch.setattr(

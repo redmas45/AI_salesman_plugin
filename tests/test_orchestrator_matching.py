@@ -162,6 +162,50 @@ def test_display_search_query_removes_speech_fillers_and_corrections():
     assert orchestrator._display_search_query("you books") == "books"
     assert orchestrator._display_search_query("on phone wanna phones") == "phone"
     assert orchestrator._display_search_query("Only Samsung phones. I did not ask for Oppo.") == "samsung phone"
+    assert (
+        orchestrator._display_search_query(
+            "I don't know, I have a budget of 50,000 rupees.",
+            [{"id": "p1", "subcategory": "Smartphones", "name": "OPPO Active Android Budget 9"}],
+        )
+        == "phone"
+    )
+
+
+def test_budget_followup_augments_retrieval_query_with_prior_product_need():
+    query = orchestrator._augment_query_with_history(
+        "I don't know, I have a budget of 50,000 rupees.",
+        [{"role": "user", "content": "I want to buy a phone. Can you recommend me something?"}],
+    )
+
+    assert query.startswith("phone.")
+    assert "50,000 rupees" in query
+
+
+def test_recommendation_response_does_not_ask_which_one_to_add(monkeypatch):
+    monkeypatch.setattr(orchestrator, "_is_ecommerce_site", lambda site_id: True)
+    monkeypatch.setattr("agent.guardrails.product_exists", lambda site_id, product_id: True)
+    response = {
+        "response_text": "Which one should I add: OPPO Active Android Budget 9, Realme Pro Android Budget 2?",
+        "intent": "buy",
+        "confidence": 0.8,
+        "ui_actions": [],
+    }
+
+    validated = orchestrator._validate_agent_response(
+        response,
+        site_id="ai_kart",
+        safe_transcript="I want to buy a phone. Can you recommend me something?",
+        retrieved_products=[
+            {"id": "p1", "subcategory": "Smartphones", "name": "OPPO Active Android Budget 9"},
+            {"id": "p2", "subcategory": "Smartphones", "name": "Realme Pro Android Budget 2"},
+        ],
+        blocked_text="Blocked.",
+    )
+
+    assert validated["intent"] == "product_search"
+    assert validated["ui_actions"][0]["action"] == "SHOW_PRODUCTS"
+    assert validated["ui_actions"][0]["params"]["search_query"] == "phone"
+    assert "Which one should I add" not in validated["response_text"]
 
 
 def test_ecommerce_discovery_cache_bypassed_for_corrections(monkeypatch):

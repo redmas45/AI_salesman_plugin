@@ -182,6 +182,8 @@ def _commerce_plan(
     if not any(action in allowed_actions for action in COMMERCE_ITEM_ACTIONS):
         return None
     if not target:
+        if intent == "buy":
+            return None
         candidates = [_item_title(item) for item in retrieved_items[:3] if item.get("id")]
         if len(candidates) >= 2:
             names = ", ".join(candidates[:3])
@@ -304,6 +306,7 @@ def _is_buying_guidance_question(text: str) -> bool:
     return bool(
         re.search(r"\b(why|should|which|what|how)\b.{0,40}\b(buy|purchase|choose|pick|select|get)\b", text)
         or re.search(r"\b(buy|purchase|choose|pick|select|get)\b.{0,40}\b(why|should|which|what|how)\b", text)
+        or re.search(r"\b(recommend|suggest|advice|advise|options|something)\b", text)
     )
 
 

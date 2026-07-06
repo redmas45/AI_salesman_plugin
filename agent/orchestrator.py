@@ -1004,32 +1004,48 @@ def _augment_query_with_history(query: str, history: list[dict] | None) -> str:
     if not history:
         return query
 
-    import re as _re
-    text = query.lower()
-    is_followup = bool(_re.search(r'\b(why|what|how|show|more|else|other|those|these|it|them|brand|brands|did not|didn t|don t|do not)\b', text))
-    is_short = len(text.split()) <= 4
-
-    if not (is_followup or is_short):
+    normalized_query = _normalize_lookup_text(query)
+    query_terms = _search_query_words(query)
+    if not _needs_history_product_context(normalized_query, query_terms):
         return query
 
-    last_user_msg = ""
-    for msg in reversed(history):
-        if msg.get("role") == "user" and msg.get("content") and msg["content"] != query:
-            last_user_msg = msg["content"]
-            break
-
-    if not last_user_msg:
+    history_terms = _recent_product_context_terms(history, query)
+    if not history_terms:
         return query
 
-    stop_words = {"this", "that", "there", "what", "where", "when", "why", "how", "show", "give", "find", "looking", "want", "need", "please", "some", "any", "have", "with", "for", "the", "and", "you", "me", "can", "could", "would", "should"}
-    nouns = [w for w in _re.findall(r'\b[a-zA-Z]{3,}\b', last_user_msg.lower()) if w not in stop_words]
+    augmented = f"{' '.join(history_terms[:4])}. {query}"
+    logger.info("PIPELINE | Augmented RAG query with history: %s", augmented)
+    return augmented
 
-    if nouns:
-        augmented = f"{query} ({' '.join(nouns[:4])})"
-        logger.info("PIPELINE | Augmented RAG query with history: %s", augmented)
-        return augmented
 
-    return query
+def _needs_history_product_context(normalized_query: str, query_terms: list[str]) -> bool:
+    if not normalized_query:
+        return False
+    if query_terms:
+        return False
+    if len(normalized_query.split()) <= 5:
+        return True
+    return bool(
+        re.search(
+            r"\b(i don t know|dont know|not sure|budget|rupees?|rs|inr|under|below|less than|"
+            r"other|another|more|else|those|these|it|them|same|any)\b",
+            normalized_query,
+        )
+    )
+
+
+def _recent_product_context_terms(history: list[dict] | None, current_query: str) -> list[str]:
+    current_normalized = _normalize_lookup_text(current_query)
+    for message in reversed(history or []):
+        if message.get("role") != "user":
+            continue
+        content = str(message.get("content") or "").strip()
+        if not content or _normalize_lookup_text(content) == current_normalized:
+            continue
+        terms = _search_query_words(content)
+        if terms:
+            return terms
+    return []
 
 
 def _retrieve_context(
@@ -1040,7 +1056,7 @@ def _retrieve_context(
     profile = _safe_user_profile(site_id)
     rag_query = _augment_query_with_history(safe_transcript, conversation_history)
     if profile.get("preferences"):
-        rag_query = f"{safe_transcript} (User preferences: {profile['preferences']})"
+        rag_query = f"{rag_query} (User preferences: {profile['preferences']})"
 
     if not _is_ecommerce_site(site_id):
         return _retrieve_generic_context(site_id, rag_query, profile)
@@ -1329,6 +1345,7 @@ def _validate_agent_response(
         _promote_comparison_action(validated, safe_transcript)
         _ensure_named_comparison_response(validated, safe_transcript, retrieved_products)
         _prevent_false_no_matching_product_claim(validated, safe_transcript, retrieved_products)
+        _coerce_recommendation_to_product_search(validated, safe_transcript, retrieved_products)
         _ensure_product_answer_response(validated, safe_transcript, retrieved_products)
         _ensure_cart_request_response(validated, safe_transcript, retrieved_products)
         _ensure_product_search_display_action(validated, safe_transcript, retrieved_products)
@@ -2257,6 +2274,52 @@ def _ensure_product_search_display_action(
         }
     ]
     response["response_text"] = _product_search_fallback_text(retrieved_products)
+
+
+def _coerce_recommendation_to_product_search(
+    response: dict[str, Any],
+    transcript: str,
+    retrieved_products: list[dict],
+) -> None:
+    if not retrieved_products:
+        return
+    if not _is_recommendation_request(transcript):
+        return
+    if _wants_cart_add(transcript):
+        return
+
+    actions = response.get("ui_actions") if isinstance(response.get("ui_actions"), list) else []
+    response["ui_actions"] = [
+        action
+        for action in actions
+        if isinstance(action, dict) and str(action.get("action") or "").upper() != ACTION_ADD_TO_CART
+    ]
+    response["intent"] = "product_search"
+    response["confidence"] = max(float(response.get("confidence") or 0.0), 0.86)
+    if _asks_to_add_choice(response.get("response_text")) or not response["ui_actions"]:
+        selected = [product for product in retrieved_products if product.get("id") is not None][:8]
+        if not selected:
+            return
+        response["ui_actions"] = [
+            {
+                "action": ACTION_SHOW_PRODUCTS,
+                "params": {
+                    PRODUCT_IDS_PARAM: [str(product["id"]) for product in selected],
+                    "search_query": _display_search_query(transcript, selected),
+                },
+            }
+        ]
+        response["response_text"] = _product_search_fallback_text(retrieved_products)
+
+
+def _is_recommendation_request(text: str) -> bool:
+    normalized = _normalize_lookup_text(text)
+    return bool(re.search(r"\b(recommend|suggest|advice|advise|options?|something|best|budget)\b", normalized))
+
+
+def _asks_to_add_choice(text: Any) -> bool:
+    normalized = _normalize_lookup_text(text)
+    return bool(re.search(r"\bwhich one\b.{0,40}\b(add|cart|buy)\b", normalized))
 
 
 def _prevent_false_no_matching_product_claim(

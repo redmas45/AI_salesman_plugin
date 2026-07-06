@@ -41,6 +41,7 @@ EMBEDDING_MODEL: str = os.getenv(
 )
 RAG_TOP_K: int = int(os.getenv("RAG_TOP_K", "10"))
 RAG_TOP_N: int = int(os.getenv("RAG_TOP_N", "50"))
+ACTION_AUTO_APPROVE_CONFIDENCE: float = float(os.getenv("ACTION_AUTO_APPROVE_CONFIDENCE", "0.75") or 0.75)
 
 LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.20"))
 LLM_MAX_TOKENS_HARD_CAP: int = int(os.getenv("LLM_MAX_TOKENS_HARD_CAP", "320"))

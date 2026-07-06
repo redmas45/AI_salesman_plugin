@@ -713,7 +713,7 @@ def _merge_discovery_vertical_config(
         ("kind", "action", "selector", "path", "label"),
     )
     merged["actions"] = _merge_discovery_actions(existing, fresh, vertical_changed=vertical_changed)
-    # Auto-approve action candidates with confidence >= 0.75
+    auto_approve_confidence = _action_auto_approve_confidence()
     candidates = merged.get("action_candidates")
     if isinstance(candidates, list):
         actions = merged["actions"].copy()
@@ -729,7 +729,7 @@ def _merge_discovery_vertical_config(
 
             review_status = str(candidate.get("review") or "").lower()
             action_name = str(candidate.get("action") or "")
-            if confidence >= 0.75 and review_status != "reject" and action_name:
+            if confidence >= auto_approve_confidence and review_status != "reject" and action_name:
                 candidate["review"] = "approve"
                 try:
                     action_config = _action_config_from_candidate(candidate, actions.get(action_name))
@@ -758,6 +758,11 @@ def _merge_discovery_vertical_config(
             continue
         merged[key] = value
     return merged
+
+
+def _action_auto_approve_confidence() -> float:
+    value = os.getenv("ACTION_AUTO_APPROVE_CONFIDENCE", config.ACTION_AUTO_APPROVE_CONFIDENCE)
+    return max(0.0, min(_safe_confidence(value, 0.75), 1.0))
 
 
 def _merge_discovery_actions(existing: dict[str, Any], fresh: dict[str, Any], *, vertical_changed: bool) -> dict[str, Any]:

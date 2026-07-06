@@ -1642,6 +1642,28 @@ def test_browser_rediscovery_does_not_replace_crm_action_override() -> None:
     assert merged["actions"] == existing["actions"]
 
 
+def test_action_auto_approve_threshold_is_configurable(monkeypatch) -> None:
+    monkeypatch.setattr(client_db.config, "ACTION_AUTO_APPROVE_CONFIDENCE", 0.6)
+    fresh = {
+        "action_candidates": [
+            {
+                "kind": "button",
+                "action": "REQUEST_SITE_VISIT",
+                "type": "click",
+                "label": "Book visit",
+                "selector": "button.visit",
+                "confidence": 0.66,
+            }
+        ],
+    }
+
+    merged = client_db._merge_discovery_vertical_config({}, fresh, vertical_changed=False)
+
+    assert merged["action_candidates"][0]["review"] == "approve"
+    assert merged["actions"]["REQUEST_SITE_VISIT"]["selector"] == "button.visit"
+    assert merged["action_reviews"][0]["decision"] == "approve"
+
+
 def test_runtime_capabilities_refresh_and_are_whitelisted() -> None:
     existing = {
         "runtime_capabilities": {"script_loaded": True, "microphone_permission": "denied"},

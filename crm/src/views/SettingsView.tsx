@@ -13,6 +13,7 @@ interface SettingNotice {
 type SettingsFocus = 'all' | 'runtime' | 'provider' | 'crawler' | 'deployment' | 'secrets';
 
 const NUMERIC_SETTING_LABELS: Record<string, string> = {
+  ACTION_AUTO_APPROVE_CONFIDENCE: 'Action auto-approve confidence',
   LLM_TEMPERATURE: 'LLM temperature',
   LLM_MAX_TOKENS: 'LLM max tokens',
   LLM_MAX_TOKENS_HARD_CAP: 'LLM hard token cap',
@@ -26,6 +27,11 @@ const NUMERIC_SETTING_LABELS: Record<string, string> = {
   STOREFRONT_PORT: 'Storefront port',
   BACKEND_PORT: 'Backend port',
   HTTPS_PORT: 'HTTPS port',
+};
+
+const FLOAT_SETTING_RANGES: Record<string, [number, number]> = {
+  ACTION_AUTO_APPROVE_CONFIDENCE: [0, 1],
+  LLM_TEMPERATURE: [0, 2],
 };
 
 const INTEGER_SETTING_RANGES: Record<string, [number, number]> = {
@@ -72,6 +78,10 @@ const SETTING_GROUPS = [
   {
     title: 'RAG',
     keys: ['EMBEDDING_MODEL', 'RAG_TOP_K', 'RAG_TOP_N'],
+  },
+  {
+    title: 'Runtime automation',
+    keys: ['ACTION_AUTO_APPROVE_CONFIDENCE'],
   },
   {
     title: 'Deployment',
@@ -136,7 +146,7 @@ export function SettingsView({
         if (!setting) return false;
         if (!settingMatchesFocus(group.title, setting, focus)) return false;
         if (!normalizedQuery) return true;
-        return [group.title, key, setting?.value, setting?.source]
+        return [group.title, key, setting?.value, setting?.source, `${key}=${setting?.value || ''}`]
           .some((value) => String(value || '').toLowerCase().includes(normalizedQuery));
       }),
     })).filter((group) => group.keys.length > 0);
@@ -414,12 +424,13 @@ function settingMatchesFocus(groupTitle: string, setting: Setting, focus: Settin
   if (focus === 'provider') return groupTitle === 'OpenAI provider usage';
   if (focus === 'crawler') return groupTitle === 'Crawler' || setting.key.startsWith('CRAWL_');
   if (focus === 'deployment') return groupTitle === 'Deployment';
-  return ['Speech-to-text', 'Text-to-speech', 'LLM', 'RAG'].includes(groupTitle);
+  return ['Speech-to-text', 'Text-to-speech', 'LLM', 'RAG', 'Runtime automation'].includes(groupTitle);
 }
 
 function settingFocusForKey(key: string): SettingsFocus {
   if (key.startsWith('OPENAI_ADMIN') || key.startsWith('OPENAI_MONTHLY') || key.startsWith('OPENAI_USAGE')) return 'provider';
   if (key.includes('CRAWL')) return 'crawler';
+  if (key.startsWith('ACTION_')) return 'runtime';
   if (key.includes('TOKEN') || key.includes('KEY') || key.includes('SECRET')) return 'secrets';
   return 'all';
 }
@@ -453,12 +464,15 @@ function SettingField({ setting }: { setting: Setting }) {
 }
 
 function validateSettings(values: Record<string, string>) {
-  const temperature = values.LLM_TEMPERATURE;
-  if (temperature && !isNumberInRange(temperature, 0, 2)) {
-    return 'LLM temperature must be a number between 0 and 2. Example: 0.3';
+  for (const [key, range] of Object.entries(FLOAT_SETTING_RANGES)) {
+    const value = values[key];
+    const label = NUMERIC_SETTING_LABELS[key] || key;
+    if (value && !isNumberInRange(value, range[0], range[1])) {
+      return `${label} must be a number between ${range[0]} and ${range[1]}.`;
+    }
   }
   for (const [key, label] of Object.entries(NUMERIC_SETTING_LABELS)) {
-    if (key === 'LLM_TEMPERATURE') continue;
+    if (FLOAT_SETTING_RANGES[key]) continue;
     const value = values[key];
     if (value && !Number.isFinite(Number(value))) return `${label} must be numeric.`;
     const range = INTEGER_SETTING_RANGES[key];

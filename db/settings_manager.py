@@ -14,6 +14,7 @@ from db.schema import _connect, init_admin_schema
 ENV_FILE = Path(config.BASE_DIR) / ".env"
 
 SETTING_KEYS = {
+    "ACTION_AUTO_APPROVE_CONFIDENCE",
     "AI_DEFAULT_SITE_ID",
     "BACKEND_PORT",
     "CLIENT_PANEL_DEFAULT_PASSWORD",
@@ -81,6 +82,7 @@ SECRET_SETTING_KEYS = {
 }
 
 FLOAT_SETTING_RANGES = {
+    "ACTION_AUTO_APPROVE_CONFIDENCE": (0.0, 1.0),
     "LLM_TEMPERATURE": (0.0, 2.0),
     "OPENAI_MONTHLY_BUDGET_USD": (0.0, 1_000_000_000.0),
 }
