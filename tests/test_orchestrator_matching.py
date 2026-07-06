@@ -161,6 +161,7 @@ def test_display_search_query_removes_speech_fillers_and_corrections():
     assert orchestrator._display_search_query("I asked for books.") == "books"
     assert orchestrator._display_search_query("you books") == "books"
     assert orchestrator._display_search_query("on phone wanna phones") == "phone"
+    assert orchestrator._display_search_query("q: of iphone 17") == "iphone 17"
     assert orchestrator._display_search_query("Only Samsung phones. I did not ask for Oppo.") == "samsung phone"
     assert (
         orchestrator._display_search_query(
@@ -179,6 +180,16 @@ def test_budget_followup_augments_retrieval_query_with_prior_product_need():
 
     assert query.startswith("phone.")
     assert "50,000 rupees" in query
+
+
+def test_context_only_followup_augments_retrieval_query_with_prior_product_need():
+    query = orchestrator._augment_query_with_history(
+        "Show me the cheaper one.",
+        [{"role": "user", "content": "Can you recommend a phone under 50,000 rupees?"}],
+    )
+
+    assert query.startswith("phone.")
+    assert "cheaper one" in query
 
 
 def test_recommendation_response_does_not_ask_which_one_to_add(monkeypatch):
@@ -227,6 +238,57 @@ def test_ecommerce_discovery_cache_bypassed_for_corrections(monkeypatch):
         )
         is None
     )
+
+
+def test_ecommerce_discovery_cache_allowed_for_standalone_product_guidance(monkeypatch):
+    monkeypatch.setattr(orchestrator, "_is_ecommerce_site", lambda site_id: True)
+    monkeypatch.setattr(
+        orchestrator,
+        "lookup_answer_cache",
+        lambda *args, **kwargs: {
+            "answer_text": "I found phones under your budget.",
+            "answer_scope": "buying_guidance",
+            "confidence": 0.95,
+            "ui_actions": [{"action": "SHOW_PRODUCTS", "params": {"product_ids": ["1"], "search_query": "phone"}}],
+            "match_type": "semantic",
+            "match_score": 0.91,
+            "data_version": 3,
+            "source_ids": ["1"],
+            "source_urls": [],
+        },
+    )
+
+    result = orchestrator._cached_answer_response(
+        "ai_kart",
+        "Can you recommend a phone under 50000 rupees?",
+        "Can you recommend a phone under 50000 rupees?",
+        skip_tts=True,
+        timings={},
+        start_time=0,
+    )
+
+    assert result is not None
+    assert result["retrieval"]["cache_hit"] is True
+    assert result["ui_actions"][0]["params"]["search_query"] == "phone"
+
+
+def test_bad_existing_product_search_query_is_sanitized():
+    response = {
+        "ui_actions": [
+            {
+                "action": "SHOW_PRODUCTS",
+                "params": {"product_ids": ["17"], "search_query": "of iphone 17"},
+            }
+        ]
+    }
+
+    orchestrator._ensure_product_display_search_queries(
+        response,
+        "Show me iPhone 17.",
+        [{"id": "17", "name": "iPhone 17", "subcategory": "Smartphones"}],
+    )
+
+    assert response["ui_actions"][0]["params"]["search_query"] == "iphone 17"
 
 
 def test_product_display_action_gets_search_query_after_guardrail(monkeypatch):

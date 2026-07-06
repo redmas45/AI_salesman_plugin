@@ -1021,7 +1021,23 @@ def _augment_query_with_history(query: str, history: list[dict] | None) -> str:
 def _needs_history_product_context(normalized_query: str, query_terms: list[str]) -> bool:
     if not normalized_query:
         return False
-    if query_terms:
+    context_only_terms = {
+        "affordable",
+        "cheap",
+        "cheaper",
+        "cheapest",
+        "costliest",
+        "expensive",
+        "least",
+        "lowest",
+        "more",
+        "one",
+        "other",
+        "premium",
+        "three",
+        "two",
+    }
+    if query_terms and any(term not in context_only_terms and not term.isdigit() for term in query_terms):
         return False
     if len(normalized_query.split()) <= 5:
         return True
@@ -2375,14 +2391,15 @@ def _ensure_product_display_search_queries(
         if action_name == ACTION_SHOW_PRODUCTS:
             has_searchable_show_products = True
             params = action.get("params") if isinstance(action.get("params"), dict) else {}
-            if not str(params.get("search_query") or "").strip():
-                search_query = _display_search_query(transcript, retrieved_products)
-                action["params"] = {
-                    **params,
-                    "search_query": search_query,
-                }
-            else:
-                search_query = str(params.get("search_query"))
+            search_query = _normalized_product_action_search_query(
+                params.get("search_query"),
+                transcript,
+                retrieved_products,
+            )
+            action["params"] = {
+                **params,
+                "search_query": search_query,
+            }
 
     if has_searchable_show_products and search_query:
         import os
@@ -2401,6 +2418,19 @@ def _ensure_product_display_search_queries(
                     }
                 }
                 actions.append(navigate_action)
+
+
+def _normalized_product_action_search_query(
+    raw_query: Any,
+    transcript: str,
+    retrieved_products: list[dict],
+) -> str:
+    raw_text = str(raw_query or "").strip()
+    if raw_text:
+        cleaned = _display_search_query(raw_text, retrieved_products)
+        if cleaned and cleaned != "products":
+            return cleaned
+    return _display_search_query(transcript, retrieved_products)
 
 
 def _ground_product_display_response(

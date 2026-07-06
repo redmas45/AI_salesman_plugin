@@ -21,6 +21,8 @@ const NUMERIC_SETTING_LABELS: Record<string, string> = {
   OPENAI_USAGE_REFRESH_SECONDS: 'OpenAI usage refresh seconds',
   RAG_TOP_K: 'RAG top K',
   RAG_TOP_N: 'RAG top N',
+  TTS_CHUNK_CHARS: 'TTS chunk characters',
+  TTS_MAX_INPUT_CHARS: 'TTS max input characters',
   CRAWL_MAX_PAGES: 'Crawler max pages',
   CRAWL_MAX_DEPTH: 'Crawler max depth',
   PORT: 'Hub port',
@@ -37,6 +39,8 @@ const FLOAT_SETTING_RANGES: Record<string, [number, number]> = {
 const INTEGER_SETTING_RANGES: Record<string, [number, number]> = {
   RAG_TOP_K: [1, 100],
   RAG_TOP_N: [1, 100],
+  TTS_CHUNK_CHARS: [300, 4000],
+  TTS_MAX_INPUT_CHARS: [2000, 50000],
   CRAWL_MAX_PAGES: [1, 10000],
   CRAWL_MAX_DEPTH: [0, 20],
 };
@@ -56,6 +60,8 @@ const SETTING_GROUPS = [
       'GROQ_TTS_MODEL',
       'GROQ_TTS_VOICE',
       'GROQ_TTS_RESPONSE_FORMAT',
+      'TTS_CHUNK_CHARS',
+      'TTS_MAX_INPUT_CHARS',
       'GROQ_FALLBACK_TO_OPENAI',
       'FAST_VOICE_MODE',
     ],

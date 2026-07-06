@@ -84,8 +84,12 @@ class ProductSearchQueryCleaner:
             "product",
             "products",
             "purchase",
+            "q",
+            "query",
             "range",
             "recommend",
+            "result",
+            "results",
             "rs",
             "rupee",
             "rupees",
@@ -94,6 +98,7 @@ class ProductSearchQueryCleaner:
             "saying",
             "search",
             "show",
+            "shop",
             "should",
             "so",
             "some",
@@ -187,17 +192,34 @@ class ProductSearchQueryCleaner:
             return True
 
         words = self.search_query_words(text)
-        if words and len(words) < len(text.split()) and len(words) <= 4:
+
+        # These turns depend on the current session state or previous result set.
+        # Replaying a cached answer for "the cheaper one" or "any other one" is
+        # worse than spending an LLM/RAG turn.
+        if re.search(
+            r"\b(other|another|more|else|these|those|this one|that one|it|them|same|"
+            r"cheaper|cheapest|lowest|least expensive|second|third|fourth|one|two|three|four)\b",
+            text,
+        ):
+            return True
+
+        if self._is_budget_context(text) and not words:
+            return True
+
+        if self._is_direct_purchase_turn(text):
             return True
 
         return bool(
             re.search(
-                r"\b(show|find|search|browse|look|looking|need|want|get)\b"
-                r".{0,60}\b(products?|items?|options?|books?|phones?|mobiles?|"
-                r"shirts?|shoes?|watches?|electronics?|fashion|beauty|grocery|stationery)\b",
+                r"\b(start|open|go|checkout|check out|pay|payment)\b",
                 text,
             )
         )
+
+    def _is_direct_purchase_turn(self, text: str) -> bool:
+        if re.search(r"\b(recommend|suggest|advice|advise|options|which|what|why|how)\b", text):
+            return False
+        return bool(re.search(r"\b(buy|purchase|order|take this|get this|i want this)\b", text))
 
     def display_search_query_from_products(self, products: list[dict]) -> str:
         for product in products:

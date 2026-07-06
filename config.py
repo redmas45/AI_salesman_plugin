@@ -35,6 +35,8 @@ GROQ_TTS_VOICE: str = os.getenv("GROQ_TTS_VOICE", "hannah")
 GROQ_TTS_RESPONSE_FORMAT: str = os.getenv("GROQ_TTS_RESPONSE_FORMAT", "wav")
 TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "groq" if GROQ_API_KEY else "openai").strip().lower()
 GROQ_FALLBACK_TO_OPENAI: bool = _env_bool("GROQ_FALLBACK_TO_OPENAI", True)
+TTS_CHUNK_CHARS: int = int(os.getenv("TTS_CHUNK_CHARS", "1200") or 1200)
+TTS_MAX_INPUT_CHARS: int = int(os.getenv("TTS_MAX_INPUT_CHARS", "12000") or 12000)
 
 EMBEDDING_MODEL: str = os.getenv(
     "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"

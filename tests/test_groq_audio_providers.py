@@ -1,4 +1,6 @@
 import sys
+import io
+import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -69,3 +71,37 @@ def test_groq_tts_provider_uses_configured_model_and_voice(monkeypatch):
         "input": "hello",
         "response_format": "wav",
     }
+
+
+def test_tts_splits_long_text_and_merges_wav_chunks(monkeypatch):
+    import config
+    from agent import tts
+
+    calls = []
+
+    def fake_groq_tts(text: str) -> bytes:
+        calls.append(text)
+        return _fake_wav_bytes(len(calls))
+
+    monkeypatch.setattr(config, "TTS_PROVIDER", "groq")
+    monkeypatch.setattr(config, "TTS_CHUNK_CHARS", 300)
+    monkeypatch.setattr(config, "TTS_MAX_INPUT_CHARS", 2000)
+    monkeypatch.setattr(tts, "_call_groq_tts", fake_groq_tts)
+
+    audio = tts.synthesize("Sentence one has enough words. Sentence two has enough words. " * 20)
+
+    assert len(calls) >= 2
+    with wave.open(io.BytesIO(audio), "rb") as reader:
+        assert reader.getnchannels() == 1
+        assert reader.getframerate() == 8000
+        assert reader.getnframes() > 0
+
+
+def _fake_wav_bytes(multiplier: int) -> bytes:
+    output = io.BytesIO()
+    with wave.open(output, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(8000)
+        writer.writeframes((b"\x00\x00" * 80) * multiplier)
+    return output.getvalue()
