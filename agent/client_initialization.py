@@ -26,6 +26,34 @@ DISPLAY_ACTION_ID_PARAMS = {
     "SHOW_ENTITIES": "entity_ids",
     "COMPARE_ENTITIES": "entity_ids",
 }
+NON_BLOCKING_SETUP_FAILURE_STAGES = frozenset({"assistant_smoke_tests"})
+SMOKE_RESULT_ACTIONS = frozenset(
+    {
+        "CHECK_AVAILABILITY",
+        "CHECK_DELIVERY_AVAILABILITY",
+        "FILTER_ENTITIES",
+        "FILTER_PRODUCTS",
+        "MATCH_JOBS",
+        "RUN_AFFORDABILITY_CALCULATOR",
+        "RUN_CALCULATOR",
+        "SEARCH_AVAILABILITY",
+        "SET_LOCATION",
+    }
+)
+SMOKE_CREDENTIAL_TERMS = frozenset(
+    {
+        "current password",
+        "login",
+        "one time password",
+        "otp",
+        "passcode",
+        "password",
+        "sign in",
+        "signin",
+        "username",
+        "verification code",
+    }
+)
 SMOKE_MAX_ATTEMPTS = 1
 
 
@@ -192,7 +220,7 @@ def run_widget_initialization(
     )
     _save_report(site_id, final_report)
 
-    if status == "ok":
+    if status == "ok" or _setup_evidence_ready(stages):
         admin_db.update_client_setup_status(site_id, needs_setup=False, last_setup_at=_utc_now())
 
     return final_report
@@ -535,6 +563,8 @@ def _action_contract_smoke_cases(site_id: str) -> list[dict[str, Any]]:
     for action_name, action_config in _smoke_action_configs(site_id).items():
         if not get_action(action_name):
             continue
+        if _smoke_action_config_rejected(action_name, action_config):
+            continue
         clause = _smoke_required_param_clause(action_config)
         if not clause:
             continue
@@ -577,6 +607,31 @@ def _smoke_required_param_clause(action_config: dict[str, Any]) -> str:
     if len(parts) < len(params[:6]):
         return ""
     return "; ".join(parts)
+
+
+def _smoke_action_config_rejected(action_name: str, action_config: dict[str, Any]) -> bool:
+    text = _smoke_action_config_text(action_config)
+    if any(term in text for term in SMOKE_CREDENTIAL_TERMS):
+        return True
+    if str(action_name or "").upper() in SMOKE_RESULT_ACTIONS and " password " in f" {text} ":
+        return True
+    return False
+
+
+def _smoke_action_config_text(action_config: dict[str, Any]) -> str:
+    values: list[str] = []
+    for key in ("label", "type", "form", "input", "submit"):
+        values.append(str(action_config.get(key) or ""))
+    for param in _smoke_action_required_params(action_config):
+        values.append(str(param or ""))
+    schema = action_config.get("field_schema")
+    if isinstance(schema, list):
+        for item in schema:
+            if not isinstance(item, dict):
+                continue
+            for key in ("param", "label", "name", "placeholder", "type", "autocomplete"):
+                values.append(str(item.get(key) or ""))
+    return " ".join(" ".join(values).lower().replace("_", " ").replace("-", " ").split())
 
 
 def _smoke_action_required_params(action_config: dict[str, Any]) -> list[str]:
@@ -1070,6 +1125,27 @@ def _overall_status(stages: list[dict[str, Any]]) -> str:
     if failed:
         return "error"
     return "ok"
+
+
+def _setup_evidence_ready(stages: list[dict[str, Any]]) -> bool:
+    return bool(_successful_setup_evidence_stages(stages)) and not _blocking_setup_failures(stages)
+
+
+def _successful_setup_evidence_stages(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        stage
+        for stage in stages
+        if stage.get("status") == "ok" and str(stage.get("name") or "") not in NON_BLOCKING_SETUP_FAILURE_STAGES
+    ]
+
+
+def _blocking_setup_failures(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        stage
+        for stage in stages
+        if stage.get("status") in {"failed", "canceled", "timed_out"}
+        and str(stage.get("name") or "") not in NON_BLOCKING_SETUP_FAILURE_STAGES
+    ]
 
 
 def _utc_now() -> str:

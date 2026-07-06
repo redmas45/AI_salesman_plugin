@@ -21,9 +21,29 @@ export function ActivityList({ items }: ActivityListProps) {
           <strong className="text-sm">
             {item.site_id} {item.intent || 'turn'}
           </strong>
-          <p className="line-clamp-2 text-sm text-muted">{item.transcript || item.response_text || '-'}</p>
+          <TurnText transcript={item.transcript} responseText={item.response_text} />
         </div>
       ))}
+    </div>
+  );
+}
+
+function TurnText({ transcript, responseText }: { transcript: string; responseText: string }) {
+  if (!transcript && !responseText) return <p className="text-sm text-muted">-</p>;
+  return (
+    <div className="activity-turn-lines">
+      {transcript ? (
+        <p className="line-clamp-2 text-sm text-muted">
+          <span>Customer</span>
+          {transcript}
+        </p>
+      ) : null}
+      {responseText ? (
+        <p className="line-clamp-2 text-sm text-muted">
+          <span>Maya</span>
+          {responseText}
+        </p>
+      ) : null}
     </div>
   );
 }

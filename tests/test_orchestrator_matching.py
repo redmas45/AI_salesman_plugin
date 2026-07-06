@@ -1279,6 +1279,7 @@ def test_run_recovers_explicit_add_to_cart_when_llm_misses_action(monkeypatch):
     monkeypatch.setattr(orchestrator, "get_client_vertical_key", lambda site_id: "ecommerce")
     monkeypatch.setattr(orchestrator, "_safe_user_profile", lambda site_id: {})
     monkeypatch.setattr(orchestrator, "_cart_context_for_site", lambda site_id, ecommerce_runtime: "cart empty")
+    monkeypatch.setattr(orchestrator, "plan_universal_flow", lambda **kwargs: None)
     monkeypatch.setattr(orchestrator.rag, "extract_price_constraints", lambda query: {})
     monkeypatch.setattr(orchestrator.rag, "retrieve", lambda query, site_id, price_constraints=None: products)
     monkeypatch.setattr("db.database.get_all_products", lambda site_id, limit=1000: products)
@@ -1323,6 +1324,84 @@ def test_run_recovers_explicit_add_to_cart_when_llm_misses_action(monkeypatch):
     assert result["intent"] == "add_to_cart"
     assert result["response_text"] == "I'll try to add NOVA Daily Phone to your cart now."
     assert result["ui_actions"] == [{"action": "ADD_TO_CART", "params": {"product_id": "1"}}]
+
+
+def test_run_recovers_phone_search_from_catalog_when_vector_retrieval_misses(monkeypatch):
+    products = [
+        {
+            "id": "phone-1",
+            "name": "NOVA Daily Phone",
+            "brand": "NOVA",
+            "category_name": "Phones",
+            "description": "Reliable everyday smartphone.",
+            "tags": ["smartphone", "phone"],
+            "price": 499,
+            "stock": 4,
+        },
+        {
+            "id": "phone-2",
+            "name": "Samsung Galaxy Daily",
+            "brand": "Samsung",
+            "category_name": "Phones",
+            "description": "Android smartphone.",
+            "tags": ["smartphone", "phone", "android"],
+            "price": 699,
+            "stock": 6,
+        },
+    ]
+
+    monkeypatch.setattr(orchestrator, "get_client_vertical_key", lambda site_id: "ecommerce")
+    monkeypatch.setattr(orchestrator, "_safe_user_profile", lambda site_id: {})
+    monkeypatch.setattr(orchestrator, "_cart_context_for_site", lambda site_id, ecommerce_runtime: "cart empty")
+    monkeypatch.setattr(orchestrator, "plan_universal_flow", lambda **kwargs: None)
+    monkeypatch.setattr(orchestrator.rag, "extract_price_constraints", lambda query: {})
+    monkeypatch.setattr(orchestrator.rag, "retrieve", lambda query, site_id, price_constraints=None: [])
+    monkeypatch.setattr("db.database.get_all_products", lambda site_id, limit=1000: products)
+    monkeypatch.setattr(
+        orchestrator.llm,
+        "generate_response",
+        lambda *args, **kwargs: {
+            "response_text": "I don't have phones right now.",
+            "intent": "out_of_stock",
+            "confidence": 0.4,
+            "ui_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_apply_capability_filter_result",
+        lambda site_id, actions: {"status": "ok", "actions": actions, "removed_actions": []},
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "tenant_inventory_summary",
+        lambda site_id: {
+            "total_products": 2,
+            "active_products": 2,
+            "in_stock_products": 2,
+            "missing_embeddings": 0,
+            "total_categories": 1,
+        },
+    )
+
+    result = orchestrator.run(
+        site_id="ai_kart",
+        text_input="I wanna buy a phone.",
+        audio_bytes=None,
+        audio_filename="test.txt",
+        skip_tts=True,
+        conversation_history=[],
+        page_context={},
+    )
+
+    assert result["intent"] == "product_search"
+    assert "don't have phones" not in result["response_text"].lower()
+    assert "NOVA Daily Phone" in result["response_text"]
+    assert result["ui_actions"][0]["action"] == "SHOW_PRODUCTS"
+    assert set(result["ui_actions"][0]["params"]["product_ids"]) == {"phone-1", "phone-2"}
+    assert result["ui_actions"][0]["params"]["search_query"] == "phone"
+    assert result["retrieval"]["retrieved_count"] == 2
+    assert result["retrieval"]["issue"] == "ok"
 
 
 def test_cart_recovery_resolves_ordinal_without_treating_option_as_quantity() -> None:

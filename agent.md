@@ -1,6 +1,6 @@
 # AI Salesman Plugin - Current Handoff
 
-Last updated: 2026-07-03 12:45 IST
+Last updated: 2026-07-06 17:09 IST
 
 This file is the working handoff only. Keep README as the product document. Keep this file short, current, and focused on what the next engineer/session needs.
 
@@ -31,24 +31,24 @@ This file is the working handoff only. Keep README as the product document. Keep
 - Runtime action events are now durable server-owned Postgres rows in `hub_action_events`.
 - Audit events now persist key browser/runtime/admin/setup/prompt/quota events in `hub_audit_events`.
 - CRM conversation/action evidence now reads durable action rows, not old JSON history.
+- Setup runs now distinguish deployment/setup evidence from prompt repair: if crawl/flow/readiness complete and only `assistant_smoke_tests` fail, CRM reports setup evidence complete with prompt repair needed instead of making the whole setup look failed.
+- Credential-safe setup discovery is in place: login/password/OTP forms cannot be saved as result-query actions like `FILTER_PRODUCTS`, and assistant smoke tests skip legacy credential-based result contracts.
+- CRM activity, usage, analytics health rows, and client panel intent samples now show Customer and Maya text separately. The CRM password modal also exposes the client-panel login URL and account/client ID.
 
 ## Verification
 
 Ran successfully:
 
 ```powershell
-python -m pytest -q
-python -m pytest tests\test_crm_token_limits.py tests\test_orchestrator_matching.py -q
-python -m compileall agent api db tests
-corepack pnpm --filter ai-hub-crm exec tsc -b
+python -m pytest tests\test_universal_action_contracts.py tests\test_robustness_roadmap.py tests\test_orchestrator_matching.py -q
+corepack pnpm --filter ai-hub-crm build
 ```
 
 Results:
 
-- Python pytest suite: `544 passed, 1 skipped` in `70.85s`
-- Focused password/orchestrator regression tests: `73 passed` in `16.21s`
-- Python compile check passed.
-- CRM TypeScript build check passed through Corepack. The root `pnpm run typecheck` script still fails on this machine because the plain `pnpm` shim is not on PATH; direct `corepack pnpm ...` works.
+- Focused setup/discovery/orchestrator regressions: `146 passed` in `26.88s`
+- CRM TypeScript/Vite build passed through Corepack.
+- Earlier broader checks before these fixes: full pytest `544 passed, 1 skipped`, Python compile check passed.
 
 ## Current Architecture Review
 

@@ -442,6 +442,86 @@ def test_auto_initialization_runs_assistant_smoke_stage_when_requested(monkeypat
     assert running_smoke["stages"][-1]["message"] == "Assistant prompt smoke tests are running."
 
 
+def test_auto_initialization_clears_setup_when_only_prompt_checks_need_repair(monkeypatch) -> None:
+    setup_updates = []
+
+    monkeypatch.setattr("agent.client_initialization._save_report", lambda site_id, report: None)
+    monkeypatch.setattr("agent.client_initialization._client_detail", lambda site_id: {"site_id": site_id, "vertical_config": {}})
+    monkeypatch.setattr(
+        "agent.client_initialization._crawl_stage",
+        lambda *args, **kwargs: {"name": "crawl", "status": "ok", "message": "Content crawl completed."},
+    )
+    monkeypatch.setattr(
+        "agent.client_initialization._assistant_smoke_stage",
+        lambda *args, **kwargs: {
+            "name": "assistant_smoke_tests",
+            "status": "failed",
+            "message": "0/1 assistant smoke tests passed.",
+            "total": 1,
+            "passed": 0,
+            "failed": 1,
+        },
+    )
+    monkeypatch.setattr(
+        "agent.client_initialization.admin_db.update_client_setup_status",
+        lambda site_id, **kwargs: setup_updates.append((site_id, kwargs)),
+    )
+
+    report = run_widget_initialization(
+        "ai_kart",
+        "https://shop.example.com",
+        vertical_key="ecommerce",
+        run_crawl=True,
+        run_flow=False,
+        run_rehearsal=False,
+        crawl_max_pages=5,
+        crawl_max_depth=2,
+        run_readiness=False,
+        run_smoke_tests=True,
+    )
+
+    assert report["status"] == "partial"
+    assert setup_updates
+    assert setup_updates[-1][0] == "ai_kart"
+    assert setup_updates[-1][1]["needs_setup"] is False
+
+
+def test_operation_status_does_not_mark_setup_failed_for_prompt_repair_only() -> None:
+    from api import crm
+
+    operation_status = crm._client_operation_status(
+        {
+            "site_id": "ai_kart",
+            "vertical_config": {
+                "initialization": {
+                    "status": "partial",
+                    "started_at": "2026-07-06T10:00:00+00:00",
+                    "completed_at": "2026-07-06T10:05:00+00:00",
+                    "duration_ms": 300000,
+                    "stages": [
+                        {"name": "crawl", "status": "ok", "message": "Content crawl completed."},
+                        {"name": "readiness_scan", "status": "ok", "message": "Readiness scan completed."},
+                        {
+                            "name": "assistant_smoke_tests",
+                            "status": "failed",
+                            "message": "0/1 assistant smoke tests passed.",
+                            "total": 1,
+                            "passed": 0,
+                            "failed": 1,
+                        },
+                    ],
+                }
+            },
+        }
+    )
+
+    integration = operation_status["operations"]["integration"]
+
+    assert integration["status"] == "complete"
+    assert "Prompt checks found repair items" in integration["message"]
+    assert integration["stages"][2]["status"] == "failed"
+
+
 def test_assistant_smoke_cases_cover_registered_verticals() -> None:
     from agent import client_initialization
 
@@ -493,6 +573,42 @@ def test_assistant_smoke_cases_include_required_action_schema(monkeypatch) -> No
     assert "secondary value: Sample secondary value" in availability_case["prompt"]
     assert "requested date: 2026-08-15" in availability_case["prompt"]
     assert "quantity: 2" in availability_case["prompt"]
+
+
+def test_assistant_smoke_cases_skip_credential_based_result_contract(monkeypatch) -> None:
+    from agent import client_initialization
+
+    monkeypatch.setattr(
+        client_initialization,
+        "_client_detail",
+        lambda site_id: {
+            "site_id": site_id,
+            "vertical_config": {
+                "actions": {
+                    "FILTER_PRODUCTS": {
+                        "type": "form",
+                        "form": "form.login",
+                        "input": "input[name='email']",
+                        "submit": "button.login",
+                        "required_fields": ["email", "password"],
+                        "required_fields_known": True,
+                        "field_schema": [
+                            {"param": "email", "label": "Email", "type": "email", "required": True},
+                            {"param": "password", "label": "Password", "type": "password", "required": True},
+                        ],
+                    }
+                }
+            },
+        },
+    )
+
+    cases = client_initialization._assistant_smoke_cases("schema_demo", "ecommerce")
+
+    assert all("FILTER_PRODUCTS" not in case["expected_actions"] for case in cases)
+    assert [case["name"] for case in cases][:2] == [
+        "compare_apple_samsung_phone",
+        "sort_phones_low_to_high",
+    ]
 
 
 def test_assistant_smoke_stage_passes_when_expected_actions_return(monkeypatch) -> None:

@@ -5,6 +5,7 @@ import { Field } from '../ui/Field';
 import { NoticeBanner } from './NoticeBanner';
 import type { Client, CreateClientPayload } from '../../types';
 import { panelPasswordLabel } from '../../utils/format';
+import { clientPanelHref } from '../../utils/clientLinks';
 import { CRM_VERTICALS, DEFAULT_CRM_VERTICAL_KEY } from '../../verticals/registry';
 
 export interface AddClientDialogProps {
@@ -181,6 +182,7 @@ export function ClientPanelPasswordDialog({
 
   const disabled = busy || working;
   const passwordStatus = panelPasswordLabel(client);
+  const panelUrl = clientPanelHref(client.site_id);
   const messageTone: 'success' | 'error' | 'info' =
     message.toLowerCase().includes('failed') || message.toLowerCase().includes('must')
       ? 'error'
@@ -235,6 +237,16 @@ export function ClientPanelPasswordDialog({
           ) : (
             <span className="password-status-pill">{passwordStatus}</span>
           )}
+        </div>
+        <div className="client-panel-share-grid">
+          <div className="client-panel-share-item">
+            <span>Login URL</span>
+            <code>{panelUrl}</code>
+          </div>
+          <div className="client-panel-share-item">
+            <span>Account / Client ID</span>
+            <code>{client.site_id}</code>
+          </div>
         </div>
         <div className="flex gap-2 items-end">
           <div className="flex-1">

@@ -1086,6 +1086,9 @@ def _integration_operation_status(client: dict[str, Any], vertical_config: dict[
         stages.append(_operation_stage("integration_save", "Saving evidence", "complete", "Setup evidence saved.", completed_at=str(initialization.get("completed_at") or "")))
     status = _normalize_operation_status(str(initialization.get("status") or "unknown"), stages)
     message = str(initialization.get("error") or "") or _operation_message(status, "Setup run")
+    if _only_prompt_checks_failed(stages):
+        status = "complete"
+        message = "Setup evidence completed. Prompt checks found repair items; open Assistant prompt smoke tests for exact evidence."
     if status == "running" and initialization.get("cancel_requested"):
         message = "Setup stop requested. Waiting for the current stage checkpoint."
     return _operation(
@@ -1127,6 +1130,11 @@ def _integration_stage_label(name: str) -> str:
         "integration_save": "Saving evidence",
         "integration_queue": "Queueing setup run",
     }.get(name, name.replace("_", " ").title())
+
+
+def _only_prompt_checks_failed(stages: list[dict[str, Any]]) -> bool:
+    failed = [stage for stage in stages if stage["status"] == "failed"]
+    return bool(failed) and all(stage["name"] == "assistant_smoke_tests" for stage in failed)
 
 
 def _normalize_stage_status(status: str) -> str:

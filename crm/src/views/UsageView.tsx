@@ -287,7 +287,7 @@ function UsageTimeline({
                 <StatusPill value={item.status || 'ok'} />
                 <span className="usage-event-open">Open activity</span>
               </div>
-              <p>{item.transcript || item.response_text || '-'}</p>
+              <TurnDialogue transcript={item.transcript} responseText={item.response_text} />
               <div className="usage-event-meta">
                 <span>{shortTime(item.created_at)}</span>
                 <span>{item.intent || 'turn'}</span>
@@ -298,6 +298,26 @@ function UsageTimeline({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+function TurnDialogue({ transcript, responseText }: { transcript: string; responseText: string }) {
+  if (!transcript && !responseText) return <p>-</p>;
+  return (
+    <div className="usage-event-dialogue">
+      {transcript ? (
+        <p>
+          <span>Customer</span>
+          {transcript}
+        </p>
+      ) : null}
+      {responseText ? (
+        <p>
+          <span>Maya</span>
+          {responseText}
+        </p>
+      ) : null}
     </div>
   );
 }

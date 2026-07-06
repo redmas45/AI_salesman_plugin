@@ -435,6 +435,7 @@ function FocusedHealthSignal({
             >
               <span>{shortTime(event.created_at)} - {event.site_id}</span>
               <strong>{event.intent || 'unknown intent'}</strong>
+              <EventDialogue transcript={event.transcript} responseText={event.response_text} compact />
               <small>{event.status} / {event.transport} / {number(event.latency_ms)} ms</small>
             </button>
           ))}
@@ -504,11 +505,32 @@ function HealthEventList({
             <strong>{event.site_id}</strong>
             <small>{shortTime(event.created_at)}</small>
           </span>
-          <b>{event.intent || 'unknown'}</b>
+          <span>
+            <b>{event.intent || 'unknown'}</b>
+            <EventDialogue transcript={event.transcript} responseText={event.response_text} />
+          </span>
           <em>{event.status} / {event.transport} / {number(event.latency_ms)} ms</em>
         </button>
       ))}
     </div>
+  );
+}
+
+function EventDialogue({
+  transcript,
+  responseText,
+  compact = false,
+}: {
+  transcript: string;
+  responseText: string;
+  compact?: boolean;
+}) {
+  if (!transcript && !responseText) return null;
+  return (
+    <small className={`health-event-dialogue ${compact ? 'compact' : ''}`}>
+      {transcript ? <span>Customer: {transcript}</span> : null}
+      {responseText ? <span>Maya: {responseText}</span> : null}
+    </small>
   );
 }
 

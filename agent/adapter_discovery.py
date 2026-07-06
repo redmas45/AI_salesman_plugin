@@ -42,6 +42,17 @@ RESULT_SUBMIT_ACTIONS: frozenset[str] = frozenset({
     "SET_LOCATION",
     "START_QUOTE",
 })
+RESULT_QUERY_ACTIONS: frozenset[str] = frozenset({
+    "CHECK_AVAILABILITY",
+    "CHECK_DELIVERY_AVAILABILITY",
+    "FILTER_ENTITIES",
+    "FILTER_PRODUCTS",
+    "MATCH_JOBS",
+    "RUN_AFFORDABILITY_CALCULATOR",
+    "RUN_CALCULATOR",
+    "SEARCH_AVAILABILITY",
+    "SET_LOCATION",
+})
 RESULT_SUBMIT_TERMS: tuple[str, ...] = (
     "availability",
     "available",
@@ -96,6 +107,18 @@ SENSITIVE_FIELD_TERMS: tuple[str, ...] = (
     "telephone",
     "upload",
     "whatsapp",
+)
+CREDENTIAL_FIELD_TERMS: tuple[str, ...] = (
+    "current password",
+    "login",
+    "one time password",
+    "otp",
+    "passcode",
+    "password",
+    "sign in",
+    "signin",
+    "username",
+    "verification code",
 )
 
 
@@ -699,6 +722,9 @@ def form_action_candidates(
     rows: list[dict[str, Any]] = []
     for form in data.forms:
         action_name, confidence = likely_action_for_label(" ".join([form.label, form_fields_text(form)]), labels_by_action)
+        if form_is_rejected_for_action(action_name, form):
+            action_name = ""
+            confidence = LOW_CONFIDENCE
         rows.append(
             {
                 "kind": "form",
@@ -856,7 +882,7 @@ def render_adapter_code(runtime_config: dict[str, Any]) -> str:
 
 
 def add_search_action(actions: dict[str, dict[str, Any]], data: DiscoveryInput, action_name: str) -> None:
-    form = first_search_form(data.forms)
+    form = first_search_form(data.forms, action_name)
     if not form:
         return
     page_path = path_from_href(data.url, data.origin)
@@ -917,7 +943,7 @@ def add_form_action(
         return
     if not should_generate_sequence_action(action_name):
         return
-    form = first_matching_form(data.forms, labels_by_action.get(action_name, ()))
+    form = first_matching_form(data.forms, labels_by_action.get(action_name, ()), action_name)
     if not form:
         return
     steps = form_sequence_steps(form, action_name)
@@ -1205,6 +1231,13 @@ def safe_result_form_submit(action_name: str, form: ObservedElement) -> bool:
     return contains_any_term(form_text, RESULT_SUBMIT_TERMS)
 
 
+def form_is_rejected_for_action(action_name: str, form: ObservedElement) -> bool:
+    normalized = normalize_action_name(action_name)
+    if normalized in RESULT_QUERY_ACTIONS and form_has_credential_fields(form):
+        return True
+    return False
+
+
 def form_requires_prepare_only(form: ObservedElement, form_text: str | None = None) -> bool:
     text = form_text if form_text is not None else normalized_form_text(form)
     return form_has_sensitive_fields(form) or contains_any_term(text, FINAL_SUBMIT_TERMS)
@@ -1215,6 +1248,14 @@ def form_has_sensitive_fields(form: ObservedElement) -> bool:
         selector_text = normalized_text(" ".join([form.selector, form.input_selector]))
         return contains_any_term(selector_text, SENSITIVE_FIELD_TERMS)
     return any(field_has_sensitive_term(field) for field in form.fields)
+
+
+def form_has_credential_fields(form: ObservedElement) -> bool:
+    if not form.fields:
+        selector_text = normalized_text(" ".join([form.label, form.selector, form.input_selector, form.submit_selector]))
+        return contains_any_term(selector_text, CREDENTIAL_FIELD_TERMS)
+    field_text = normalized_form_text(form)
+    return contains_any_term(field_text, CREDENTIAL_FIELD_TERMS)
 
 
 def field_has_sensitive_term(field: dict[str, Any]) -> bool:
@@ -1318,12 +1359,14 @@ def parse_elements(value: Any) -> tuple[ObservedElement, ...]:
     return tuple(elements)
 
 
-def first_search_form(forms: tuple[ObservedElement, ...]) -> ObservedElement | None:
+def first_search_form(forms: tuple[ObservedElement, ...], action_name: str) -> ObservedElement | None:
     for form in forms:
+        if form_is_rejected_for_action(action_name, form):
+            continue
         label = form.label.lower()
         if form.input_selector and ("search" in label or "where" in label or "destination" in label):
             return form
-    return next((form for form in forms if form.input_selector), None)
+    return next((form for form in forms if form.input_selector and not form_is_rejected_for_action(action_name, form)), None)
 
 
 def first_matching_element(elements: tuple[ObservedElement, ...], labels: tuple[str, ...]) -> ObservedElement | None:
@@ -1357,12 +1400,12 @@ def matching_element_rank(element: ObservedElement, labels: tuple[str, ...]) -> 
     return label_rank, selector_rank, len(text)
 
 
-def first_matching_form(forms: tuple[ObservedElement, ...], labels: tuple[str, ...]) -> ObservedElement | None:
+def first_matching_form(forms: tuple[ObservedElement, ...], labels: tuple[str, ...], action_name: str) -> ObservedElement | None:
     if not labels:
         return None
     for form in forms:
         text = " ".join([form.label, form_fields_text(form)]).lower()
-        if form.fields and any(label in text for label in labels):
+        if form.fields and any(label in text for label in labels) and not form_is_rejected_for_action(action_name, form):
             return form
     return None
 

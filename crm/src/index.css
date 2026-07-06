@@ -5373,6 +5373,54 @@ kbd {
   white-space: nowrap;
 }
 
+.activity-turn-lines,
+.usage-event-dialogue,
+.health-event-dialogue {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.activity-turn-lines p,
+.usage-event-dialogue p {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+}
+
+.activity-turn-lines span,
+.usage-event-dialogue span,
+.health-event-dialogue span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.usage-event-dialogue p,
+.health-event-dialogue {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.health-event-dialogue {
+  margin-top: 3px;
+  text-transform: none;
+  white-space: normal;
+}
+
+.health-event-dialogue span {
+  display: block;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: none;
+}
+
 .health-event-list {
   display: grid;
   gap: 8px;
@@ -5413,6 +5461,18 @@ kbd {
   color: var(--muted);
   font-size: 11px;
   font-style: normal;
+}
+
+.health-event-row .health-event-dialogue {
+  display: grid;
+  white-space: normal;
+}
+
+.health-event-row .health-event-dialogue span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 1160px) {
@@ -7094,6 +7154,14 @@ button.health-summary-card:focus-visible {
   color: var(--ink);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.usage-event-main .usage-event-dialogue {
+  margin: 8px 0;
+}
+
+.usage-event-main .usage-event-dialogue p {
+  margin: 0;
 }
 
 .usage-event-meta {

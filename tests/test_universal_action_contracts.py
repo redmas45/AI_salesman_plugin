@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.adapter_discovery import ObservedElement, form_sequence_steps, form_submit_mode
+from agent.adapter_discovery import DiscoveryInput, ObservedElement, discover_actions, form_sequence_steps, form_submit_mode
 
 
 RESULT_FORM_ACTIONS = [
@@ -97,6 +97,35 @@ def test_finalization_words_block_result_form_submit(final_term: str) -> None:
 
     assert form_submit_mode("START_QUOTE", form) == "fill_only"
     assert all(step.get("op") != "submit" for step in steps)
+
+
+def test_login_form_is_not_discovered_as_product_filter() -> None:
+    login_form = _form(
+        label="Customer access Login Email Password Login",
+        fields=(
+            {"selector": "input[name='email']", "label": "Email", "type": "email", "required": True},
+            {"selector": "input[name='password']", "label": "Password", "type": "password", "required": True},
+        ),
+    )
+    data = DiscoveryInput(
+        site_id="shop_demo",
+        origin="https://shop.example.test",
+        url="https://shop.example.test/login",
+        title="Shop demo",
+        forms=(login_form,),
+        buttons=(ObservedElement(label="Search", selector="button[aria-label='Search']"),),
+    )
+
+    actions = discover_actions(data, "ecommerce", {})
+
+    assert actions["FILTER_PRODUCTS"] == {
+        "type": "click",
+        "selector": "button[aria-label='Search']",
+        "label": "Search",
+        "page_path": "/login",
+        "confidence": 0.82,
+    }
+    assert "password" not in str(actions["FILTER_PRODUCTS"]).lower()
 
 
 def _form(
