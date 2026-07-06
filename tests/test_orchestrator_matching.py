@@ -988,6 +988,40 @@ def test_exact_products_from_query_finds_brand_phone_comparison_products(monkeyp
     assert all(product["_exact_name_match"] is True for product in matches[:2])
 
 
+def test_exact_products_from_query_finds_partial_product_title_comparison(monkeypatch):
+    products = [
+        {
+            "id": "gaming-2",
+            "name": "Acer Classic Gaming 2",
+            "brand": "Acer",
+            "category_name": "electronics",
+            "description": "Gaming laptop with RTX graphics.",
+            "tags": ["laptop", "gaming", "rtx", "acer"],
+            "stock": 14,
+        },
+        {
+            "id": "student-7",
+            "name": "Acer Active Student / Budget 7",
+            "brand": "Acer",
+            "category_name": "electronics",
+            "description": "Budget student laptop.",
+            "tags": ["laptop", "student", "budget", "acer"],
+            "stock": 18,
+        },
+    ]
+
+    monkeypatch.setattr("db.database.get_all_products", lambda site_id, limit=1000: products)
+
+    matches = orchestrator._exact_products_from_query(
+        "Can you compare this Acer Classic Gaming 2 versus Acer Active Student?",
+        "ai_kart",
+    )
+
+    assert [product["id"] for product in matches[:2]] == ["gaming-2", "student-7"]
+    assert matches[0]["_exact_name_match"] is True
+    assert matches[1]["_lexical_query_match"] is True
+
+
 def test_exact_products_from_query_falls_back_to_product_type(monkeypatch):
     products = [
         {
