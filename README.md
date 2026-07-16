@@ -140,7 +140,7 @@ Shared Nginx routing is owned by the host:
 
 ```text
 /                         -> AI Hub Docker app on 127.0.0.1:3002
-/client_panel/<client_id> -> AI Hub-served Client Panel bundle from sibling client_panel/dist
+/client_panel/<client_id> -> AI Hub-served Client Panel bundle built from client-panel/
 ```
 
 Demo websites can run on different domains. They should load the AI Hub install script from this public Hub domain.
@@ -470,8 +470,11 @@ CORS_ORIGINS=https://demo1.ergobite.com
 CRAWL_ON_STARTUP=false
 CRAWL_PERIODIC_ENABLED=false
 ENSURE_DEFAULT_CLIENT_ON_STARTUP=false
-OPENAI_API_KEY=
-GROQ_API_KEY=
+AZURE_OPENAI_API_KEY=
+AZURE_OPENAI_BASE_URL=https://your-resource.openai.azure.com/openai/v1/
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-5.4-mini
+AZURE_OPENAI_STT_DEPLOYMENT=gpt-4o-mini-transcribe
+AZURE_OPENAI_TTS_DEPLOYMENT=gpt-4o-mini-tts
 CRM_ADMIN_TOKEN=
 CLIENT_PANEL_DEFAULT_PASSWORD=
 CLIENT_PANEL_TOKEN_SECRET=
@@ -484,14 +487,14 @@ CLIENT_PANEL_TOKEN_SECRET=
 Use:
 
 ```text
-deploy.md
+docs/deployment.md
 ```
 
 High-level order:
 
-1. Deploy AI Hub from `/var/www/AI_salesman_plugin/deploy.md`.
+1. Deploy AI Hub from `/var/www/AI_salesman_plugin/docs/deployment.md`.
 2. Deploy or reload the host Nginx config.
-3. Build the Client Panel bundle in `/var/www/client_panel`; AI Hub serves that `dist` at `/client_panel/<client_id>`.
+3. Build the Docker app; it compiles CRM and Client Panel from this repository.
 4. Open CRM and confirm the client workspace, Setup workspace, adapter tab, prompt tab, client-panel link, and crawl status.
 
 Production AI Hub runs in Docker Compose:
@@ -501,9 +504,9 @@ db  -> PostgreSQL with pgvector
 app -> FastAPI app, CRM static files, widget bundle, AI pipeline
 ```
 
-AI Hub serves the client-facing analytics panel from a sibling `client_panel/dist`
-directory by default. Override `CLIENT_PANEL_SOURCE_DIR` or
-`CLIENT_PANEL_STATIC_DIR` if the panel bundle lives somewhere else.
+AI Hub serves the client-facing analytics panel from `client-panel/dist` in this
+repository. Override `CLIENT_PANEL_SOURCE_DIR` or `CLIENT_PANEL_STATIC_DIR` only
+when intentionally serving a separately built bundle.
 
 AI Hub production does not use a host Python venv for runtime.
 
@@ -527,10 +530,10 @@ corepack pnpm --filter ai-hub-crm build
 Client Panel:
 
 ```powershell
-cd C:\Users\admin\Desktop\client_panel
+cd C:\Users\admin\Desktop\AI_salesman_plugin
 $env:VITE_CLIENT_PANEL_BASE_PATH="/client_panel/"
 $env:VITE_AI_HUB_API_BASE=""
-npm run build
+corepack pnpm --filter client-panel build
 ```
 
 Widget:
@@ -673,7 +676,7 @@ Shared Nginx route is missing or stale. Apply Vercel_website/aikart.md.
 CRM shows old assets:
 
 ```text
-Rebuild the Docker app using deploy.md, then hard refresh the browser.
+Rebuild the Docker app using `docs/deployment.md`, then hard refresh the browser.
 ```
 
 Client Panel login fails:

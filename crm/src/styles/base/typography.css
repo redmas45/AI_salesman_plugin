@@ -1,0 +1,90 @@
+/* Shared type hierarchy. Feature styles control layout, not font emphasis. */
+body,
+button,
+input,
+select,
+textarea {
+  font-family: var(--font-sans);
+  letter-spacing: 0;
+}
+
+#root :is(h1, h2, h3, h4, h5, h6) {
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+
+#root h1 {
+  font-size: var(--text-page-title);
+}
+
+#root h2 {
+  font-size: var(--text-title);
+}
+
+#root h3 {
+  font-size: var(--text-section);
+}
+
+#root :is(h4, h5, h6) {
+  font-size: var(--text-body);
+}
+
+p,
+li,
+td,
+th {
+  line-height: 1.5;
+}
+
+#root :is(strong, b),
+#root [class$="-value"],
+#root [class*="-value "] {
+  font-weight: var(--weight-semibold);
+}
+
+.font-semibold {
+  font-weight: var(--weight-medium);
+}
+
+.btn,
+.button,
+.nav-button,
+.sidebar-item,
+.sidebar-subitem,
+.topbar-current,
+.topbar-crumb,
+.client-tab,
+button {
+  font-weight: var(--weight-medium);
+}
+
+.field-label,
+.field > span,
+label > span,
+th,
+[class$="-label"],
+[class*="-label "],
+[class$="-eyebrow"],
+[class*="-eyebrow "],
+[class$="-kicker"],
+[class*="-kicker "] {
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+}
+
+.badge,
+.status-pill,
+.live-pill {
+  font-weight: var(--weight-semibold);
+}
+
+code,
+pre,
+.font-mono,
+.code-block,
+.code-textarea {
+  font-family: var(--font-mono);
+}

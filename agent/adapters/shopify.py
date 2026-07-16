@@ -2,8 +2,7 @@
 Shopify platform adapter.
 
 Handles Shopify-specific product normalization, variant extraction,
-cart API payloads, and checkout URLs. Reuses existing ingestion helpers
-from agent.ingestion where possible.
+cart API payloads, and checkout URLs. Reuses existing ingestion helpers.
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ import logging
 from typing import Any
 from urllib.parse import urljoin
 
-from agent.ingestion import (
+from agent.ingestion_helpers.ingestion_facade import (
     _clean_text,
     _first,
     _image_url_from_value,

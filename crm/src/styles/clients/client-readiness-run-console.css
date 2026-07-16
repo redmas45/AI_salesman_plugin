@@ -1,0 +1,138 @@
+/* Client readiness run console */
+.readiness-run-console {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--blue) 24%, var(--line));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--blue-soft) 28%, var(--panel));
+  padding: 14px;
+  box-shadow: var(--shadow-sm);
+}
+
+.readiness-run-console.running {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 68%, var(--panel));
+}
+
+.readiness-run-console.complete {
+  border-color: color-mix(in srgb, var(--green) 38%, var(--line));
+  background: color-mix(in srgb, var(--green-soft) 58%, var(--panel));
+}
+
+.readiness-run-console.failed {
+  border-color: color-mix(in srgb, var(--red) 42%, var(--line));
+  background: color-mix(in srgb, var(--red-soft) 58%, var(--panel));
+}
+
+.readiness-run-console-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.readiness-run-console-head div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.readiness-run-console-head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.readiness-run-console-head strong {
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.readiness-run-console-head p {
+  max-width: 880px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.readiness-run-stage-preview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.readiness-run-stage-preview li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  color: var(--muted);
+  padding: 9px;
+}
+
+.readiness-run-stage-preview li > span {
+  width: 9px;
+  height: 9px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 36%, var(--line));
+  box-shadow: none;
+}
+
+.readiness-run-stage-preview strong {
+  min-width: 0;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.readiness-run-stage-preview li.running {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 66%, var(--panel));
+  color: var(--accent);
+}
+
+.readiness-run-stage-preview li.running > span {
+  background: var(--accent);
+  box-shadow: none;
+  animation: pulse 1100ms var(--ease) infinite;
+}
+
+.readiness-run-stage-preview li.complete,
+.readiness-run-stage-preview li.done {
+  border-color: color-mix(in srgb, var(--green) 30%, var(--line));
+  background: color-mix(in srgb, var(--green-soft) 70%, var(--panel));
+  color: var(--green);
+}
+
+.readiness-run-stage-preview li.complete > span,
+.readiness-run-stage-preview li.done > span {
+  background: var(--green);
+  box-shadow: none;
+}
+
+.readiness-run-stage-preview li.failed {
+  border-color: color-mix(in srgb, var(--red) 34%, var(--line));
+  background: color-mix(in srgb, var(--red-soft) 72%, var(--panel));
+  color: var(--red);
+}
+
+.readiness-run-stage-preview li.failed > span {
+  background: var(--red);
+  box-shadow: none;
+}

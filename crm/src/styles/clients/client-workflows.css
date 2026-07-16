@@ -1,0 +1,336 @@
+/* Client workflows */
+.client-tab-panel {
+  min-width: 0;
+}
+
+.client-run-monitor {
+  display: grid;
+  gap: 12px;
+  align-items: start;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--line));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--panel));
+  color: var(--ink);
+  padding: 12px 14px;
+  box-shadow: var(--shadow-sm);
+}
+
+.client-run-monitor.running {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 62%, var(--panel));
+  box-shadow: var(--shadow);
+}
+
+.client-run-monitor.complete {
+  border-color: color-mix(in srgb, var(--green) 36%, var(--line));
+  background: color-mix(in srgb, var(--green-soft) 54%, var(--panel));
+}
+
+.client-run-monitor.failed {
+  border-color: color-mix(in srgb, var(--red) 42%, var(--line));
+  background: color-mix(in srgb, var(--red-soft) 58%, var(--panel));
+}
+
+.operation-monitor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.operation-monitor-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.operation-monitor-title svg {
+  color: var(--accent);
+  margin-top: 1px;
+  flex: 0 0 auto;
+}
+
+.client-run-monitor.complete .operation-monitor-title svg {
+  color: var(--green);
+}
+
+.client-run-monitor.failed .operation-monitor-title svg {
+  color: var(--red);
+}
+
+.operation-monitor-title div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.operation-monitor-title strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.operation-monitor-title span,
+.operation-monitor-meta,
+.operation-timeline li span,
+.operation-log {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.operation-monitor-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.operation-monitor-meta span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+  padding: 2px 7px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+.operation-monitor-body {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.operation-progress {
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+}
+
+.operation-progress span {
+  position: relative;
+  display: block;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 260ms var(--ease);
+}
+
+.client-run-monitor.running .operation-progress span::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 42%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+  animation: progressSweep 1100ms linear infinite;
+}
+
+.client-run-monitor.complete .operation-progress span {
+  background: var(--green);
+}
+
+.client-run-monitor.failed .operation-progress span {
+  background: var(--red);
+}
+
+.operation-timeline {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.operation-timeline li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  padding: 9px;
+}
+
+.operation-stage-marker {
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 36%, var(--line));
+  box-shadow: none;
+}
+
+.operation-timeline li div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.operation-timeline li strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.operation-timeline li.done,
+.operation-timeline li.complete {
+  border-color: color-mix(in srgb, var(--green) 28%, var(--line));
+  background: color-mix(in srgb, var(--green-soft) 74%, var(--panel));
+}
+
+.operation-timeline li.done .operation-stage-marker,
+.operation-timeline li.complete .operation-stage-marker {
+  background: var(--green);
+  box-shadow: none;
+}
+
+.operation-timeline li.running {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 72%, var(--panel));
+}
+
+.operation-timeline li.running .operation-stage-marker {
+  background: var(--accent);
+  box-shadow: none;
+  animation: pulse 1100ms var(--ease) infinite;
+}
+
+.operation-timeline li.failed {
+  border-color: color-mix(in srgb, var(--red) 34%, var(--line));
+  background: color-mix(in srgb, var(--red-soft) 76%, var(--panel));
+}
+
+.operation-timeline li.failed .operation-stage-marker {
+  background: var(--red);
+  box-shadow: none;
+}
+
+.operation-timeline li.skipped {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--soft) 82%, var(--panel));
+}
+
+.operation-timeline li.skipped .operation-stage-marker {
+  background: color-mix(in srgb, var(--muted) 46%, var(--line));
+}
+
+.operation-log {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  padding: 8px 10px;
+}
+
+.operation-log summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.operation-log ul {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding-left: 16px;
+}
+
+.operation-monitor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 700px) {
+  .operation-monitor-head {
+    display: grid;
+  }
+
+  .operation-monitor-meta {
+    justify-content: flex-start;
+  }
+}
+
+.prompt-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.38fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.prompt-editor-form,
+.prompt-side,
+.prompt-version-list,
+.prompt-safety-list {
+  display: grid;
+  gap: 14px;
+}
+
+.prompt-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.prompt-status-grid div {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  background: var(--soft);
+}
+
+.prompt-status-grid span,
+.prompt-version-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.prompt-status-grid strong {
+  display: block;
+  margin-top: 4px;
+}
+
+.prompt-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.prompt-safety-line {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.prompt-safety-line svg {
+  color: var(--green);
+}
+
+.prompt-version-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--soft);
+}
+
+.prompt-version-row p {
+  margin: 6px 0;
+  color: var(--muted);
+  font-size: 13px;
+}

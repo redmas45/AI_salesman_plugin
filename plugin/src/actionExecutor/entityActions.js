@@ -1,5 +1,5 @@
-import { ACTIONS, ACTION_PARAMS, DEFAULT_ENTITY_RECOMMENDATION_TITLE } from "../constants";
-import { entityIdsFromParams, openEntityDetail, showEntityOverlay, sortEntityOverlay } from "../entityOverlay";
+import { ACTIONS, ACTION_PARAMS, DEFAULT_ENTITY_RECOMMENDATION_TITLE } from "../core/constants";
+import { entityIdsFromParams, openEntityDetail, showEntityOverlay, sortEntityOverlay } from "../overlays/entityOverlay";
 
 export function canExecuteEntityAction(action) {
   return (

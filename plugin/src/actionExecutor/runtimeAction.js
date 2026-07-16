@@ -1,5 +1,5 @@
-import { executeWithAIHubAdapterResult, hasAIHubAdapter } from "../adapterBridge";
-import { ACTIONS } from "../constants";
+import { executeWithAIHubAdapterResult, hasAIHubAdapter } from "../core/adapterBridge";
+import { ACTIONS } from "../core/constants";
 
 export const STOP_ACTION_FALLBACK = "stop_action_fallback";
 const PRODUCT_OVERLAY_ACTIONS = new Set([

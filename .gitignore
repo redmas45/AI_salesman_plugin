@@ -26,6 +26,7 @@ db/product_ids.json
 node_modules/
 .node/
 crm/dist/
+client-panel/dist/
 .deploy-backups/
 .pytest_cache/
 .coverage

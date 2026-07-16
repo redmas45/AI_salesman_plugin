@@ -1,15 +1,17 @@
 const esbuild = require("esbuild");
+const path = require("path");
 
 const BROWSER_BUNDLE_TARGET = ["es2020"];
 const IIFE_FORMAT = "iife";
+const PLUGIN_ROOT = __dirname;
 
 const bundles = [
   {
-    entryPoints: ["src/index.js"],
+    entryPoints: ["./src/index.js"],
     outfile: "mayabot.js",
   },
   {
-    entryPoints: ["src/adapter/index.js"],
+    entryPoints: ["./src/adapter/index.js"],
     outfile: "mayabot-adapter.js",
   },
 ];
@@ -21,6 +23,8 @@ async function buildBundle(bundle) {
     minify: true,
     format: IIFE_FORMAT,
     target: BROWSER_BUNDLE_TARGET,
+    absWorkingDir: PLUGIN_ROOT,
+    outfile: path.join(PLUGIN_ROOT, bundle.outfile),
   });
 }
 

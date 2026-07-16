@@ -11,10 +11,10 @@ API_MAIN_SOURCE = Path("api/main.py")
 ECOMMERCE_ROUTE_SOURCE = Path("api/routes/ecommerce.py")
 API_CLIENTS_SOURCE = Path("api/routes/clients.py")
 ECOMMERCE_PROMPT_SOURCE = Path("agent/prompt.py")
-RUNTIME_CAPABILITY_SOURCE = Path("plugin/src/adapter/runtimeCapabilities.js")
-DISCOVERY_ADAPTER_SOURCE = Path("plugin/src/adapter/discovery.js")
+RUNTIME_CAPABILITY_SOURCE = Path("plugin/src/adapter/discovery/runtimeCapabilities.js")
+DISCOVERY_ADAPTER_SOURCE = Path("plugin/src/adapter/discovery/discovery.js")
 DOCKER_ENTRYPOINT_SOURCE = Path("docker/entrypoint.sh")
-ADMIN_SCHEMA_SOURCE = Path("db/schema.py")
+ADMIN_SCHEMA_SOURCE = Path("db/core/schema.py")
 LEGACY_WIDGET_TOKENS = (
     "window.ShopCart",
     "window.MayaBotConfig",
@@ -38,7 +38,7 @@ def test_widget_source_has_no_legacy_demo_globals() -> None:
 
 
 def test_product_resolver_does_not_assume_ai_kart_routes() -> None:
-    source = Path("plugin/src/productResolver.js").read_text(encoding="utf-8")
+    source = Path("plugin/src/catalog/productResolver.js").read_text(encoding="utf-8")
 
     assert "AI_KART" not in source
     assert "routePrefixFor" not in source

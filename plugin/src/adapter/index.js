@@ -1,3 +1,3 @@
-import { installRuntime } from "./runtime";
+import { installRuntime } from "./runtime/runtime";
 
 installRuntime();

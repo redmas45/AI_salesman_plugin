@@ -1,0 +1,192 @@
+/* Dashboard provider usage */
+.provider-usage-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.provider-usage-head,
+.provider-usage-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.provider-usage-head h3 {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.provider-usage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  gap: 10px;
+}
+
+.provider-usage-metric {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--soft) 48%, var(--panel));
+  color: var(--ink);
+  text-align: left;
+}
+
+.provider-usage-metric.interactive {
+  cursor: pointer;
+}
+
+.provider-usage-metric.interactive:hover,
+.provider-usage-metric.interactive:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 38%, var(--panel));
+  outline: none;
+}
+
+.provider-usage-metric span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.provider-usage-metric strong {
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.provider-usage-state {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.provider-usage-state.ok {
+  border-color: color-mix(in srgb, var(--green) 28%, var(--line));
+}
+
+.provider-usage-state.warn {
+  border-color: color-mix(in srgb, var(--amber) 34%, var(--line));
+}
+
+.provider-usage-state.bad {
+  border-color: color-mix(in srgb, var(--red) 38%, var(--line));
+}
+
+.provider-usage-state.ok svg {
+  color: var(--green);
+}
+
+.provider-usage-state.warn svg {
+  color: var(--amber);
+}
+
+.provider-usage-state.bad svg {
+  color: var(--red);
+}
+
+.provider-usage-state strong,
+.provider-usage-state span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.provider-usage-state strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.provider-usage-state span,
+.provider-usage-footer {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.provider-usage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.provider-usage-footer button,
+.provider-usage-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.provider-usage-footer button:hover,
+.provider-usage-footer button:focus-visible,
+.provider-usage-actions button:hover,
+.provider-usage-actions button:focus-visible {
+  color: var(--ink);
+  outline: none;
+}
+
+.provider-usage-footer button:disabled,
+.provider-usage-actions button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.provider-usage-details {
+  border-color: var(--line);
+  background: color-mix(in srgb, var(--soft) 46%, var(--panel));
+}
+
+.provider-data-source {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.provider-data-source div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.provider-data-source strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.provider-data-source span,
+.provider-data-source code {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.provider-data-source code {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  padding: 9px;
+}

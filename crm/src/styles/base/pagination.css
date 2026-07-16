@@ -1,0 +1,44 @@
+/* Shared pagination positioning */
+.pagination-control {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--text-caption);
+}
+
+.pagination-summary {
+  min-width: 0;
+}
+
+.pagination-page {
+  color: var(--ink);
+  font-weight: var(--weight-medium);
+}
+
+.pagination-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.pagination-actions .btn-icon {
+  width: 32px;
+  min-height: 32px;
+}
+
+@media (max-width: 600px) {
+  .pagination-control {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .pagination-page {
+    display: none;
+  }
+}

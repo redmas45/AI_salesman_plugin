@@ -66,6 +66,30 @@ def test_ecommerce_buy_ambiguous_item_asks_one_clarification(monkeypatch) -> Non
     assert "Which one" in result["response_text"]
 
 
+def test_ecommerce_delegated_choice_adds_best_of_referenced_pair(monkeypatch) -> None:
+    monkeypatch.setattr(capabilities, "get_allowed_actions", lambda site_id: {"ADD_TO_CART"})
+    monkeypatch.setattr(
+        "agent.flow_planner.get_client_detail",
+        lambda site_id: _client_with_actions({"ADD_TO_CART": {"type": "click", "label": "Add to cart"}}),
+    )
+
+    result = plan_universal_flow(
+        site_id="shop_demo",
+        transcript="Choose the better of those two and add it to my cart.",
+        retrieved_items=[
+            {"id": "p1", "name": "First Stay", "rating": 4.2, "review_count": 80, "stock": 5, "price": 500},
+            {"id": "p2", "name": "Better Stay", "rating": 4.8, "review_count": 30, "stock": 3, "price": 650},
+            {"id": "p3", "name": "Unrelated Result", "rating": 5.0, "review_count": 500, "stock": 9, "price": 100},
+        ],
+        ecommerce_runtime=True,
+    )
+
+    assert result is not None
+    assert result["ui_actions"] == [
+        {"action": "ADD_TO_CART", "params": {"product_id": "p2"}}
+    ]
+
+
 def test_ecommerce_buy_recommendation_stays_in_product_discovery(monkeypatch) -> None:
     monkeypatch.setattr(capabilities, "get_allowed_actions", lambda site_id: {"ADD_TO_CART"})
     monkeypatch.setattr(

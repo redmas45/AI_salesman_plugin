@@ -17,13 +17,16 @@ RUN corepack pnpm --filter ai-hub-crm build
 
 FROM node:22-alpine AS client-panel-build
 
-WORKDIR /client-panel
+WORKDIR /workspace
 
-COPY --from=client_panel_context package*.json ./
-RUN npm install
+RUN corepack enable
 
-COPY --from=client_panel_context . ./
-RUN npm run build
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY client-panel/package.json client-panel/package.json
+RUN corepack pnpm install --filter client-panel --frozen-lockfile
+
+COPY client-panel client-panel
+RUN corepack pnpm --filter client-panel build
 
 
 FROM python:3.12-slim
@@ -31,7 +34,7 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
-ENV CLIENT_PANEL_SOURCE_DIR=/app/client_panel
+ENV CLIENT_PANEL_SOURCE_DIR=/app/client-panel
 
 WORKDIR /app
 
@@ -54,7 +57,7 @@ RUN pip install -r requirements.txt
 
 COPY . .
 COPY --from=crm-build /workspace/crm/dist /app/crm/dist
-COPY --from=client-panel-build /client-panel/dist /app/client_panel/dist
+COPY --from=client-panel-build /workspace/client-panel/dist /app/client-panel/dist
 RUN chmod +x /app/docker/entrypoint.sh
 
 EXPOSE 8585

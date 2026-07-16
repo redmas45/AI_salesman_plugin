@@ -1,0 +1,170 @@
+/* Client cards, available groups, and empty states */
+.client-card-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+
+.client-card-actions .btn {
+  width: 100%;
+  min-width: 0;
+}
+
+.client-card-available {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--panel) 86%, var(--soft));
+}
+
+.available-client-groups,
+.available-client-group {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.available-client-group {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 14px;
+  box-shadow: var(--shadow-sm);
+}
+
+.available-client-group-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.available-client-group-head h4 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.available-client-group-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.client-empty-card.subtle {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--soft);
+}
+
+.badge-button {
+  cursor: pointer;
+  font: inherit;
+}
+
+.badge-button:hover,
+.badge-button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  outline: none;
+}
+
+.runtime-online {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.runtime-offline {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.runtime-unknown {
+  color: var(--muted);
+  background: var(--soft);
+}
+
+.client-table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.client-table-name {
+  display: -webkit-box;
+  max-width: 340px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.breakable-code {
+  display: inline-block;
+  max-width: 240px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.clickable-row {
+  cursor: pointer;
+}
+
+.clickable-row:hover td {
+  background: var(--soft);
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  padding: 56px 32px;
+  color: var(--muted);
+}
+
+.empty-icon-wrap {
+  display: grid;
+  width: 72px;
+  height: 72px;
+  place-items: center;
+  margin-bottom: 4px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--soft);
+  color: var(--accent);
+}
+
+.empty-state h3 {
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0;
+}
+
+.empty-state p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 320px;
+}
+
+.empty-icon {
+  opacity: 0.25;
+}
+
+.tab-content {
+  display: grid;
+  gap: 14px;
+  padding-bottom: 32px;
+}

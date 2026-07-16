@@ -1,0 +1,202 @@
+/* Client list cards */
+.client-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.client-card {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 16px;
+  background: var(--panel);
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  text-align: left;
+  animation: fadeIn 200ms var(--ease) both;
+  transition:
+    border-color var(--duration) var(--ease),
+    box-shadow var(--duration) var(--ease),
+    transform var(--duration) var(--ease);
+}
+
+.client-card-hit-target {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.client-card > :not(.client-card-hit-target) {
+  position: relative;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.client-card :is(a, button, input, select, textarea, summary, [role="button"]) {
+  pointer-events: auto;
+}
+
+.client-card:hover,
+.client-card:has(.client-card-hit-target:focus-visible) {
+  border-color: var(--accent);
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
+}
+
+.client-card:has(.client-card-hit-target:focus-visible) {
+  border-color: var(--accent);
+  box-shadow: var(--shadow);
+  outline: none;
+}
+
+.client-card-hit-target:focus-visible {
+  outline: none;
+}
+
+.client-link-button,
+.client-card-name-button {
+  min-width: 0;
+  max-width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.client-link-button:hover,
+.client-card-name-button:hover,
+.client-link-button:focus-visible,
+.client-card-name-button:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  outline: none;
+}
+
+.client-card-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.client-card-head > .min-w-0 {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.client-card-head .status-pill {
+  flex: 0 0 auto;
+  max-width: 100%;
+}
+
+.client-card-id {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.client-card-url {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.client-card-url:hover,
+.client-card-url:focus-visible,
+.client-table-url:hover,
+.client-table-url:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  outline: none;
+}
+
+.client-table-url {
+  display: block;
+  max-width: min(38vw, 420px);
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.client-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.client-card-chips .badge,
+.client-card-chips .status-pill {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.client-card-title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.client-card-title strong {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.client-card-name-button {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.client-card-title span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.client-card-state-line {
+  display: block;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}

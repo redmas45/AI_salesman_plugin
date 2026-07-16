@@ -2,11 +2,15 @@ import sys
 import json
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from db.database import get_db, init_tenant_schema
 from db.knowledge import knowledge_preview, knowledge_stats, sync_products_to_knowledge
 from agent.retrieval.generic_rag import _knowledge_item_to_text, _rank_lexical_items, vectorize_missing_knowledge
+
+pytestmark = pytest.mark.integration
 
 
 def test_products_sync_into_knowledge_items():

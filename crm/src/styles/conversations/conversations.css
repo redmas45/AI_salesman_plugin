@@ -1,0 +1,247 @@
+/* Conversations */
+.convo-toolbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.convo-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: border-color var(--duration) var(--ease);
+}
+
+.convo-card.needs-review {
+  border-color: color-mix(in srgb, var(--amber) 34%, var(--line));
+}
+
+.convo-card:hover {
+  border-color: var(--accent);
+}
+
+.convo-card:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+}
+
+.convo-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  width: 100%;
+  border: 0;
+  background: color-mix(in srgb, var(--panel) 82%, var(--soft));
+  color: var(--ink);
+  padding: 14px 16px;
+  cursor: pointer;
+  gap: 12px;
+}
+
+.convo-header:hover {
+  background: var(--soft);
+}
+
+.convo-header:focus-visible {
+  background: var(--soft);
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+
+.convo-header-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  text-align: left;
+}
+
+.convo-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.convo-title-row strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.convo-title-row code {
+  max-width: min(48vw, 360px);
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.convo-header-copy > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.convo-expand-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  background: var(--soft);
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  transition:
+    background var(--duration) var(--ease),
+    color var(--duration) var(--ease),
+    transform var(--duration) var(--ease);
+}
+
+.convo-expand-btn.open {
+  transform: rotate(180deg);
+  color: var(--accent);
+}
+
+.convo-header:hover .convo-expand-btn {
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.convo-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--soft) 72%, var(--panel));
+  padding: 10px 16px;
+}
+
+.convo-card-actions > span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.convo-card-actions strong {
+  color: var(--ink);
+}
+
+.convo-turns {
+  border-top: 1px solid var(--line);
+  padding: 12px 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.turn-user,
+.turn-ai {
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.turn-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.turn-user .turn-avatar {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.turn-ai .turn-avatar {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.turn-body p {
+  margin: 0;
+}
+
+.turn-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.turn-action-evidence {
+  display: grid;
+  gap: 8px;
+  margin-left: 42px;
+}
+
+.turn-action-event {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 9px 10px;
+}
+
+.turn-action-event.ok {
+  border-color: color-mix(in srgb, var(--green) 30%, var(--line));
+}
+
+.turn-action-event.warn {
+  border-color: color-mix(in srgb, var(--amber) 34%, var(--line));
+}
+
+.turn-action-event.bad {
+  border-color: color-mix(in srgb, var(--red) 34%, var(--line));
+}
+
+.turn-action-event-head,
+.turn-action-event-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.turn-action-event-head strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.turn-action-event-head > span:not(.badge) {
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.turn-action-event-meta,
+.turn-action-event small {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.turn-action-event code {
+  max-width: min(52vw, 360px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

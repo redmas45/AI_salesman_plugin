@@ -1,0 +1,169 @@
+.login-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 100dvh;
+  background: var(--page);
+  color: var(--ink);
+}
+
+.login-hero {
+  display: grid;
+  align-content: center;
+  gap: 18px;
+  background: var(--panel);
+  color: var(--panel);
+  padding: 64px;
+}
+
+.login-hero .eyebrow,
+.login-hero p {
+  color: rgba(255, 255, 255, 0.76);
+}
+
+.login-hero h1 {
+  max-width: 640px;
+  margin: 0;
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.login-hero p {
+  max-width: 430px;
+  margin: 0;
+  line-height: 1.7;
+}
+
+.login-card {
+  align-self: center;
+  display: grid;
+  width: min(100%, 420px);
+  min-width: 0;
+  gap: 16px;
+  justify-self: center;
+  margin: 18px;
+  padding: 24px;
+}
+
+.login-card label,
+.login-card input {
+  width: 100%;
+  max-width: 100%;
+}
+
+.login-card h2 {
+  margin: 6px 0 0;
+  font-size: 20px;
+  min-width: 0;
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+.login-card .site-hint-title {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: keep-all;
+}
+
+.loading-panel {
+  min-height: 160px;
+}
+
+@media (max-width: 1120px) {
+  .metric-grid,
+  .rank-grid,
+  .rank-grid.two,
+  .overview-grid,
+  .overview-grid.compact,
+  .dashboard-layout.wide-left,
+  .catalog-workspace,
+  .policy-layout {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 980px) {
+  .login-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .login-hero {
+    min-height: 280px;
+  }
+}
+
+@media (max-width: 760px) {
+  .client-header,
+  .header-actions,
+  .section-intro {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .client-header {
+    padding: 14px 18px;
+  }
+
+  .client-shell {
+    padding: 18px 16px 34px;
+  }
+
+  .header-actions,
+  .header-actions select,
+  .header-actions button {
+    width: 100%;
+  }
+
+  .client-summary-bar,
+  .metric-grid,
+  .rank-grid,
+  .rank-grid.two,
+  .overview-grid,
+  .overview-grid.compact,
+  .dashboard-layout.wide-left,
+  .catalog-workspace,
+  .policy-layout,
+  .signal-grid,
+  .login-shell,
+  .policy-form.compact {
+    grid-template-columns: 1fr;
+  }
+
+  .summary-strip {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .client-summary-bar .client-summary-link {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+
+  .client-summary-bar h1 {
+    font-size: 22px;
+  }
+
+  .login-hero {
+    min-height: 340px;
+    padding: 34px 24px;
+  }
+
+  .login-hero h1 {
+    font-size: 26px;
+  }
+
+  .key-line {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+}
+

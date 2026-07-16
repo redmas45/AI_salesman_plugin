@@ -1,4 +1,4 @@
-import { ACTIONS, ACTION_PARAMS } from "../constants";
+import { ACTIONS, ACTION_PARAMS } from "../core/constants";
 
 export function canExecuteNavigationAction(action) {
   return action.action === ACTIONS.NAVIGATE_TO && Boolean(pageToPath(action.parameters?.[ACTION_PARAMS.PAGE]));

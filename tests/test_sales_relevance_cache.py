@@ -12,9 +12,18 @@ from agent.relevance import (
     answer_scope_for,
     bounded_unsupported_response,
     is_safe_cache_response,
+    is_clearly_unrelated,
     should_bypass_answer_cache,
 )
 from agent.tenant_isolation import build_tenant_isolation_audit
+from agent.runtime_helpers.retrieval_runtime import products_within_price_constraints
+from agent.runtime_helpers.retrieval_runtime import (
+    explicit_product_terms,
+    is_referential_product_followup,
+    products_for_explicit_request,
+)
+from agent.responses.inventory_responses import extract_inventory_type_query
+from agent.retrieval.product_rag import extract_price_constraints
 from api.main import app
 
 
@@ -26,6 +35,85 @@ def test_relevance_bounds_deep_offsite_question_without_source_support() -> None
 
     assert "not in the site data" in response
     assert answer_scope_for("processor architecture details", []) == SCOPE_UNSUPPORTED
+
+
+def test_relevance_bounds_deep_beauty_science_without_source_support() -> None:
+    query = "Explain the molecular chemistry and receptor pathways of every ingredient in depth."
+
+    assert bounded_unsupported_response(query, [{"name": "Moisturiser", "description": "Daily skincare"}])
+    assert answer_scope_for(query, [{"name": "Moisturiser", "description": "Daily skincare"}]) == SCOPE_UNSUPPORTED
+
+
+def test_relevance_bounds_clear_general_trivia_and_redirects_to_site() -> None:
+    response = bounded_unsupported_response("Who is the prime minister of India?", [])
+
+    assert is_clearly_unrelated("Who is the prime minister of India?")
+    assert "this website's products, services, and buying journey" in response
+    assert answer_scope_for("Who is the prime minister of India?", []) == SCOPE_UNSUPPORTED
+
+
+def test_relevance_bounds_temporal_weather_question() -> None:
+    query = "What will Delhi weather be tomorrow?"
+
+    assert is_clearly_unrelated(query)
+    assert answer_scope_for(query, [{"id": "product-1", "name": "Moisturiser"}]) == SCOPE_UNSUPPORTED
+
+
+def test_relevance_keeps_buying_level_chip_comparison_in_scope() -> None:
+    query = "Which is better for a phone buyer, Apple Bionic or Samsung Snapdragon?"
+
+    assert not is_clearly_unrelated(query)
+    assert bounded_unsupported_response(query, []) == ""
+
+
+def test_invalid_llm_unsupported_scope_is_reclassified_for_buying_question() -> None:
+    query = "Which is better for a phone buyer, Apple Bionic or Samsung Snapdragon?"
+
+    assert answer_scope_for(
+        query,
+        [{"id": "phone-1", "name": "iPhone"}],
+        llm_scope="unsupported_or_offsite",
+    ) == "grounded_fact"
+
+
+def test_supplemental_products_still_obey_price_constraint() -> None:
+    products = [
+        {"id": "1", "price": 59900},
+        {"id": "2", "price": 109900},
+    ]
+
+    assert products_within_price_constraints(products, {"max_price": 90000}) == [
+        {"id": "1", "price": 59900}
+    ]
+
+
+def test_price_constraint_accepts_inr_currency_marker() -> None:
+    assert extract_price_constraints("Show phones below INR 20,000") == {"max_price": 20_000.0}
+
+
+def test_explicit_product_request_removes_semantically_unrelated_results() -> None:
+    products = [
+        {"id": "chair", "name": "Office Chair", "category_name": "Furniture"},
+        {"id": "shoe", "name": "Formal Shoe", "category_name": "Footwear"},
+    ]
+
+    assert explicit_product_terms("Show office chairs under INR 20,000 from the catalog") == ("chair",)
+    assert products_for_explicit_request(products, "Show office chairs under INR 20,000") == [products[0]]
+    assert products_for_explicit_request(products[1:], "Show office chairs under INR 20,000") == []
+
+
+def test_explicit_product_terms_uses_meaningful_fallback_phrase() -> None:
+    assert explicit_product_terms(
+        "Now return to chairs and show options below INR 15,000."
+    ) == ("chair",)
+
+
+def test_that_item_action_is_treated_as_referential_followup() -> None:
+    assert is_referential_product_followup("add that book to my cart")
+
+
+def test_referential_stock_question_is_not_inventory_count_query() -> None:
+    assert extract_inventory_type_query("Which of the compared two is better rated and still in stock?") is None
 
 
 def test_relevance_allows_deep_detail_when_retrieved_source_contains_it() -> None:
@@ -95,7 +183,7 @@ def test_orchestrator_cache_hit_skips_retrieval_and_llm(monkeypatch) -> None:
     monkeypatch.setattr(
         orchestrator,
         "lookup_answer_cache",
-        lambda site_id, question: {
+        lambda site_id, question, session_id: {
             "answer_text": "The website says this plan includes cashless hospitalization.",
             "answer_scope": SCOPE_GROUNDED_FACT,
             "confidence": 0.95,
@@ -126,6 +214,7 @@ def test_orchestrator_cache_hit_skips_retrieval_and_llm(monkeypatch) -> None:
         skip_tts=True,
         conversation_history=[],
         page_context={},
+        session_id="buyer-session-1",
     )
 
     assert result["intent"] == "discovery"
@@ -155,9 +244,11 @@ def test_orchestrator_stores_safe_source_answer(monkeypatch) -> None:
         },
         [{"id": "plan:1", "url": "https://example.com/plan"}],
         evidence,
+        session_id="buyer-session-2",
     )
 
     assert captured["site_id"] == "policy_site"
+    assert captured["session_id"] == "buyer-session-2"
     assert captured["source_ids"] == ["plan:1"]
     assert captured["source_urls"] == ["https://example.com/plan"]
     assert evidence["cache_write"] == "stored"

@@ -1,7 +1,7 @@
-import { ACTIONS, ACTION_PARAMS, DEFAULT_RECOMMENDATION_TITLE } from "../constants";
-import { executeWithAIHubAdapterResult } from "../adapterBridge";
-import { showProductOverlay, sortProductOverlay } from "../productOverlay";
-import { resolveProductDetailUrl } from "../productResolver";
+import { ACTIONS, ACTION_PARAMS, DEFAULT_RECOMMENDATION_TITLE } from "../core/constants";
+import { executeWithAIHubAdapterResult } from "../core/adapterBridge";
+import { showProductOverlay, sortProductOverlay } from "../overlays/productOverlay";
+import { resolveProductDetailUrl } from "../catalog/productResolver";
 
 export function canExecuteProductAction(action) {
   return (

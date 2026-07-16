@@ -7,6 +7,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from agent.rag import retrieve
 from db.database import init_tenant_schema
 from db.seed import seed

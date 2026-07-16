@@ -1,0 +1,12 @@
+﻿@import "tailwindcss";
+@import "./styles/foundation.css";
+@import "./styles/shell.css";
+@import "./styles/panels.css";
+@import "./styles/auth.css";
+@import "./styles/primitives.css";
+@import "./styles/workspace.css";
+@import "./styles/analytics.css";
+@import "./styles/interactions.css";
+@import "./styles/insights.css";
+@import "./styles/auth-layout.css";
+@import "./styles/typography.css";

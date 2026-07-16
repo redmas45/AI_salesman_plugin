@@ -1,0 +1,98 @@
+.login-shell {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 100dvh;
+  place-items: center;
+  padding: 24px 16px;
+  background: var(--page);
+}
+
+.login-theme-toggle {
+  position: absolute;
+  z-index: 2;
+  top: 20px;
+  right: 20px;
+}
+
+.login-surface {
+  display: grid;
+  width: min(100%, 420px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+
+.login-hero {
+  display: flex;
+  min-height: 0;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 22px 22px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+}
+
+.login-hero::before,
+.login-hero::after {
+  content: none;
+}
+
+.login-hero .brand-mark {
+  flex: 0 0 auto;
+  background: var(--brand);
+}
+
+.login-hero h1 {
+  max-width: none;
+  margin: 5px 0 7px;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.login-hero p {
+  max-width: none;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.login-card {
+  width: 100%;
+  margin: 0;
+  padding: 22px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.login-card h2 {
+  font-size: 21px;
+}
+
+.login-card .muted {
+  margin: 0;
+  line-height: 1.5;
+}
+
+@media (max-width: 520px) {
+  .login-shell {
+    align-items: start;
+    padding: 16px 12px;
+  }
+
+  .login-theme-toggle {
+    top: 12px;
+    right: 12px;
+  }
+
+  .login-hero,
+  .login-card {
+    padding: 20px;
+  }
+}

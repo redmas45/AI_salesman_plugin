@@ -1,0 +1,356 @@
+/* Client readiness */
+.readiness-snapshot,
+.action-board {
+  display: grid;
+  gap: 14px;
+}
+
+.readiness-snapshot strong,
+.readiness-snapshot small {
+  display: block;
+}
+
+.readiness-snapshot strong {
+  margin-top: 4px;
+  font-size: 22px;
+}
+
+.readiness-snapshot small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.action-tile {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  color: var(--ink);
+  padding: 12px;
+  text-align: left;
+}
+
+button.action-tile {
+  cursor: pointer;
+}
+
+button.action-tile:hover,
+button.action-tile:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 36%, var(--panel));
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+button.action-tile:disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
+  transform: none;
+}
+
+.action-tile svg {
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.action-tile p {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 3px 0 0;
+}
+
+.action-tile span {
+  display: inline-flex;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 8px;
+}
+
+.client-workspace-map {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.client-workspace-card {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 104px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 82%, var(--soft));
+  color: var(--ink);
+  cursor: pointer;
+  padding: 11px;
+  text-align: left;
+}
+
+.client-workspace-card:hover,
+.client-workspace-card:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 34%, var(--panel));
+  box-shadow: var(--shadow-sm);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.client-workspace-card.ok {
+  border-color: color-mix(in srgb, var(--green) 26%, var(--line));
+}
+
+.client-workspace-card.warn {
+  border-color: color-mix(in srgb, var(--amber) 30%, var(--line));
+}
+
+.client-workspace-card svg {
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.client-workspace-card span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.client-workspace-card strong,
+.client-workspace-card small,
+.client-workspace-card em {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.client-workspace-card strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.client-workspace-card small {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.client-workspace-card em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.empty-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.readiness-summary-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.45fr) minmax(260px, 0.75fr) minmax(280px, 0.8fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.readiness-score-card {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.readiness-score-card p {
+  margin: 4px 0 0;
+  line-height: 1.45;
+}
+
+.readiness-next-step {
+  display: grid;
+  gap: 8px;
+}
+
+.readiness-next-step strong,
+.readiness-next-step p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.readiness-next-step p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.readiness-filter {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.readiness-filter button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 0 10px;
+}
+
+.readiness-filter button:hover,
+.readiness-filter button:focus-visible,
+.readiness-filter button.active {
+  border-color: var(--line);
+  background: var(--soft);
+  color: var(--ink);
+  outline: none;
+}
+
+.capability-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.capability-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 14px;
+}
+
+.capability-card-ok {
+  border-color: color-mix(in srgb, var(--green) 36%, var(--line));
+}
+
+.capability-card-warn {
+  border-color: color-mix(in srgb, var(--amber) 36%, var(--line));
+}
+
+.capability-card-bad {
+  border-color: color-mix(in srgb, var(--red) 36%, var(--line));
+}
+
+.capability-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.capability-card h3 {
+  font-size: 15px;
+  font-weight: 500;
+  margin: 0;
+}
+
+.capability-card p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.capability-card-action {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.capability-card-action-button {
+  width: 100%;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.capability-card-action-button:not(:disabled):hover strong {
+  color: var(--accent);
+}
+
+.capability-card-action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.capability-card-action small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.capability-card-action strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.action-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.action-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 0 11px;
+}
+
+.automation-summary {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 14px;
+}
+
+.automation-stage-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.automation-stage {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.automation-stage strong {
+  font-size: 13px;
+}
+
+.automation-stage span:last-child {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}

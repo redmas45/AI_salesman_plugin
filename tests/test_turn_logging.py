@@ -1,10 +1,13 @@
+import logging
 import re
 
-from db import analytics_math
+from db.analytics import metrics as analytics_math
 from api.turn_logging import print_turn_summary, turn_timer
+from agent.orchestration import orchestrator_logging
 
 
-def test_turn_summary_prints_conversation_transport_and_timing(capsys):
+def test_turn_summary_prints_conversation_transport_and_timing(capsys, monkeypatch):
+    monkeypatch.setattr("api.runtime.turn_logging.config.LOG_CONVERSATION_CONTENT", True)
     started_at = turn_timer()
 
     print_turn_summary(
@@ -28,6 +31,36 @@ def test_turn_summary_prints_conversation_transport_and_timing(capsys):
     assert "stt=100ms llm=800ms tts=300ms" in output
     assert re.search(r"time_taken: \d+ms", output)
     assert re.search(r"elapsed=\d+ms", output)
+
+
+def test_turn_summary_hides_conversation_content_by_default(capsys, monkeypatch):
+    monkeypatch.setattr("api.runtime.turn_logging.config.LOG_CONVERSATION_CONTENT", False)
+
+    print_turn_summary(
+        transport="legacy-http",
+        site_id="policy_site",
+        started_at=turn_timer(),
+        transcript="My phone is 9999999999",
+        response_text="I saved your phone number.",
+    )
+
+    output = capsys.readouterr().out
+    assert "content_logging: disabled" in output
+    assert "9999999999" not in output
+    assert "saved your phone" not in output
+
+
+def test_orchestrator_content_log_respects_disabled_setting(capsys, monkeypatch):
+    monkeypatch.setattr(orchestrator_logging.config, "LOG_CONVERSATION_CONTENT", False)
+
+    orchestrator_logging.ai_log(
+        logging.getLogger("test"),
+        orchestrator_logging.safe_print,
+        "user",
+        "My phone is 9999999999",
+    )
+
+    assert capsys.readouterr().out == ""
 
 
 def test_conversation_log_includes_matching_action_events(monkeypatch):

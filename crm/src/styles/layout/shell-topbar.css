@@ -1,0 +1,186 @@
+/* CRM topbar and disclosure */
+.crm-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 18px;
+  height: 54px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  flex-shrink: 0;
+}
+
+.crm-topbar-title {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  max-width: min(58vw, 820px);
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.topbar-crumb-muted {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.topbar-crumb-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  padding: 0 8px;
+  font: inherit;
+}
+
+.topbar-crumb-button:hover,
+.topbar-crumb-button:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--line));
+  background: var(--soft);
+  color: var(--accent);
+  outline: none;
+  box-shadow: none;
+}
+
+.topbar-crumb-separator {
+  margin: 0 7px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.topbar-crumb-client {
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-crumb-section {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.topbar-crumb-parent {
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--line));
+  background: var(--soft);
+}
+
+.topbar-crumb-section.current,
+.topbar-crumb-client[aria-current="page"] {
+  border-color: transparent;
+  background: transparent;
+}
+
+.crm-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  min-height: 20px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--soft);
+  color: var(--muted);
+  padding: 0 5px;
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.topbar-live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  background: var(--green-soft);
+  border: 1px solid color-mix(in srgb, var(--green) 30%, var(--line));
+  border-radius: 999px;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.topbar-live-badge.degraded {
+  background: var(--red-soft);
+  border-color: color-mix(in srgb, var(--red) 30%, var(--line));
+  color: var(--red);
+}
+
+.topbar-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+.mobile-menu-btn {
+  display: none;
+}
+
+.crm-disclosure {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.crm-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  cursor: pointer;
+  list-style: none;
+  padding: 10px 12px;
+}
+
+.crm-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.crm-disclosure > summary span,
+.crm-disclosure > summary strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crm-disclosure > summary svg {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.crm-disclosure > summary svg:last-child {
+  transition: transform var(--duration) var(--ease);
+}
+
+.crm-disclosure[open] > summary svg:last-child {
+  transform: rotate(180deg);
+}

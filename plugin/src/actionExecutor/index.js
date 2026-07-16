@@ -1,7 +1,7 @@
-import { executePlatformAction } from "../adapter/platforms";
-import { reportActionExecution } from "../adapter/actionTelemetry";
-import { canExecuteProviderAction, executeProviderAction } from "../adapter/providerActions";
-import { config } from "../config";
+import { executePlatformAction } from "../adapter/discovery/platforms";
+import { reportActionExecution } from "../adapter/runtime/actionTelemetry";
+import { canExecuteProviderAction, executeProviderAction } from "../adapter/actions/providerActions";
+import { config } from "../core/config";
 import { canExecuteEntityAction, executeEntityAction } from "./entityActions";
 import { canExecuteHandoffAction, executeHandoffAction } from "./handoffActions";
 import { canExecuteNavigationAction, executeNavigationAction } from "./navigationActions";

@@ -1,151 +1,223 @@
-# AI Salesman Plugin - Current Handoff
+# AI Salesman Plugin - Engineering Handoff
 
-Last updated: 2026-07-06 17:09 IST
+Last updated: 2026-07-16
 
-This file is the working handoff only. Keep README as the product document. Keep this file short, current, and focused on what the next engineer/session needs.
+This is the single engineering handoff for the project. Keep it current and concise. Product-facing setup belongs in `README.md`; deployment details belong in `docs/deployment.md`.
 
-## Non-Negotiable Rules
+## Product Direction
 
-- Fix AI Hub, Maya, CRM, runtime discovery, prompts, RAG, adapters, and tests. Do not patch client websites to make demos pass.
-- All behavior must stay universal across verticals. No Policy, AI-KART, travel, insurance, ecommerce, or port-specific hacks.
-- Maya must not say an action happened unless browser/runtime evidence proves it happened.
-- Tenant data remains isolated per client. PostgreSQL + pgvector stay the primary data/RAG foundation.
-- README is product-facing. Operational issues, pending fixes, and next-session notes belong here.
-- `agent.md` must stay a concise handoff, not a historical dump. Delete stale notes as work completes or becomes irrelevant.
-- Relevant local client projects for current testing are only `Vercel_website` aka AI-KART and `Policy_website`.
+The product is a multi-tenant AI sales platform with three surfaces:
 
-## Completed Recently
+- `plugin/`: Maya, the embedded customer-facing voice/text salesperson.
+- `crm/`: the AI Hub admin CRM for clients, data, adapters, usage, conversations, and runtime health.
+- `client-panel/`: the authenticated customer workspace for assistant performance and account data.
 
-- **Hybrid RAG Search Engine (RRF):** Rewrote product and knowledge search in [rag.py](file:///c:/Users/admin/Desktop/AI_salesman_plugin/agent/rag.py) and [generic_rag.py](file:///c:/Users/admin/Desktop/AI_salesman_plugin/agent/retrieval/generic_rag.py) using lexical, semantic, and fuzzy typo searches run in parallel, merged via Reciprocal Rank Fusion (RRF) for immediate exact match prioritization. Placed GIN/trigram migrations at correct index creation orders and forced vector/trigram extensions to the public schema to ensure global visibility across dynamically generated tenant schemas.
-- **OpenAI Voice/TTS Switch:** Configured OpenAI as the primary client for STT/TTS in [.env](file:///c:/Users/admin/Desktop/AI_salesman_plugin/.env) to resolve voiceless Groq outages.
-- **Voice Query Cleanup + Grounded Product Display:** Cleaned speech filler/correction terms such as "okay we iphone" and "I asked for books" before product search/navigation, bypassed stale ecommerce discovery cache for correction turns, and rewrote product display responses from the selected retrieved rows so Maya does not speak conflicting product names/prices.
-- **Product Response Service Extraction:** Moved ecommerce search-query cleanup, product fact formatting, cart confirmation text, and display-response grounding from `agent/orchestrator.py` into class-based services in [product_response.py](file:///c:/Users/admin/Desktop/AI_salesman_plugin/agent/product_response.py).
-- **Product Matching Service Extraction:** Moved exact catalog matching, brand/type fallback, inventory category lookup, and history product recovery into class-based [product_matching.py](file:///c:/Users/admin/Desktop/AI_salesman_plugin/agent/product_matching.py). `orchestrator.py` now delegates through compatibility wrappers for existing tests.
-- **CRM Password Fix + UI Cleanup:** Fixed client-panel password updates failing after DB write because `db/clients.py` referenced token-limit variables inside the password audit block. The CRM modal now uses the backend generator, shows/copies the newly-current password after set/generate, and explains that previously stored PBKDF2 passwords cannot be recovered. The client operator header and primary setup button were also cleaned up; the setup button now says `Setup`.
-- **Durable Auto-Approval:** Action candidates discovered with confidence `>= 75%` are automatically approved and written to the active configurations in [clients.py](file:///c:/Users/admin/Desktop/AI_salesman_plugin/db/clients.py).
-- **Simplified CRM Adapter Interface:** Reorganized [AdapterTab.tsx](file:///c:/Users/admin/Desktop/AI_salesman_plugin/crm/src/views/client-workspace/AdapterTab.tsx) to hide detailed diagnostic logs behind an "Advanced Diagnostics" toggle and filter candidate actions to only show pending options.
-- **Secure Password Dialog:** Implemented a password visibility toggle (eye icon) and validated the generation and setting flows in [Dialogs.tsx](file:///c:/Users/admin/Desktop/AI_salesman_plugin/crm/src/components/shared/Dialogs.tsx).
-- **Paired Search & Navigation:** Paired RAG product search displays with browser `NAVIGATE_TO` page actions to `shop?q=<query>` in [orchestrator.py](file:///c:/Users/admin/Desktop/AI_salesman_plugin/agent/orchestrator.py) (bypassed in pytest to keep legacy regressions passing).
-- Setup run stop/cancel/timeout safety is implemented with CRM `Stop setup`, cooperative cancellation, stale-run expiry, and duplicate-run blocking.
-- Browser action truth loop is implemented across HTTP/SSE/WS: `request_id`, `turn_id`, `sequence`, browser requested/executing/terminal telemetry, CRM conversation evidence, and rebuilt `mayabot.js`/`mayabot-adapter.js`.
-- Runtime action events are now durable server-owned Postgres rows in `hub_action_events`.
-- Audit events now persist key browser/runtime/admin/setup/prompt/quota events in `hub_audit_events`.
-- CRM conversation/action evidence now reads durable action rows, not old JSON history.
-- Setup runs now distinguish deployment/setup evidence from prompt repair: if crawl/flow/readiness complete and only `assistant_smoke_tests` fail, CRM reports setup evidence complete with prompt repair needed instead of making the whole setup look failed.
-- Credential-safe setup discovery is in place: login/password/OTP forms cannot be saved as result-query actions like `FILTER_PRODUCTS`, and assistant smoke tests skip legacy credential-based result contracts.
-- CRM activity, usage, analytics health rows, and client panel intent samples now show Customer and Maya text separately. The CRM password modal also exposes the client-panel login URL and account/client ID.
+The product concept is sound. The main architectural weakness is that ecommerce became more mature than other verticals, making product search/cart behavior look like the core product. The target is a universal sales kernel that:
 
-## Verification
+1. understands the customer's goal and intent;
+2. extracts entities and constraints;
+3. retrieves source-grounded evidence;
+4. selects the next sales step;
+5. returns a truthful answer and only verified browser actions.
 
-Ran successfully:
+Vertical modules provide capabilities and policies. Deterministic retrieval and validation should handle known catalog, route, entity, and action cases; the LLM should resolve ambiguity and produce natural conversation. Never patch client/demo websites or add site-specific phrases to make a test pass.
 
-```powershell
-python -m pytest tests\test_universal_action_contracts.py tests\test_robustness_roadmap.py tests\test_orchestrator_matching.py -q
-corepack pnpm --filter ai-hub-crm build
+## Repository Shape
+
+The project is now one workspace and one deployment artifact:
+
+```text
+agent/          Python sales, retrieval, vertical, and orchestration domains
+api/            FastAPI routes, runtime, contracts, CRM, and client-panel APIs
+client-panel/   Client-facing React workspace
+crm/            Admin React CRM
+db/             PostgreSQL/pgvector persistence domains
+plugin/         Embedded Maya browser runtime
+deploy/         Deployment helpers
+docker/         Container support
+docs/           Deployment and engineering reports
+packages/       Shared workspace packages
+scripts/        Checks and maintenance utilities
+tests/          Python behavioral and integration suites
 ```
 
-Results:
+Root files such as `Dockerfile`, `docker-compose.yml`, package/workspace manifests, `requirements.txt`, `pytest.ini`, `README.md`, and environment templates intentionally stay at the root because tools expect them there. Root Python/TypeScript/JavaScript compatibility modules are thin stable entrypoints; implementations live in domain folders.
 
-- Focused setup/discovery/orchestrator regressions: `146 passed` in `26.88s`
-- CRM TypeScript/Vite build passed through Corepack.
-- Earlier broader checks before these fixes: full pytest `544 passed, 1 skipped`, Python compile check passed.
+## Completed
 
-## Current Architecture Review
+### Modular Refactor
 
-Refreshed file-wise line counts are in [loc_by_file.csv](file:///c:/Users/admin/Desktop/AI_salesman_plugin/loc_by_file.csv). The project is not fully compliant with the new 500-line budget yet.
+- Split oversized agent, API, database, CRM, plugin, and test modules into domain packages while preserving public imports through compatibility facades.
+- Grouped CRM client workspace, shared components, primitives, styles, views, and vertical definitions into focused folders.
+- Grouped plugin adapter, runtime, overlay, catalog, audio, session, widget, and core code by ownership.
+- Grouped database client, analytics, ecommerce, cache, settings, prompting, knowledge, bootstrap, and runtime code by domain.
+- Split the oversized tests by behavior. Every handwritten implementation and test file is currently below 500 lines.
+- Removed obsolete scratch scripts and the deleted line-count CSV. Use live line counts instead.
 
-Largest remaining offenders:
+### Behavior And Quality
 
-- `crm/src/index.css`: 8,059 lines
-- `agent/orchestrator.py`: 3,618 lines
-- `crm/src/views/ClientDetailView.tsx`: 3,451 lines
-- `db/clients.py`: 3,203 lines
-- `agent/ingestion.py`: 2,274 lines
+- Added hybrid lexical, semantic, fuzzy retrieval with Reciprocal Rank Fusion and exact-match prioritization.
+- Added deterministic buying-intent regressions for phrases such as `I am interested in buying iPhone` and `Do you sell iPhone?`; these no longer depend on an LLM call or search for literal `% of iphone %` text.
+- Grounded product display and comparison wording in selected source rows and improved correction/transcript cleanup.
+- Preserved action-truth rules: Maya cannot claim a browser action succeeded without runtime evidence.
+- Restored TLS verification by default, bounded audio payloads, protected the crawler trigger, constrained forwarded-IP trust, and added public widget rate limits.
+- Client-panel tokens now invalidate after password rotation/revocation.
+- Disabled terminal conversation-content logging by default.
+- Repaired Python dependency conflicts, added `pip check` and frontend lint to CI, and separated fast and PostgreSQL-backed test commands.
+- Applied the local PostgreSQL schema migrations for install credentials and cart session ownership.
 
-Next refactor should split `db/clients.py` into client repository, audit service, password service, runtime status service, and serialization modules; split `ClientDetailView.tsx` into tab components/hooks; and split `index.css` into CRM shell, modal, client workspace, table, and utility stylesheets.
+### Monorepo And Deployment
 
-## Current Pending Queue
+- Imported the former sibling `client_panel` project as `client-panel/` in this workspace.
+- Updated pnpm workspace scripts, CI, Dockerfile, Docker Compose, API static serving, route tests, ignores, README, and deployment documentation.
+- Docker builds no longer depend on a sibling `../client_panel` build context. One repository pull contains the API, plugin, CRM, and client panel.
 
-1. Manual long voice-session validation
-   - User will manually test 12-20 turn voice sessions.
-   - Still watch WebSocket reconnect, page navigation/remount after product search, audio playback state, session ID continuity, and mic readiness after multiple actions.
+### Azure Provider And Reference-Site Integration
 
-2. Richer browser action evidence
-   - Durable action rows are in place.
-   - Still expand evidence for clicked selector/label, submitted form fields, missing required fields, blocked provider boundaries, and final DOM state.
+- Replaced the Groq runtime dependency with one shared Azure OpenAI provider for chat, STT, and TTS. Chat is live-verified; configured audio deployment aliases currently return Azure `404 DeploymentNotFound`, so microphone/speech QA remains blocked on Azure resource deployment rather than application code.
+- Added provider-level Azure chat/audio tests and kept secrets out of logs, fixtures, and handoff documentation.
+- Corrected product and generic retrieval SQL parameter ordering, and made budget/context follow-ups use the history-augmented query for exact product supplementation.
+- Corrected ecommerce type matching so an `iPhone` request does not count Apple accessories as iPhones.
+- Grounded a single-product browser action after final product selection so a budget follow-up for iPhone 17 navigates to `shop?q=iphone%2017`, not the broad `electronics` category.
+- Enforced disabled conversation-content logging in the orchestrator and transcript diagnostic paths as well as the final turn summary.
+- Hardened the independent AI-KART reference storefront in `C:\Users\admin\Desktop\Vercel_website` without adding any Hub-specific integration beyond its single installer `<script>`:
+  - normalized 572 products to coherent INR pricing, stock, category, subcategory, and search semantics;
+  - limited `iPhone` search results to the four real Apple iPhone models;
+  - added a catalog validator and regression tests for pricing, inventory, references, media, and false iPhone taxonomy;
+  - moved ignored phone images into tracked catalog media and made the Vercel build copy backend static assets into `dist/static`;
+  - added reusable image fallbacks, stock-aware controls, responsive mobile filters/header/hero/product layouts, and stable cart/product behavior;
+  - browser-checked home, shop, product, cart, and Hub-widget behavior at desktop plus 320px and 390px mobile widths with no tested horizontal overflow or visible broken images.
+- Re-ingested AI-KART through its normal catalog API. A live multi-turn Hub test now finds exactly four iPhones, selects iPhone 17 at INR 79,900 for an under-INR-80,000 follow-up, and explains the choice from source-backed price/stock context.
 
-3. Universal flow planner next layer
-   - Foundation is implemented.
-   - Still add multi-step state persistence for checkout/quote/booking/application flows across turns.
-   - Payment, login, OTP, CAPTCHA, file upload, and final sensitive submits must remain handoff/prepare-only.
+### UI Review And Redesign
 
-4. Product detail hydration and comparison quality
-   - Text fallback is source-grounded from retrieved products/entities.
-   - Still add a universal hydration step before product detail and comparison answers: fetch selected product IDs, variants/options/sizes, attributes/specs, tags, review aggregates/snippets when available, and inject that compact source block into Maya's prompt.
-   - If a requested detail is not in client/source data, Maya must say the website does not provide it and offer to compare available buying facts instead.
-   - Still render a useful comparison table/card, preserve product/page sync, and end with a recommendation tied to user needs.
+- Compared the CRM with Claimd admin wireframes and the client panel with Claimd portal wireframes from `C:\Users\admin\Desktop\Claimd` only.
+- Kept the existing operational information architecture but adopted Claimd's cleaner hierarchy: flatter navigation, tighter spacing, restrained borders, and fewer competing summaries.
+- Removed decorative gradients, colored glow rings, blur effects, hover lift, and excessive card shadows.
+- Retained Claimd-inspired light and dark token families while making the light theme the default for new sessions; an explicitly saved dark preference is still respected.
+- Replaced the CRM's nested sidebar trees with a stable primary navigation and direct drilldowns inside views.
+- Simplified the CRM dashboard around an attention queue, provider verification, demand, clients, activity, and health; removed repeated metrics.
+- Reworked both login screens into compact operational sign-in surfaces.
+- Converted the client panel workspace navigation to a horizontal portal-style bar and removed redundant overview sections and fake simulator content.
+- Added persisted light/dark theme controls to both login and authenticated shells. Active navigation and tabs now use transparent or neutral states without colored rails, glow, or tint effects.
+- Removed decorative brown/cyan/green insight markers, tinted store-note rows, colored metric rails, decorative KPI bars, and nested metric-card styling from the client panel.
+- Flattened CRM quick-health and system-health checks into neutral rows, and converted the dense domain-contract card wall into a bordered, table-like list with plain inline metadata and actions.
+- Corrected narrow-screen client controls and tabs so actions stay compact, labels do not overlap, tabs scroll horizontally, and the document does not overflow.
+- Standardized both applications on one typography system: the same Inter/Segoe UI fallback stack, 14px regular body text, 13px medium controls, 12px minimum captions, and 600 emphasis reserved for headings, key values, and statuses. Removed arbitrary 700-850 weights and sub-12px UI text.
+- Established `#cd96e0` as the shared CRM and client-panel brand color. Light-theme text and links use a darker accessible lavender derivative, while blue, green, amber, and red remain reserved for information, success, warning, and error states.
+- Added a restrained supporting data palette using sage `#9cb59b`, sky `#82c8e5`, peach `#ffe5b4`, lavender gray `#c6c1d2`, and cosmic latte `#fafae8`. Repeated live metrics and changing summaries use low-saturation versions of these colors; navigation and static controls remain neutral, while semantic severity colors keep their original meaning.
+- Reduced the shared page-title scale to 22px and operational values to 20-26px. Removed remaining 30px-or-larger application text from both frontend style trees, with headings and controls retaining the established 500/600 weight ceiling.
+- Added shared pagination with stable-height footers and six-item page sizes to long operational collections. CRM dashboard activity, usage events, domain contracts, clients, data stores, adapters, conversations, and client catalog results are bounded; the client-panel conversation log uses the same page rhythm. Naturally bounded forms and summaries use consistent minimum content heights instead of artificial pagination.
+- Applied a shared compact density scale across both applications: smaller shell gutters, topbars, controls, panels, headings, KPI rows, charts, conversation rows, and empty states. Removed forced viewport-height content so short pages no longer stretch merely to fill the screen.
+- Rebuilt the CRM dashboard composition around independent main and side columns. Provider usage now spans the full row; demand/activity and client-registry/health stacks size independently, eliminating the large vacant card interiors caused by grid-row stretching.
+- Kept CRM Usage metrics at four columns on normal desktop widths and delayed responsive collapse until the content genuinely needs it. Reduced oversized client/readiness/integration/analytics card minimum heights and chart media dimensions across the remaining CRM views.
+- Rebalanced all client-panel tabs: three-item briefs fill three equal columns, compact empty states use horizontal rows, Demand health breakdowns sit side by side, and Catalog signals plus opportunities share one side stack instead of leaving a vacant half-row.
+- Browser-verified the affected CRM health and client catalog/overview surfaces in light and dark themes at a narrow viewport. Runtime contrast scans reported no visible-text failures, and computed-style checks confirmed no decorative rails or shadows on the changed rows.
+- Browser-verified dashboard, usage, health, CRM conversations, and client-panel conversations after the pagination and palette pass. Page navigation changes the visible result window, both themes report zero visible-text contrast failures, and the tested desktop views have no horizontal overflow.
+- Browser-verified all five client-panel tabs plus CRM dashboard, usage, conversations, analytics, and health after the supporting-palette and typography pass. Light and dark themes preserve distinct metric colors, no tested view exceeds a 26px operational font size, contrast scans report zero failures, and no tested desktop view overflows horizontally.
+- Browser-verified the final density/layout pass at normal 100% desktop scale. CRM dashboard and Usage maintain balanced four-column metrics and independent lower-card stacks; authenticated client Overview, Demand, Conversations, Catalog, and Usage Policy use compact, content-driven heights in light and dark themes.
+- Verified CRM and client-panel lint and production builds after the final UI cleanup.
+- Fixed the modularized widget bundle path so `/mayabot-adapter.js` and `/mayabot.js` resolve from the repository-root `plugin/` directory; added a path regression test and verified Maya mounts on AI-KART at its registered local origin.
 
-5. STT uncertainty and transcript repair
-   - Incomplete filler clarification and ecommerce search-query cleanup are implemented.
-   - Still broaden weird-transcript detection outside obvious product search/correction phrases and ask a short clarification before acting when there is no known entity/route/action match.
+## Verified Baseline
 
-6. Retrieval and answer relevance
-   - Bias retrieval by current intent, route, selected entity, and vertical entity type.
-   - Avoid mixing unrelated categories unless the user asks for broad alternatives.
+The latest complete local baseline is:
 
-7. Capability report repair UX
-   - Smoke failures now have specific runtime filter diagnosis.
-   - Missing expected actions such as `REQUEST_CALLBACK` still need specific candidate-route/form diagnosis, not only "Run setup".
-   - Show expected action, candidate labels/routes/forms, confidence reason, repair attempt, and admin repair/ignore controls.
+- `606 passed, 1 skipped` with PostgreSQL integration coverage.
+- Python compilation succeeds across `agent`, `api`, `db`, and `tests`.
+- CRM lint and production build pass.
+- Client-panel lint and production build pass from the monorepo.
+- Plugin production build passes.
+- Shared Python/JavaScript action contracts match across 73 actions.
+- `pip check` passes.
+- AI-KART catalog validation, two catalog regression tests, frontend lint, TypeScript, and production Vercel build pass. The build includes tracked `/static/catalog/phones/*` assets.
 
-8. Typed API client next step
-   - Shared TS contracts exist for action names/statuses.
-   - Still add generated/OpenAPI typed API client for CRM DTOs, runtime config, usage rows, conversation rows, and capability reports.
+Azure OpenAI chat and live text conversations are verified. Azure STT/TTS are not live-verified because the configured resource reports both audio deployments as missing. Do not describe voice as working until those deployments exist and microphone QA passes.
 
-9. Whole-codebase modular refactor
-   - Current LOC review shows the codebase is still too monolithic and hard to maintain.
-   - Later refactor must split oversized Python/TS/CSS files into domain modules with clear classes, services, repositories, functions, and typed interfaces.
-   - Python priority: use OOP where it creates real ownership boundaries, especially for orchestration, ingestion, client persistence, security/auth, and product/knowledge retrieval.
-   - Keep behavior universal and covered by regression tests during the refactor; do not rewrite by demo-site patching.
+## Pending Work
 
-10. Stronger tenant and install-script security
-   - Client panel is password protected, but later security work must ensure a client can only open its own panel/data.
-   - Add stronger tenant authorization on every client-panel API call, not only UI routing.
-   - Protect the one-line install script from being copied to unauthorized websites. Candidate solutions to evaluate: per-client signed install tokens, allowed-origin/domain allowlists, server-side origin enforcement, short-lived signed widget config, install-script key rotation/revocation, abuse rate limits, audit logging, and CRM warnings for unknown origins.
-   - The final design must support independent client websites hosted on different domains while keeping AI Hub as the central CRM.
+### Critical Security And Ownership
 
-## Useful Local Commands
+1. **Install credential enforcement**
+   Issue, rotate, revoke, and verify signed per-install credentials on registration, config, events, assistant HTTP, and WebSocket boundaries. Bind each credential to a tenant and allowed origins. Existing origin checks are containment, not authentication.
+
+2. **Cart session ownership and checkout truth**
+   Require a signed session owner, scope every cart query by tenant plus `session_id`, and build checkout invoices only from server-side product/cart rows inside a transaction with row locking and stock validation. The database column exists; API/query enforcement remains.
+
+3. **Tenant data exposure**
+   Reduce public catalog/knowledge/status payloads to the minimum widget DTOs and protect private data with the same install credential.
+
+4. **Shared rate limits and privacy controls**
+   Move sensitive counters from process memory to a shared store. Add persistence consent, redaction, retention, deletion, and export policy for conversation data.
+
+### Architecture And Reliability
+
+5. **Function-level orchestration cleanup**
+   File-level modularity is complete, but 52 Python functions exceed 50 lines. Start with `run_pipeline` and `run_stream_pipeline`, then persistence/retrieval boundaries. Keep orchestrators focused on coordination and move decisions into tested services.
+
+6. **Durable background jobs**
+   Move crawl, scan, rehearsal, and smoke work from process-local background tasks/executors to a durable job table/worker with deduplication, retry ownership, status, and cancellation.
+
+7. **Exception and typing cleanup**
+   Replace broad `except Exception` handlers at persistence, retrieval, and route boundaries with concrete exceptions and stack-context logging. Finish missing production signature annotations and add Python formatting/lint/type CI gates.
+
+8. **Authenticated client-panel consolidation**
+   Continue reducing overlapping identity, security, installer, workspace-map, and next-check sections around the client's common decisions. Authenticated desktop QA is complete; add a dedicated mobile-width authenticated pass without resetting a real client password.
+
+### Maya Product Quality
+
+9. **Universal intent and multi-turn selling**
+   Extend deterministic intent/entity handling beyond ecommerce into service discovery, qualification, booking, quote, application, and handoff flows. Persist multi-step state across turns while keeping payment, login, OTP, CAPTCHA, file upload, and sensitive final submits handoff-only.
+
+10. **Retrieval and product detail quality**
+    Bias retrieval by intent, route, selected entity, and vertical entity type. Hydrate selected product/entity facts before comparisons and render useful source-grounded recommendations. Say clearly when source data does not contain a requested fact.
+
+11. **Speech uncertainty and action evidence**
+    Broaden transcript uncertainty detection and ask a short clarification before acting when no known entity, route, or action matches. Record richer selector, form-field, barrier, and final-DOM evidence.
+
+12. **Live conversational QA**
+    After Azure STT/TTS deployments are provisioned, test common natural-language buying phrases, non-ecommerce verticals, 12-20 turn voice sessions, navigation/remount, reconnect, audio state, session continuity, and provider/model behavior. Text chat and the AI-KART iPhone follow-up are already live-verified.
+
+13. **Reference-site redeploy verification**
+    Redeploy `C:\Users\admin\Desktop\Vercel_website`, confirm its current public hostname, then verify the built catalog images and 320/390/768/1280 responsive paths over the public URL. The previously supplied `aikart.ergobite.com` hostname did not resolve during this pass; local production-build and browser checks passed.
+
+## Estimate
+
+The original fifth phase is not fully finished. Credential enforcement, cart-session ownership, authenticated client-panel consolidation, orchestration-function cleanup, and live conversational QA remain.
+
+- **6-11 focused engineering days** for the remaining implementation and non-live verification.
+- **1-2 additional days** for Azure audio deployment, voice-session QA, and public AI-KART redeploy verification.
+
+## Next Execution Order
+
+1. Re-run and stabilize the monorepo Docker build and full test suite after this UI/structure pass.
+2. Enforce install credentials across every public tenant boundary.
+3. Enforce cart session ownership and server-authoritative checkout.
+4. Complete privacy/shared-rate-limit safeguards.
+5. Split the largest orchestration functions in behavior-preserving batches.
+6. Consolidate authenticated client-panel workflows and run desktop/mobile QA.
+7. Provision/confirm Azure audio deployments, then run live cross-vertical Maya voice testing.
+8. Redeploy AI-KART and verify catalog media plus responsive behavior on its confirmed public hostname.
+
+## Verification Commands
 
 ```powershell
 corepack pnpm install
 corepack pnpm -r run build
+corepack pnpm --filter ai-hub-crm lint
+corepack pnpm --filter client-panel lint
+python -m compileall -q agent api db tests
 python scripts/check_contracts.py
 python -m pytest -q
-docker compose up -d --build
+python -m pip check
+docker compose config
+docker compose build app
 ```
 
-CRM:
+Local development:
 
 ```text
-http://127.0.0.1:5176/crm/
-```
-
-AI-KART local test site:
-
-```powershell
-cd C:\Users\admin\Desktop\Vercel_website\backend
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-cd C:\Users\admin\Desktop\Vercel_website\frontend
-npm run dev -- --host 0.0.0.0 --port 5175
-```
-
-Policy local test site:
-
-```powershell
-cd C:\Users\admin\Desktop\Policy_website\backend
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8003
-
-cd C:\Users\admin\Desktop\Policy_website\frontend
-npm run dev -- --host 0.0.0.0 --port 5183
+CRM:          http://127.0.0.1:5174/crm/
+API health:   http://127.0.0.1:8585/health
+Client panel: http://127.0.0.1:8585/client_panel/<client_id>
 ```

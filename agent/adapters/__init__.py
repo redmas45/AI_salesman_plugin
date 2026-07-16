@@ -1,1 +1,1 @@
-"""Platform adapters package for AI Hub."""
+"""Adapter discovery and repair helper modules."""

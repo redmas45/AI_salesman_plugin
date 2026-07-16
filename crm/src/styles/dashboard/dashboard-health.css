@@ -1,0 +1,367 @@
+/* Dashboard health */
+.health-signal-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.health-signal-summary-card {
+  --data-tone: var(--palette-lavender-gray);
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  min-height: 108px;
+  border: 1px solid color-mix(in srgb, var(--data-tone) 52%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--data-tone) 14%, var(--panel));
+  color: var(--ink);
+  cursor: pointer;
+  padding: 12px;
+  text-align: left;
+}
+
+.health-signal-summary-card:hover,
+.health-signal-summary-card:focus-visible,
+.health-signal-summary-card.active {
+  border-color: var(--line);
+  background: var(--soft);
+  box-shadow: none;
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.health-signal-summary-card:disabled {
+  cursor: default;
+  opacity: 0.72;
+  transform: none;
+}
+
+.health-signal-summary-card span,
+.health-signal-summary-card small,
+.health-signal-summary-card em {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.health-signal-summary-card span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.health-signal-summary-card strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.health-signal-summary-card small {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.health-signal-summary-card em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+.transport-health-stack {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.transport-health-stack .distribution-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 10px;
+}
+
+.distribution-group h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.distribution-row-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 52px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.distribution-row-button:not(.distribution-row-static):hover,
+.distribution-row-button:not(.distribution-row-static):focus-visible,
+.distribution-row-button.active,
+.distribution-row-button[aria-pressed="true"] {
+  border-color: var(--line);
+  background: var(--soft);
+  outline: none;
+}
+
+.distribution-row-static {
+  cursor: default;
+}
+
+.distribution-row-button.active,
+.distribution-row-button[aria-pressed="true"] {
+  border-color: var(--line);
+  background: var(--soft);
+}
+
+.health-signal-summary-card:nth-child(5n + 1) { --data-tone: var(--palette-sage); }
+.health-signal-summary-card:nth-child(5n + 2) { --data-tone: var(--palette-sky); }
+.health-signal-summary-card:nth-child(5n + 3) { --data-tone: var(--palette-peach); }
+.health-signal-summary-card:nth-child(5n + 4) { --data-tone: var(--palette-lavender-gray); }
+.health-signal-summary-card:nth-child(5n + 5) { --data-tone: var(--palette-cosmic-latte); }
+
+.distribution-row-label {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.distribution-row-track {
+  grid-column: 1 / -1;
+  min-width: 0;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--soft);
+}
+
+.distribution-row-track span {
+  display: block;
+  width: var(--bar-width);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.distribution-row-button b {
+  color: var(--muted);
+  text-align: right;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.focused-health-signal {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-soft) 28%, var(--panel));
+}
+
+.focused-health-signal > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.focused-health-signal > strong {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.focused-health-signal > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.focused-health-events {
+  display: grid;
+  gap: 6px;
+}
+
+.focused-health-events button,
+.health-event-row {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.focused-health-events button:hover,
+.focused-health-events button:focus-visible,
+.health-event-row:hover,
+.health-event-row:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 24%, var(--panel));
+  outline: none;
+}
+
+.focused-health-events span,
+.focused-health-events small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focused-health-events strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-turn-lines,
+.usage-event-dialogue,
+.health-event-dialogue {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.activity-turn-lines p,
+.usage-event-dialogue p {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+}
+
+.activity-turn-lines span,
+.usage-event-dialogue span,
+.health-event-dialogue span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.usage-event-dialogue p,
+.health-event-dialogue {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.health-event-dialogue {
+  margin-top: 3px;
+  text-transform: none;
+  white-space: normal;
+}
+
+.health-event-dialogue span {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
+}
+
+.health-event-list {
+  display: grid;
+  gap: 8px;
+}
+
+.health-event-row {
+  grid-template-columns: minmax(130px, 0.8fr) minmax(0, 1.15fr) minmax(128px, 0.75fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+}
+
+.health-event-row span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.health-event-row strong,
+.health-event-row b,
+.health-event-row small,
+.health-event-row em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.health-event-row strong,
+.health-event-row b {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.health-event-row small,
+.health-event-row em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.health-event-row .health-event-dialogue {
+  display: grid;
+  white-space: normal;
+}
+
+.health-event-row .health-event-dialogue span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1160px) {
+  .analytics-health-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .health-signal-overview,
+  .health-event-row {
+    grid-template-columns: 1fr;
+  }
+}

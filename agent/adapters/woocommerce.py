@@ -3,7 +3,7 @@ WooCommerce platform adapter.
 
 Handles WooCommerce-specific product normalization, variant/variation
 extraction, cart API payloads (Store API), and checkout URLs.
-Reuses existing ingestion helpers from agent.ingestion.
+Reuses existing ingestion helpers.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import hashlib
 from typing import Any
 from urllib.parse import urljoin
 
-from agent.ingestion import (
+from agent.ingestion_helpers.ingestion_facade import (
     _clean_text,
     _first,
     _image_url_from_value,

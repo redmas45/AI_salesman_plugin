@@ -22,4 +22,6 @@ deploy/certs
 plugin/node_modules
 crm/node_modules
 crm/dist
+client-panel/node_modules
+client-panel/dist
 data/*/crawl.json

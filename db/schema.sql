@@ -69,11 +69,16 @@ CREATE INDEX IF NOT EXISTS idx_catalog_source_products_source ON catalog_source_
 
 CREATE TABLE IF NOT EXISTS cart (
     id          SERIAL PRIMARY KEY,
+    session_id  TEXT NOT NULL DEFAULT 'legacy',
     product_id  BIGINT NOT NULL,
     quantity    INTEGER NOT NULL DEFAULT 1,
     added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (product_id) REFERENCES products(id)
 );
+
+ALTER TABLE cart ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT 'legacy';
+CREATE INDEX IF NOT EXISTS idx_cart_session_added
+    ON cart(session_id, added_at DESC);
 
 CREATE TABLE IF NOT EXISTS user_profile (
     id              SERIAL PRIMARY KEY,
@@ -170,6 +175,7 @@ ON CONFLICT (scope) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS answer_cache (
     id                    BIGSERIAL PRIMARY KEY,
+    session_id            TEXT NOT NULL DEFAULT '',
     normalized_question   TEXT NOT NULL,
     question              TEXT NOT NULL,
     question_embedding    vector(384),
@@ -188,11 +194,15 @@ CREATE TABLE IF NOT EXISTS answer_cache (
     expires_at            TIMESTAMP,
     created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (normalized_question, data_version)
+    UNIQUE (session_id, normalized_question, data_version)
 );
 
+ALTER TABLE answer_cache ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE answer_cache DROP CONSTRAINT IF EXISTS answer_cache_normalized_question_data_version_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_answer_cache_session_question_version
+    ON answer_cache(session_id, normalized_question, data_version);
 CREATE INDEX IF NOT EXISTS idx_answer_cache_normalized
-    ON answer_cache(normalized_question, is_stale, data_version);
+    ON answer_cache(session_id, normalized_question, is_stale, data_version);
 CREATE INDEX IF NOT EXISTS idx_answer_cache_updated
     ON answer_cache(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_answer_cache_embedding

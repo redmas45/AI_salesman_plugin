@@ -23,4 +23,15 @@ export default defineConfig([
       'react-hooks/set-state-in-effect': 'off',
     },
   },
+  {
+    files: [
+      'src/App.tsx',
+      'src/components/shared/*.tsx',
+      'src/components/ui/*.tsx',
+      'src/views/*View.tsx',
+    ],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ]);

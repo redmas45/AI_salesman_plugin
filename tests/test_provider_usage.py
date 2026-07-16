@@ -1,7 +1,4 @@
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from datetime import datetime, timedelta, timezone
 
 from agent import llm
 from agent import provider_status
@@ -11,13 +8,9 @@ def test_llm_quota_error_returns_customer_safe_provider_unavailable(monkeypatch)
     recorded = {}
 
     class QuotaError(RuntimeError):
-        pass
+        code = "insufficient_quota"
 
-    monkeypatch.setattr(
-        llm,
-        "_call_llm",
-        lambda *args, **kwargs: (_ for _ in ()).throw(QuotaError("insufficient_quota: billing hard limit exceeded")),
-    )
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: (_ for _ in ()).throw(QuotaError("quota exceeded")))
     monkeypatch.setattr(llm, "_runtime_vertical_key", lambda site_id: "ecommerce")
     monkeypatch.setattr(
         llm,
@@ -28,22 +21,19 @@ def test_llm_quota_error_returns_customer_safe_provider_unavailable(monkeypatch)
     )
 
     response = llm.generate_response(
-        "ai_kart",
-        "I am looking for a phone.",
-        [],
-        conversation_history=[],
+        site_id="site_1",
+        user_message="show phones",
+        retrieved_products=[],
     )
 
     assert response["intent"] == "llm_quota_exhausted"
-    assert response["ui_actions"] == []
-    assert "OpenAI" not in response["response_text"]
-    assert recorded["provider"] == "openai"
+    assert "Azure" not in response["response_text"]
+    assert recorded["provider"] == "azure_openai"
     assert recorded["category"] == "quota_exhausted"
 
 
-def test_llm_success_records_provider_recovery(monkeypatch):
+def test_llm_success_records_azure_provider_recovery(monkeypatch):
     recorded = {}
-
     monkeypatch.setattr(
         llm,
         "_call_llm",
@@ -57,273 +47,154 @@ def test_llm_success_records_provider_recovery(monkeypatch):
     )
 
     response = llm.generate_response(
-        "ai_kart",
-        "I am looking for a phone.",
-        [],
-        conversation_history=[],
+        site_id="site_1",
+        user_message="show phones",
+        retrieved_products=[],
     )
 
-    assert response["response_text"] == "Sure."
-    assert recorded == {"provider": "openai"}
+    assert response["intent"] == "product_search"
+    assert recorded == {"provider": "azure_openai"}
 
 
-def test_provider_usage_status_reports_quota_event(monkeypatch):
-    provider_status._RECENT_EVENTS.clear()
-    persisted: list[tuple[str, str, str]] = []
-
-    class FakeConnection:
-        rows = [
+def test_provider_usage_status_reports_azure_deployments(monkeypatch):
+    now = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(provider_status, "azure_openai_is_configured", lambda: True)
+    monkeypatch.setattr(
+        provider_status,
+        "_recent_provider_events",
+        lambda limit=provider_status.RECENT_EVENT_LIMIT: [
             {
-                "provider": "openai",
-                "category": "quota_exhausted",
-                "message": "insufficient_quota: plan and billing details",
-                "created_at": "2026-06-30 00:00:00+00",
+                "provider": "azure_openai",
+                "category": "ok",
+                "message": "verified",
+                "occurred_at": now,
             }
-        ]
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def execute(self, query, params=()):
-            if str(query).lstrip().upper().startswith("INSERT"):
-                persisted.append(tuple(params))
-                return self
-            return self
-
-        def fetchall(self):
-            return list(self.rows)
-
-        def commit(self):
-            return None
-
-    monkeypatch.setattr(provider_status, "init_admin_schema", lambda: None)
-    monkeypatch.setattr(provider_status, "_connect", lambda: FakeConnection())
-    provider_status.record_provider_failure(
-        "openai",
-        RuntimeError("insufficient_quota: plan and billing details"),
-        category="quota_exhausted",
+        ],
     )
-
-    monkeypatch.setattr(provider_status.config, "OPENAI_API_KEY", "test-runtime-key")
-    monkeypatch.setattr(provider_status.config, "OPENAI_ADMIN_KEY", "")
-    monkeypatch.setattr(provider_status.config, "OPENAI_MONTHLY_BUDGET_USD", 100.0)
     monkeypatch.setattr(
         provider_status,
         "_usage_summary",
         lambda: {
+            "tokens_estimated": 120,
             "total_turns": 4,
             "turns_today": 2,
-            "tokens_estimated": 1234,
-            "avg_latency_ms": 500,
+            "avg_latency_ms": 1250,
         },
     )
+    monkeypatch.setattr(provider_status.config, "AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(provider_status.config, "AZURE_OPENAI_CHAT_DEPLOYMENT", "chat")
+    monkeypatch.setattr(provider_status.config, "AZURE_OPENAI_STT_DEPLOYMENT", "stt")
+    monkeypatch.setattr(provider_status.config, "AZURE_OPENAI_TTS_DEPLOYMENT", "tts")
 
     status = provider_status.provider_usage_status()
 
-    assert status["status"] == "quota_exhausted"
-    assert status["local_tokens"]["estimated_total"] == 1234
-    assert status["openai_costs"]["status"] == "not_configured"
-    assert status["budget"]["monthly_budget_usd"] == 100.0
-    assert status["recent_events"][0]["category"] == "quota_exhausted"
-    assert persisted == [("openai", "quota_exhausted", "insufficient_quota: plan and billing details")]
+    assert status["status"] == "ok"
+    assert status["provider"] == "azure_openai"
+    assert status["llm_model"] == "chat"
+    assert status["stt_model"] == "stt"
+    assert status["tts_model"] == "tts"
+    assert status["local_tokens"]["estimated_total"] == 120
+    assert status["billing"]["status"] == "azure_portal"
 
 
-def test_provider_success_clears_quota_status(monkeypatch):
-    provider_status._RECENT_EVENTS.clear()
-    persisted: list[tuple[str, str, str]] = []
-
-    class FakeConnection:
-        rows = [
-            {
-                "provider": "openai",
-                "category": "quota_exhausted",
-                "message": "insufficient_quota",
-                "created_at": "2026-06-30 00:00:00+00",
-            }
-        ]
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def execute(self, query, params=()):
-            if str(query).lstrip().upper().startswith("INSERT"):
-                persisted.append(tuple(params))
-                self.rows.insert(
-                    0,
-                    {
-                        "provider": params[0],
-                        "category": params[1],
-                        "message": params[2],
-                        "created_at": "2026-06-30 00:01:00+00",
-                    },
-                )
-            return self
-
-        def fetchall(self):
-            return list(self.rows)
-
-        def commit(self):
-            return None
-
-    monkeypatch.setattr(provider_status, "init_admin_schema", lambda: None)
-    monkeypatch.setattr(provider_status, "_connect", lambda: FakeConnection())
-    monkeypatch.setattr(provider_status.config, "OPENAI_API_KEY", "test-runtime-key")
-    monkeypatch.setattr(provider_status.config, "OPENAI_ADMIN_KEY", "")
+def test_manual_azure_runtime_check_records_success(monkeypatch):
+    events = []
+    monkeypatch.setattr(provider_status, "azure_openai_is_configured", lambda: True)
+    monkeypatch.setattr(provider_status, "create_chat_completion", lambda *args, **kwargs: '{"status":"ok"}')
     monkeypatch.setattr(
         provider_status,
-        "_usage_summary",
-        lambda: {
-            "total_turns": 1,
-            "turns_today": 1,
-            "tokens_estimated": 50,
-            "avg_latency_ms": 100,
-        },
+        "_record_provider_event",
+        lambda provider, category, message: events.insert(
+            0,
+            {
+                "provider": provider,
+                "category": category,
+                "message": message,
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+            },
+        ),
     )
+    monkeypatch.setattr(provider_status, "_recent_provider_events", lambda limit=20: events[:limit])
+    monkeypatch.setattr(provider_status, "_usage_summary", _empty_usage)
+    monkeypatch.setattr(provider_status.config, "AZURE_OPENAI_API_KEY", "test-key")
 
-    provider_status.record_provider_success("openai")
-    status = provider_status.provider_usage_status()
+    status = provider_status.check_azure_openai_runtime()
 
     assert status["status"] == "ok"
-    assert status["recent_events"][0]["category"] == "ok"
-    assert persisted == [("openai", "ok", "LLM request completed successfully.")]
+    assert events[0]["provider"] == "azure_openai"
+    assert events[0]["category"] == "ok"
 
 
-def test_manual_provider_quota_check_records_ok_after_http_200(monkeypatch):
-    provider_status._RECENT_EVENTS.clear()
-    persisted: list[tuple[str, str, str]] = []
-
-    class FakeConnection:
-        rows = [
+def test_manual_azure_runtime_check_categorizes_quota(monkeypatch):
+    events = []
+    monkeypatch.setattr(provider_status, "azure_openai_is_configured", lambda: True)
+    monkeypatch.setattr(
+        provider_status,
+        "create_chat_completion",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("429 insufficient_quota")),
+    )
+    monkeypatch.setattr(
+        provider_status,
+        "_record_provider_event",
+        lambda provider, category, message: events.insert(
+            0,
             {
-                "provider": "openai",
-                "category": "quota_exhausted",
-                "message": "insufficient_quota",
-                "created_at": "2026-06-30 00:00:00+00",
-            }
-        ]
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def execute(self, query, params=()):
-            if str(query).lstrip().upper().startswith("INSERT"):
-                persisted.append(tuple(params))
-                self.rows.insert(
-                    0,
-                    {
-                        "provider": params[0],
-                        "category": params[1],
-                        "message": params[2],
-                        "created_at": "2026-07-01 00:00:00+00",
-                    },
-                )
-            return self
-
-        def fetchall(self):
-            return list(self.rows)
-
-        def commit(self):
-            return None
-
-    class FakeResponse:
-        status_code = 200
-        text = "{}"
-
-        def json(self):
-            return {}
-
-    monkeypatch.setattr(provider_status, "init_admin_schema", lambda: None)
-    monkeypatch.setattr(provider_status, "_connect", lambda: FakeConnection())
-    monkeypatch.setattr(provider_status.config, "OPENAI_API_KEY", "test-runtime-key")
-    monkeypatch.setattr(provider_status.config, "OPENAI_ADMIN_KEY", "")
-    monkeypatch.setattr(provider_status.config, "LLM_MODEL", "gpt-4o-mini")
-    monkeypatch.setattr(provider_status.httpx, "post", lambda *args, **kwargs: FakeResponse())
-    monkeypatch.setattr(
-        provider_status,
-        "_usage_summary",
-        lambda: {
-            "total_turns": 1,
-            "turns_today": 0,
-            "tokens_estimated": 50,
-            "avg_latency_ms": 100,
-        },
+                "provider": provider,
+                "category": category,
+                "message": message,
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+            },
+        ),
     )
+    monkeypatch.setattr(provider_status, "_recent_provider_events", lambda limit=20: events[:limit])
+    monkeypatch.setattr(provider_status, "_usage_summary", _empty_usage)
+    monkeypatch.setattr(provider_status.config, "AZURE_OPENAI_API_KEY", "test-key")
 
-    status = provider_status.check_openai_runtime_quota()
-
-    assert status["status"] == "ok"
-    assert status["recent_events"][0]["category"] == "ok"
-    assert persisted == [("openai", "ok", "OpenAI quota check passed with HTTP 200.")]
-
-
-def test_manual_provider_quota_check_records_quota_for_429(monkeypatch):
-    provider_status._RECENT_EVENTS.clear()
-    persisted: list[tuple[str, str, str]] = []
-
-    class FakeConnection:
-        rows: list[dict[str, str]] = []
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def execute(self, query, params=()):
-            if str(query).lstrip().upper().startswith("INSERT"):
-                persisted.append(tuple(params))
-                self.rows.insert(
-                    0,
-                    {
-                        "provider": params[0],
-                        "category": params[1],
-                        "message": params[2],
-                        "created_at": "2026-07-01 00:00:00+00",
-                    },
-                )
-            return self
-
-        def fetchall(self):
-            return list(self.rows)
-
-        def commit(self):
-            return None
-
-    class FakeResponse:
-        status_code = 429
-        text = "quota"
-
-        def json(self):
-            return {"error": {"message": "You exceeded your current quota.", "code": "insufficient_quota"}}
-
-    monkeypatch.setattr(provider_status, "init_admin_schema", lambda: None)
-    monkeypatch.setattr(provider_status, "_connect", lambda: FakeConnection())
-    monkeypatch.setattr(provider_status.config, "OPENAI_API_KEY", "test-runtime-key")
-    monkeypatch.setattr(provider_status.config, "OPENAI_ADMIN_KEY", "")
-    monkeypatch.setattr(provider_status.httpx, "post", lambda *args, **kwargs: FakeResponse())
-    monkeypatch.setattr(
-        provider_status,
-        "_usage_summary",
-        lambda: {
-            "total_turns": 1,
-            "turns_today": 0,
-            "tokens_estimated": 50,
-            "avg_latency_ms": 100,
-        },
-    )
-
-    status = provider_status.check_openai_runtime_quota()
+    status = provider_status.check_azure_openai_runtime()
 
     assert status["status"] == "quota_exhausted"
-    assert status["recent_events"][0]["category"] == "quota_exhausted"
-    assert persisted[0][0] == "openai"
-    assert persisted[0][1] == "quota_exhausted"
+    assert events[0]["category"] == "quota_exhausted"
+
+
+def test_stale_provider_success_requires_verification(monkeypatch):
+    monkeypatch.setattr(provider_status, "azure_openai_is_configured", lambda: True)
+    stale = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+    status = provider_status._provider_status(
+        [
+            {
+                "provider": "azure_openai",
+                "category": "ok",
+                "message": "old success",
+                "occurred_at": stale,
+            }
+        ]
+    )
+
+    assert status == "unverified"
+
+
+def test_latest_provider_error_is_not_ready(monkeypatch):
+    monkeypatch.setattr(provider_status, "azure_openai_is_configured", lambda: True)
+
+    status = provider_status._provider_status(
+        [
+            {
+                "provider": "azure_openai",
+                "category": "auth_error",
+                "message": "invalid key",
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+    )
+
+    assert status == "error"
+
+
+def _empty_usage():
+    return {
+        "tokens_estimated": 0,
+        "total_turns": 0,
+        "turns_today": 0,
+        "avg_latency_ms": 0,
+    }

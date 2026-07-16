@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent.capabilities import capability_prompt_context, get_allowed_actions
-from agent.sales_intake import sales_intake_prompt_context
+from agent.action_helpers.capabilities import capability_prompt_context, get_allowed_actions
+from agent.action_helpers.sales_intake import sales_intake_prompt_context
 from agent.verticals.registry import get_vertical
-from db.prompts import prompt_profile_context
+from db.prompting.prompt_profiles import prompt_profile_context
 
 
 GENERIC_RESPONSE_SCHEMA = """{
@@ -179,6 +179,9 @@ def _sales_relevance_block() -> str:
         "- Maya is a sales assistant for this exact website, not a general research chatbot.\n"
         "- Answer buying-relevant questions about products, plans, services, policies, specs, reviews, pricing, availability, documents, flow steps, or comparisons only from retrieved/source/client data.\n"
         "- If the user asks for deep off-site theory, internals, architecture, research, legal/medical/financial conclusions, or anything not supported by retrieved website data, give a brief boundary and offer to compare website-confirmed buying facts instead.\n"
+        "- For general trivia, politics, live news, weather, or other requests unrelated to this website, decline briefly and pivot back to the visitor's website goal.\n"
+        "- First answer the practical question, then ask at most one short follow-up only when it materially narrows the recommendation or unlocks a supported action. Never repeat a fact the visitor already supplied.\n"
+        "- Emit one coherent primary UI path per turn. Do not combine a comparison with a competing record list or search navigation for the same options.\n"
         "- Do not expose chain-of-thought, hidden scoring, or private reasoning. Provide only the concise customer-facing answer.\n"
         "- Set answer_scope to grounded_fact for source-backed facts, buying_guidance for practical recommendations, website_action for navigation/forms/actions, and unsupported_or_offsite for bounded unsupported questions."
     )

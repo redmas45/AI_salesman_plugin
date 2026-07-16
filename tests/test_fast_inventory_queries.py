@@ -117,7 +117,7 @@ def test_inventory_type_prioritizes_actual_iphone_names(monkeypatch):
     products = [
         {
             "id": "generic-iphone-category",
-            "name": "Samsung Flex Android Flagship / iPhone 6",
+            "name": "Samsung Flex Flagship Smartphone 6",
             "brand": "Samsung",
             "category_name": "Electronics",
             "description": "Android smartphone.",
@@ -140,6 +140,22 @@ def test_inventory_type_prioritizes_actual_iphone_names(monkeypatch):
             "description": "Thin iPhone.",
             "stock": 7,
         },
+        {
+            "id": "airpods-pro",
+            "name": "AirPods Pro",
+            "brand": "Apple",
+            "category_name": "Electronics",
+            "description": "Wireless earbuds for Apple devices.",
+            "stock": 6,
+        },
+        {
+            "id": "apple-charger",
+            "name": "20W USB-C Power Adapter",
+            "brand": "Apple",
+            "category_name": "Electronics",
+            "description": "Fast charger for Apple devices.",
+            "stock": 11,
+        },
     ]
 
     monkeypatch.setattr(orchestrator, "get_all_products", lambda site_id, limit=1000: products)
@@ -161,5 +177,54 @@ def test_inventory_type_prioritizes_actual_iphone_names(monkeypatch):
     response = next(event for event in events if event["event"] == "response")
     actions = next(event for event in events if event["event"] == "actions")
 
-    assert "iPhone 17 Pro, iPhone Air" in response["data"]["response_text"]
-    assert actions["data"]["ui_actions"][0]["params"]["product_ids"][:2] == ["iphone-17-pro", "iphone-air"]
+    assert "I found 2 iphones in stock: iPhone 17 Pro, iPhone Air." == response["data"]["response_text"]
+    assert actions["data"]["ui_actions"][0]["params"]["product_ids"] == ["iphone-17-pro", "iphone-air"]
+
+
+def test_product_interest_phrases_use_catalog_without_llm(monkeypatch):
+    from agent import orchestrator
+
+    products = [
+        {
+            "id": "iphone-17-pro",
+            "name": "iPhone 17 Pro",
+            "brand": "Apple",
+            "category_name": "Electronics",
+            "stock": 9,
+        },
+        {
+            "id": "shoe-1",
+            "name": "Runner Daily Shoe",
+            "brand": "NOVA",
+            "category_name": "Footwear",
+            "stock": 7,
+        },
+    ]
+
+    monkeypatch.setattr(orchestrator, "get_all_products", lambda site_id, limit=1000: products)
+    monkeypatch.setattr(orchestrator, "_is_ecommerce_site", lambda site_id: True)
+    monkeypatch.setattr(
+        orchestrator.llm,
+        "generate_response",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("LLM should not be called")),
+    )
+
+    for phrase in (
+        "I am interested in buying iPhone",
+        "I want to buy an iPhone",
+        "Do you sell iPhone?",
+        "Is iPhone available?",
+    ):
+        events = list(
+            orchestrator.run_stream(
+                site_id=ECOMMERCE_TEST_SITE_ID,
+                text_input=phrase,
+                skip_tts=True,
+            )
+        )
+        actions = next(event for event in events if event["event"] == "actions")
+        response = next(event for event in events if event["event"] == "response")
+
+        assert actions["data"]["ui_actions"][0]["params"]["product_ids"] == ["iphone-17-pro"]
+        assert actions["data"]["ui_actions"][0]["params"]["search_query"] == "iphone"
+        assert "iPhone 17 Pro" in response["data"]["response_text"]

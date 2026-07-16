@@ -115,7 +115,7 @@ def test_flow_repair_proposals_group_route_and_action_drift() -> None:
 
 def test_llm_flow_repair_proposal_is_validated_and_preferred(monkeypatch) -> None:
     monkeypatch.setattr("config.LLM_EXTRACTOR_ENABLED", True)
-    monkeypatch.setattr("config.OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("config.AZURE_OPENAI_API_KEY", "test-key")
 
     def fake_flow_repairs(payload: dict, site_id: str) -> dict:
         return {
@@ -183,7 +183,7 @@ def test_llm_flow_repair_proposal_is_validated_and_preferred(monkeypatch) -> Non
 
 def test_llm_flow_repair_rejects_external_routes(monkeypatch) -> None:
     monkeypatch.setattr("config.LLM_EXTRACTOR_ENABLED", True)
-    monkeypatch.setattr("config.OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("config.AZURE_OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(
         adapter_repair,
         "_request_flow_repairs",

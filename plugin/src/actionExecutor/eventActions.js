@@ -1,4 +1,4 @@
-import { EVENTS } from "../constants";
+import { EVENTS } from "../core/constants";
 
 export function executeBrowserEventAction(action) {
   window.dispatchEvent(new CustomEvent(EVENTS.MAYABOT_ACTION, { detail: action }));

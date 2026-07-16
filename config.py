@@ -7,11 +7,20 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
 
-OPENAI_API_KEY: str = (os.getenv("OPENAI_API_KEY", "") or os.getenv("\ufeffOPENAI_API_KEY", "")).strip()
-OPENAI_ADMIN_KEY: str = os.getenv("OPENAI_ADMIN_KEY", "").strip()
-OPENAI_MONTHLY_BUDGET_USD: float = float(os.getenv("OPENAI_MONTHLY_BUDGET_USD", "0") or 0)
-OPENAI_USAGE_REFRESH_SECONDS: int = int(os.getenv("OPENAI_USAGE_REFRESH_SECONDS", "300") or 300)
-GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "").strip()
+AZURE_OPENAI_API_KEY: str = os.getenv("AZURE_OPENAI_API_KEY", "").strip()
+AZURE_OPENAI_BASE_URL: str = os.getenv("AZURE_OPENAI_BASE_URL", "").strip()
+AZURE_OPENAI_CHAT_DEPLOYMENT: str = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-5.4-mini").strip()
+AZURE_OPENAI_STT_DEPLOYMENT: str = os.getenv(
+    "AZURE_OPENAI_STT_DEPLOYMENT",
+    "gpt-4o-mini-transcribe",
+).strip()
+AZURE_OPENAI_TTS_DEPLOYMENT: str = os.getenv(
+    "AZURE_OPENAI_TTS_DEPLOYMENT",
+    "gpt-4o-mini-tts",
+).strip()
+AZURE_OPENAI_REASONING_EFFORT: str = os.getenv("AZURE_OPENAI_REASONING_EFFORT", "none").strip().lower()
+AZURE_OPENAI_TTS_VOICE: str = os.getenv("AZURE_OPENAI_TTS_VOICE", "coral").strip()
+AZURE_OPENAI_TIMEOUT_SECONDS: float = float(os.getenv("AZURE_OPENAI_TIMEOUT_SECONDS", "30") or 30)
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -20,21 +29,8 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
-STT_MODEL: str = os.getenv("STT_MODEL", "gpt-4o-mini-transcribe")
-GROQ_STT_MODEL: str = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
-STT_PROVIDER: str = os.getenv("STT_PROVIDER", "groq" if GROQ_API_KEY else "openai").strip().lower()
 STT_LANGUAGE: str = os.getenv("STT_LANGUAGE", "").strip()
-LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
 LLM_EXTRACTOR_ENABLED: bool = _env_bool("LLM_EXTRACTOR_ENABLED", False)
-FAST_VOICE_MODE: bool = _env_bool("FAST_VOICE_MODE", True)
-_RAW_TTS_MODEL: str = os.getenv("TTS_MODEL", "tts-1")
-TTS_MODEL: str = os.getenv("FAST_TTS_MODEL", "tts-1") if FAST_VOICE_MODE else _RAW_TTS_MODEL
-TTS_VOICE: str = os.getenv("TTS_VOICE", "nova")
-GROQ_TTS_MODEL: str = os.getenv("GROQ_TTS_MODEL", "canopylabs/orpheus-v1-english")
-GROQ_TTS_VOICE: str = os.getenv("GROQ_TTS_VOICE", "hannah")
-GROQ_TTS_RESPONSE_FORMAT: str = os.getenv("GROQ_TTS_RESPONSE_FORMAT", "wav")
-TTS_PROVIDER: str = os.getenv("TTS_PROVIDER", "groq" if GROQ_API_KEY else "openai").strip().lower()
-GROQ_FALLBACK_TO_OPENAI: bool = _env_bool("GROQ_FALLBACK_TO_OPENAI", True)
 TTS_CHUNK_CHARS: int = int(os.getenv("TTS_CHUNK_CHARS", "1200") or 1200)
 TTS_MAX_INPUT_CHARS: int = int(os.getenv("TTS_MAX_INPUT_CHARS", "12000") or 12000)
 
@@ -45,7 +41,6 @@ RAG_TOP_K: int = int(os.getenv("RAG_TOP_K", "10"))
 RAG_TOP_N: int = int(os.getenv("RAG_TOP_N", "50"))
 ACTION_AUTO_APPROVE_CONFIDENCE: float = float(os.getenv("ACTION_AUTO_APPROVE_CONFIDENCE", "0.75") or 0.75)
 
-LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.20"))
 LLM_MAX_TOKENS_HARD_CAP: int = int(os.getenv("LLM_MAX_TOKENS_HARD_CAP", "320"))
 LLM_MAX_TOKENS: int = min(
     int(os.getenv("LLM_MAX_TOKENS", "320")),
@@ -60,6 +55,11 @@ HUB_PUBLIC_URL: str = os.getenv("HUB_PUBLIC_URL", PUBLIC_API_URL).strip()
 PUBLIC_STOREFRONT_ORIGIN: str = os.getenv("PUBLIC_STOREFRONT_ORIGIN", "").strip()
 CLIENT_STORE_URL: str = os.getenv("CLIENT_STORE_URL", "").strip()
 DEPLOYMENT_MODE: str = os.getenv("DEPLOYMENT_MODE", "local").strip().lower()
+CLIENT_TLS_VERIFY: bool = _env_bool("CLIENT_TLS_VERIFY", True)
+LOG_CONVERSATION_CONTENT: bool = _env_bool("LOG_CONVERSATION_CONTENT", False)
+TRUSTED_PROXY_IPS: set[str] = {
+    item.strip() for item in os.getenv("TRUSTED_PROXY_IPS", "").split(",") if item.strip()
+}
 
 DEFAULT_SITE_ID: str = os.getenv(
     "AI_DEFAULT_SITE_ID",
@@ -94,6 +94,7 @@ CLEAN_SYNTHETIC_DEMO_CLIENTS_ON_STARTUP: bool = _env_bool("CLEAN_SYNTHETIC_DEMO_
 MAX_TRANSCRIPT_CHARS: int = 2000
 MAX_RESPONSE_CHARS: int = 3000
 MAX_UI_ACTIONS: int = 5
+MAX_AUDIO_UPLOAD_BYTES: int = int(os.getenv("MAX_AUDIO_UPLOAD_BYTES", str(10 * 1024 * 1024)))
 
 VALID_UI_ACTIONS = {
     "SHOW_PRODUCTS",

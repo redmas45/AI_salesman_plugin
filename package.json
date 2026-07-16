@@ -4,13 +4,19 @@
   "version": "0.1.0",
   "packageManager": "pnpm@9.0.0",
   "scripts": {
-    "build": "pnpm -r run build",
-    "build:crm": "pnpm --filter ai-hub-crm build",
-    "build:plugin": "pnpm --filter mayabot-plugin build",
+    "build": "corepack pnpm -r run build",
+    "build:crm": "corepack pnpm --filter ai-hub-crm build",
+    "build:client-panel": "corepack pnpm --filter client-panel build",
+    "build:plugin": "corepack pnpm --filter mayabot-plugin build",
+    "lint:crm": "corepack pnpm --filter ai-hub-crm lint",
+    "lint:client-panel": "corepack pnpm --filter client-panel lint",
     "contracts:check": "python scripts/check_contracts.py",
-    "typecheck": "pnpm --filter ai-hub-crm exec tsc -b",
+    "deps:check": "python -m pip check",
+    "typecheck": "corepack pnpm --filter ai-hub-crm exec tsc -b",
     "test:py": "python -m pytest -q",
+    "test:py:unit": "python -m pytest -q -m \"not integration\"",
+    "test:py:integration": "python -m pytest -q -m integration",
     "compile:py": "python -m compileall agent api db tests",
-    "ci": "pnpm run contracts:check && pnpm -r run build && python -m pytest -q && python -m compileall agent api db tests"
+    "ci": "corepack pnpm run contracts:check && corepack pnpm run lint:crm && corepack pnpm run lint:client-panel && corepack pnpm -r run build && corepack pnpm run deps:check && python -m pytest -q && python -m compileall agent api db tests"
   }
 }

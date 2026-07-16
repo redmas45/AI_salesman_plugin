@@ -1,0 +1,346 @@
+/* Client operator */
+.client-detail {
+  display: grid;
+  gap: 12px;
+}
+
+.client-operator-center {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(440px, 1.1fr);
+  align-items: start;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: none;
+  padding: 14px;
+}
+
+.operator-status-panel,
+.operator-action-grid,
+.operator-link-strip {
+  min-width: 0;
+}
+
+.operator-status-panel {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.operator-status-head,
+.operator-link-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.operator-status-head {
+  justify-content: space-between;
+}
+
+.operator-status-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.operator-client-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+  padding: 10px;
+}
+
+.operator-client-title-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: default;
+  padding: 0;
+  text-align: left;
+}
+
+.operator-client-title-main:hover strong,
+.operator-client-title-main:focus-visible strong {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.operator-client-title-main:focus-visible {
+  outline: none;
+}
+
+.operator-client-title span,
+.operator-status-copy span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.operator-client-title strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operator-client-title small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operator-client-title a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operator-client-title a:hover,
+.operator-client-title a:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  outline: none;
+}
+
+.operator-status-copy strong {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.operator-status-copy p {
+  margin: 0;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.operator-run-summary {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-soft) 54%, var(--panel));
+  padding: 9px;
+}
+
+.operator-run-summary.complete {
+  border-color: color-mix(in srgb, var(--green) 36%, var(--line));
+  background: color-mix(in srgb, var(--green-soft) 58%, var(--panel));
+}
+
+.operator-run-summary.failed {
+  border-color: color-mix(in srgb, var(--red) 40%, var(--line));
+  background: color-mix(in srgb, var(--red-soft) 58%, var(--panel));
+}
+
+.operator-run-summary-head,
+.operator-run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.operator-run-summary-head span,
+.operator-run-meta span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.operator-run-summary-head strong {
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.operator-run-summary.complete .operator-run-summary-head strong {
+  color: var(--green);
+}
+
+.operator-run-summary.failed .operator-run-summary-head strong {
+  color: var(--red);
+}
+
+.operator-run-progress {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+}
+
+.operator-run-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 240ms var(--ease);
+}
+
+.operator-run-summary.complete .operator-run-progress span {
+  background: var(--green);
+}
+
+.operator-run-summary.failed .operator-run-progress span {
+  background: var(--red);
+}
+
+.operator-run-summary p {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.operator-signal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  min-width: 0;
+}
+
+.operator-signal {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--soft) 70%, transparent);
+  padding: 8px;
+}
+
+.operator-signal span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.operator-signal strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.operator-output-map {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  min-width: 0;
+}
+
+.operator-output-card {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  min-height: 82px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 82%, var(--soft));
+  color: var(--ink);
+  cursor: pointer;
+  padding: 9px;
+  text-align: left;
+}
+
+.operator-output-card:hover,
+.operator-output-card:focus-visible {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 36%, var(--panel));
+  box-shadow: var(--shadow-sm);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.operator-output-card.live {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 62%, var(--panel));
+}
+
+.operator-output-card.ok {
+  border-color: color-mix(in srgb, var(--green) 34%, var(--line));
+  background: color-mix(in srgb, var(--green-soft) 52%, var(--panel));
+}
+
+.operator-output-card.bad {
+  border-color: color-mix(in srgb, var(--red) 38%, var(--line));
+  background: color-mix(in srgb, var(--red-soft) 56%, var(--panel));
+}
+
+.operator-output-card.warn {
+  border-color: color-mix(in srgb, var(--amber) 36%, var(--line));
+  background: color-mix(in srgb, var(--amber-soft) 52%, var(--panel));
+}
+
+.operator-output-card span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.operator-output-card strong,
+.operator-output-card small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.operator-output-card strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.operator-output-card small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.operation-feedback-anchor {
+  min-width: 0;
+  scroll-margin-top: 150px;
+}

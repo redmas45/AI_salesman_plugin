@@ -17,12 +17,11 @@ from agent.page_context import format_page_context, parse_page_context
 from api.main import (
     CLIENT_PANEL_SOURCE_DIR,
     CLIENT_PANEL_STATIC_DIR,
-    SpaStaticFiles,
-    _parse_conversation_history,
-    _parse_public_knowledge_ids,
-    _public_knowledge_items,
     app,
 )
+from api.public_knowledge import parse_public_knowledge_ids, public_knowledge_items
+from api.runtime_payloads import parse_conversation_history
+from api.static_files import SpaStaticFiles
 from api.action_truth import annotate_ui_actions
 from api.models import KnowledgeItemResponse, ProductResponse, ShopResponse
 from db import schema as db_schema
@@ -69,7 +68,7 @@ def test_init_admin_schema_runs_ddl_once_per_process(monkeypatch):
 
 
 def test_client_panel_static_path_defaults_to_sibling_dist():
-    assert CLIENT_PANEL_SOURCE_DIR.name == "client_panel"
+    assert CLIENT_PANEL_SOURCE_DIR.name == "client-panel"
     assert CLIENT_PANEL_STATIC_DIR == CLIENT_PANEL_SOURCE_DIR / "dist"
 
 
@@ -277,7 +276,7 @@ def test_conversation_history_parser_drops_unsafe_roles():
         ]
     )
 
-    assert _parse_conversation_history(raw) == [
+    assert parse_conversation_history(raw) == [
         {"role": "user", "content": "show me red shoes"},
         {"role": "assistant", "content": "Sure."},
     ]
@@ -377,7 +376,7 @@ def test_product_response_serializes_large_ids_as_strings():
 def test_public_knowledge_ids_are_deduped_and_limited():
     raw_ids = ",".join(["policy:term", "policy:term", " "]) + "," + ("x" * 181)
 
-    assert _parse_public_knowledge_ids(raw_ids) == ["policy:term"]
+    assert parse_public_knowledge_ids(raw_ids) == ["policy:term"]
 
 
 def test_public_knowledge_items_are_ordered_and_sanitized():
@@ -399,7 +398,7 @@ def test_public_knowledge_items_are_ordered_and_sanitized():
         },
     ]
 
-    public_items = _public_knowledge_items(items, requested_ids)
+    public_items = public_knowledge_items(items, requested_ids)
 
     assert [item["id"] for item in public_items] == requested_ids
     assert public_items[0]["pricing"]["price"] == 120000

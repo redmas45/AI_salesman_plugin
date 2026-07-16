@@ -1,0 +1,156 @@
+/* Tables and forms */
+table {
+  width: 100%;
+  min-width: 780px;
+  border-collapse: collapse;
+}
+
+.table-compact {
+  min-width: 560px;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--line);
+  padding: 12px 10px;
+  text-align: left;
+  vertical-align: middle;
+  min-width: 0;
+}
+
+th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+td {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.link-strong {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 500;
+  padding: 0;
+  text-align: left;
+}
+
+.link-strong:hover {
+  color: var(--accent);
+}
+
+.field {
+  display: grid;
+  gap: 7px;
+}
+
+.field span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+input,
+select {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 0 10px;
+}
+
+option {
+  background: var(--panel);
+  color: var(--ink);
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.donut {
+  display: grid;
+  width: 138px;
+  height: 138px;
+  place-items: center;
+  border-radius: 50%;
+  background: conic-gradient(var(--accent) 0deg 145deg, var(--blue) 145deg 248deg, var(--green) 248deg 360deg);
+  justify-self: center;
+}
+
+.donut span {
+  display: grid;
+  width: 80px;
+  height: 80px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--panel);
+  text-align: center;
+}
+
+.donut strong,
+.donut small {
+  display: block;
+  line-height: 1;
+}
+
+.donut small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+
+
+.overflow-wrap-anywhere {
+  overflow-wrap: anywhere;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+@media (max-width: 780px) {
+  .client-operator-center {
+    position: static;
+    grid-template-columns: 1fr;
+  }
+
+  .operator-action-grid,
+  .operator-signal-grid,
+  .operator-output-map,
+  .crawl-issue-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .operator-link-strip {
+    justify-content: flex-start;
+  }
+
+  .operator-link-strip .btn {
+    flex: 1 1 150px;
+  }
+
+  .catalog-toolbar,
+  .data-health-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .section-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+

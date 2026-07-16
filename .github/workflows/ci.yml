@@ -25,8 +25,8 @@ jobs:
     env:
       DATABASE_URL: postgresql://shopbot:shopbot_password@localhost:5434/shopping_db
       CRM_ADMIN_TOKEN: ci-token
-      OPENAI_API_KEY: ""
-      GROQ_API_KEY: ""
+      AZURE_OPENAI_API_KEY: ""
+      AZURE_OPENAI_BASE_URL: ""
       CRAWL_ON_STARTUP: "false"
       CRAWL_PERIODIC_ENABLED: "false"
       ENSURE_DEFAULT_CLIENT_ON_STARTUP: "false"
@@ -43,7 +43,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt
+      - run: python -m pip check
       - run: pnpm run contracts:check
+      - run: pnpm --filter ai-hub-crm lint
+      - run: pnpm --filter client-panel lint
       - run: pnpm -r run build
       - run: python -m compileall agent api db tests
       - run: python -m pytest -q

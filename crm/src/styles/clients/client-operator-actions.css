@@ -1,0 +1,139 @@
+/* Client operator action cards */
+.operator-action-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-self: start;
+  gap: 10px;
+}
+
+.operator-action-grid.single {
+  grid-template-columns: 1fr;
+}
+
+.operator-action-card {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 108px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  padding: 11px;
+  text-align: left;
+}
+
+.operator-action-card.primary {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: var(--soft);
+}
+
+.operator-action-card.running {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 82%, var(--panel));
+  box-shadow: none;
+}
+
+.operator-action-card.complete {
+  border-color: color-mix(in srgb, var(--green) 44%, var(--line));
+  background: color-mix(in srgb, var(--green-soft) 72%, var(--panel));
+}
+
+.operator-action-card.failed {
+  border-color: color-mix(in srgb, var(--red) 48%, var(--line));
+  background: color-mix(in srgb, var(--red-soft) 72%, var(--panel));
+}
+
+.operator-action-card:hover,
+.operator-action-card:focus-visible {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.operator-action-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.82;
+  transform: none;
+}
+
+.operator-action-card.running:disabled {
+  opacity: 1;
+}
+
+.operator-action-card svg {
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.operator-action-card span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.operator-action-card strong,
+.operator-action-card small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.operator-action-card strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.operator-action-card small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.operator-action-state {
+  width: fit-content;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--soft) 72%, var(--panel));
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1;
+  padding: 5px 7px;
+  text-transform: uppercase;
+}
+
+.operator-action-state.running {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: color-mix(in srgb, var(--accent-soft) 78%, var(--panel));
+  color: var(--accent);
+}
+
+.operator-action-state.complete {
+  border-color: color-mix(in srgb, var(--green) 38%, var(--line));
+  background: color-mix(in srgb, var(--green-soft) 72%, var(--panel));
+  color: var(--green);
+}
+
+.operator-action-state.failed {
+  border-color: color-mix(in srgb, var(--red) 42%, var(--line));
+  background: color-mix(in srgb, var(--red-soft) 74%, var(--panel));
+  color: var(--red);
+}
+
+.operator-link-strip {
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 2px;
+}
+
+.operator-link-strip .btn {
+  flex: 0 1 150px;
+  min-width: min(100%, 128px);
+}

@@ -1,0 +1,208 @@
+.client-app {
+  height: 100dvh;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--page);
+}
+
+.client-shell {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scroll-padding-top: 24px;
+}
+
+.client-shell::-webkit-scrollbar {
+  width: 5px;
+}
+
+.client-shell::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 3px;
+}
+
+.client-header {
+  box-shadow: none;
+}
+
+.header-range-select {
+  min-height: 36px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='rgba(111,125,150,0.9)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  transition: border-color var(--duration) var(--ease), background var(--duration) var(--ease);
+}
+
+.header-range-select:hover {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  background-color: var(--soft);
+}
+
+.header-range-select:focus {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+.mini-stat {
+  position: relative;
+  overflow: hidden;
+  min-width: 100px;
+  padding: 7px 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: none;
+}
+
+.mini-stat::after {
+  content: none;
+}
+
+.mini-stat span {
+  position: relative;
+  z-index: 1;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mini-stat strong {
+  position: relative;
+  z-index: 1;
+  display: block;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.1;
+  margin-top: 4px;
+  color: var(--ink);
+}
+
+.summary-strip .mini-stat:nth-of-type(1) {
+  border-color: color-mix(in srgb, var(--palette-sky) 52%, var(--line));
+  background: color-mix(in srgb, var(--palette-sky) 14%, var(--panel));
+}
+
+.summary-strip .mini-stat:nth-of-type(2) {
+  border-color: color-mix(in srgb, var(--palette-lavender-gray) 52%, var(--line));
+  background: color-mix(in srgb, var(--palette-lavender-gray) 14%, var(--panel));
+}
+
+.client-panel-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+}
+
+.client-panel-content {
+  min-width: 0;
+}
+
+.client-panel-content > * {
+  min-height: 0;
+}
+
+.panel-tabs {
+  position: static;
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.panel-tabs-label {
+  display: none;
+}
+
+.panel-tabs .panel-tab-btn {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  width: auto;
+  min-height: 34px !important;
+  min-width: 0;
+  padding: 6px 10px !important;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px !important;
+  font-weight: 500;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.panel-tabs .panel-tab-btn:hover,
+.panel-tabs .panel-tab-btn:focus-visible {
+  background: var(--soft);
+  color: var(--ink);
+  border-color: transparent;
+}
+
+.panel-tabs .panel-tab-btn.active {
+  background: transparent;
+  color: var(--ink);
+  box-shadow: none;
+  border-color: transparent transparent var(--ink);
+}
+
+@media (max-width: 900px) {
+  .client-panel-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-tabs { position: static; }
+}
+
+@media (max-width: 760px) {
+  .client-panel-content > * {
+    min-height: auto;
+  }
+
+  .header-actions {
+    display: grid;
+    grid-template-columns: minmax(78px, 1fr) 38px auto auto;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+  }
+
+  .header-actions .header-range-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .header-actions button {
+    width: auto;
+  }
+
+  .header-actions .btn-icon {
+    width: 38px;
+  }
+}
+
+@media (max-width: 520px) {
+  .panel-tabs { display: flex; }
+}
+

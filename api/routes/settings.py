@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
-import functools
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks, Depends
 
 import config
-from api.models import HealthResponse
+from api.contracts.models import HealthResponse
+from api.crm_admin.crm_admin_guard import require_admin_token
 
 logger = logging.getLogger(__name__)
 
@@ -25,22 +23,18 @@ async def health() -> HealthResponse:
     return HealthResponse(
         status="ok",
         models={
-            "stt": f"{config.STT_PROVIDER}:{config.GROQ_STT_MODEL if config.STT_PROVIDER == 'groq' else config.STT_MODEL}",
-            "llm": config.LLM_MODEL,
-            "tts": (
-                f"groq:{config.GROQ_TTS_MODEL} / {config.GROQ_TTS_VOICE}"
-                if config.TTS_PROVIDER == "groq"
-                else f"openai:{config.TTS_MODEL} / {config.TTS_VOICE}"
-            ),
+            "stt": f"azure:{config.AZURE_OPENAI_STT_DEPLOYMENT}",
+            "llm": f"azure:{config.AZURE_OPENAI_CHAT_DEPLOYMENT}",
+            "tts": f"azure:{config.AZURE_OPENAI_TTS_DEPLOYMENT} / {config.AZURE_OPENAI_TTS_VOICE}",
             "embedding": config.EMBEDDING_MODEL,
         },
     )
 
 
-@router.post("/v1/catalog/crawler/run")
-async def trigger_crawler() -> dict[str, str]:
+@router.post("/v1/catalog/crawler/run", dependencies=[Depends(require_admin_token)])
+async def trigger_crawler(background_tasks: BackgroundTasks) -> dict[str, str]:
     """Manually trigger the crawler."""
-    from agent.ingestion import sync_web_crawl
+    from agent.ingestion_helpers.ingestion_facade import sync_web_crawl
 
     target_url = config.CURRENT_URL
     site_id = config.CURRENT_SITE_ID or config.DEFAULT_SITE_ID
@@ -62,8 +56,6 @@ async def trigger_crawler() -> dict[str, str]:
         except (RuntimeError, OSError, ValueError) as exc:
             logger.error("Manual crawl failed: %s", exc)
 
-    loop = asyncio.get_running_loop()
-    executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
-    loop.run_in_executor(executor, run_sync)
+    background_tasks.add_task(run_sync)
 
     return {"status": "ok", "message": "Crawler started in background."}
