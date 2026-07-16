@@ -46,6 +46,8 @@ export function injectStyles() {
       width: auto;
       max-width: calc(100vw - 32px);
       -webkit-font-smoothing: antialiased;
+      contain: layout style;
+      isolation: isolate;
     }
 
     #mayabot-btn {
@@ -61,7 +63,7 @@ export function injectStyles() {
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      transition: all 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+      transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1), box-shadow 0.3s ease, background-color 0.2s ease;
       outline: none;
     }
     
@@ -80,7 +82,7 @@ export function injectStyles() {
       border: 2px solid var(--mayabot-primary);
       opacity: 0.4;
       pointer-events: none;
-      transition: all 0.3s ease;
+      transition: inset 0.3s ease, opacity 0.3s ease;
     }
 
     #mayabot-btn:hover {
@@ -95,8 +97,7 @@ export function injectStyles() {
 
     #mayabot-btn.recording {
       background: #ef4444;
-      box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
-      animation: mayabotPulseRecord 1.5s infinite cubic-bezier(0.66, 0, 0, 1);
+      box-shadow: 0 0 0 6px rgba(239, 68, 68, 0.2), 0 8px 24px rgba(0,0,0,0.18);
     }
 
     #mayabot-chat {
@@ -120,7 +121,7 @@ export function injectStyles() {
       opacity: 0;
       pointer-events: none;
       visibility: hidden;
-      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      transition: opacity 0.25s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0.3s;
     }
 
     #mayabot-chat.visible {
@@ -128,6 +129,7 @@ export function injectStyles() {
       pointer-events: all;
       visibility: visible;
       transform: translateY(0) scale(1);
+      transition-delay: 0s;
     }
 
     .mayabot-header {
@@ -216,7 +218,7 @@ export function injectStyles() {
       min-height: 18px;
       margin-top: 4px;
       font-weight: 500;
-      transition: all 0.3s ease;
+      transition: color 0.3s ease, opacity 0.3s ease;
     }
 
     #mayabot-status.listening {
@@ -241,10 +243,6 @@ export function injectStyles() {
       50% { opacity: 1; }
     }
 
-    @keyframes mayabotPulseRecord {
-      to { box-shadow: 0 0 0 24px rgba(239, 68, 68, 0); }
-    }
-
     @media (max-width: 520px) {
       #mayabot-widget {
         right: 16px;
@@ -257,6 +255,18 @@ export function injectStyles() {
       #mayabot-chat {
         bottom: 84px;
         width: calc(100vw - 32px);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #mayabot-btn,
+      #mayabot-btn svg,
+      .mayabot-btn-ring,
+      #mayabot-chat,
+      .mayabot-msg,
+      #mayabot-status {
+        animation: none !important;
+        transition: none !important;
       }
     }
   `;

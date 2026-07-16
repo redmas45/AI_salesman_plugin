@@ -344,8 +344,8 @@ def test_crm_operation_status_projects_backend_evidence(monkeypatch):
     operations = res.json()["operations"]
     assert operations["crawl"]["status"] == "complete"
     assert operations["crawl"]["stages"][2]["message"] == "7 pages visited."
-    assert operations["readiness"]["status"] == "complete"
-    assert operations["readiness"]["message"] == "1/2 readiness checks supported."
+    assert operations["readiness"]["status"] == "failed"
+    assert operations["readiness"]["message"] == "1 blocking readiness check(s) require attention."
     assert operations["integration"]["status"] == "complete"
     assert operations["integration"]["stages"][1]["label"] == "Discovering routes and actions"
 

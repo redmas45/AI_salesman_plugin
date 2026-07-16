@@ -62,6 +62,9 @@ def _synthesize_single(text: str) -> bytes:
         )
     except TTS_PROVIDER_ERRORS as exc:
         logger.error("TTS | synthesis failed: %s", exc)
+        from agent.providers.provider_status import record_provider_failure
+
+        record_provider_failure("azure_openai", exc)
         raise RuntimeError(f"Text-to-speech failed: {exc}") from exc
 
     return audio_bytes
@@ -104,6 +107,11 @@ def synthesize(text: str) -> bytes:
         len(audio_chunks),
     )
     return audio_bytes
+
+
+def verify_runtime() -> None:
+    """Verify that the configured TTS deployment accepts a minimal request."""
+    _call_tts("Maya audio check.")
 
 
 def _clean_tts_text(text: Any) -> str:

@@ -101,6 +101,7 @@ def test_manual_azure_runtime_check_records_success(monkeypatch):
     events = []
     monkeypatch.setattr(provider_status, "azure_openai_is_configured", lambda: True)
     monkeypatch.setattr(provider_status, "create_chat_completion", lambda *args, **kwargs: '{"status":"ok"}')
+    monkeypatch.setattr(provider_status, "_audio_runtime_failures", lambda: [])
     monkeypatch.setattr(
         provider_status,
         "_record_provider_event",
@@ -122,7 +123,7 @@ def test_manual_azure_runtime_check_records_success(monkeypatch):
 
     assert status["status"] == "ok"
     assert events[0]["provider"] == "azure_openai"
-    assert events[0]["category"] == "ok"
+    assert events[0]["category"] == "runtime_ok"
 
 
 def test_manual_azure_runtime_check_categorizes_quota(monkeypatch):
@@ -133,6 +134,7 @@ def test_manual_azure_runtime_check_categorizes_quota(monkeypatch):
         "create_chat_completion",
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("429 insufficient_quota")),
     )
+    monkeypatch.setattr(provider_status, "_audio_runtime_failures", lambda: [])
     monkeypatch.setattr(
         provider_status,
         "_record_provider_event",
@@ -154,6 +156,53 @@ def test_manual_azure_runtime_check_categorizes_quota(monkeypatch):
 
     assert status["status"] == "quota_exhausted"
     assert events[0]["category"] == "quota_exhausted"
+
+
+def test_manual_azure_runtime_check_fails_when_audio_deployment_is_missing(monkeypatch):
+    events = []
+    monkeypatch.setattr(provider_status, "azure_openai_is_configured", lambda: True)
+    monkeypatch.setattr(provider_status, "create_chat_completion", lambda *args, **kwargs: '{"status":"ok"}')
+    monkeypatch.setattr(
+        provider_status,
+        "_audio_runtime_failures",
+        lambda: [("stt", RuntimeError("404 DeploymentNotFound"))],
+    )
+    monkeypatch.setattr(
+        provider_status,
+        "_record_provider_event",
+        lambda provider, category, message: events.insert(
+            0,
+            {
+                "provider": provider,
+                "category": category,
+                "message": message,
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+            },
+        ),
+    )
+    monkeypatch.setattr(provider_status, "_recent_provider_events", lambda limit=20: events[:limit])
+    monkeypatch.setattr(provider_status, "_usage_summary", _empty_usage)
+    monkeypatch.setattr(provider_status.config, "AZURE_OPENAI_API_KEY", "test-key")
+
+    status = provider_status.check_azure_openai_runtime()
+
+    assert status["status"] == "error"
+    assert events[0]["category"] == "runtime_error"
+    assert "stt" in events[0]["message"]
+
+
+def test_chat_success_does_not_hide_runtime_audio_failure(monkeypatch):
+    monkeypatch.setattr(provider_status, "azure_openai_is_configured", lambda: True)
+    now = datetime.now(timezone.utc).isoformat()
+
+    status = provider_status._provider_status(
+        [
+            {"provider": "azure_openai", "category": "chat_ok", "occurred_at": now},
+            {"provider": "azure_openai", "category": "runtime_error", "occurred_at": now},
+        ]
+    )
+
+    assert status == "error"
 
 
 def test_stale_provider_success_requires_verification(monkeypatch):

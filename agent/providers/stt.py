@@ -85,7 +85,17 @@ def transcribe(audio_bytes: bytes, filename: str = "audio.wav") -> str:
 
     except STT_PROVIDER_ERRORS as exc:
         logger.exception("STT | transcription failed")
+        from agent.providers.provider_status import record_provider_failure
+
+        record_provider_failure("azure_openai", exc)
+        if "deploymentnotfound" in str(exc).lower() or "404" in str(exc).lower():
+            raise RuntimeError("Voice transcription is unavailable. Please try text chat.") from exc
         raise RuntimeError("I didn't catch that. Please try again.") from exc
+
+
+def verify_runtime(audio_bytes: bytes) -> None:
+    """Verify that the configured STT deployment accepts a valid audio request."""
+    _call_stt(_audio_file(audio_bytes, "runtime-check.wav"), config.STT_LANGUAGE)
 
 
 def _audio_file(audio_bytes: bytes, filename: str) -> tuple:

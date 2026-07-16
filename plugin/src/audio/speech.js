@@ -5,6 +5,18 @@ const SPEECH_PITCH = 1.08;
 const VOICE_FALLBACK_DELAY_MS = 300;
 const FEMALE_VOICE_HINTS = Object.freeze([
   "hannah",
+  "sonia",
+  "libby",
+  "ava",
+  "susan",
+  "hazel",
+  "heera",
+  "salli",
+  "joanna",
+  "amy",
+  "emma",
+  "olivia",
+  "natasha",
   "zira",
   "aria",
   "jenny",
@@ -25,12 +37,16 @@ let pendingSpeechText = "";
 let selectedSpeechVoiceName = "";
 
 export function speakText(text) {
-  if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) return;
+  if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) return false;
   pendingSpeechText = text;
   const speak = () => {
     try {
       const utterance = new SpeechSynthesisUtterance(text);
       const voice = preferredSpeechVoice(window.speechSynthesis.getVoices());
+      if (!voice) {
+        pendingSpeechText = "";
+        return false;
+      }
       if (voice) utterance.voice = voice;
       utterance.rate = SPEECH_RATE;
       utterance.pitch = SPEECH_PITCH;
@@ -39,18 +55,20 @@ export function speakText(text) {
       window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
       window.speechSynthesis.speak(utterance);
+      return true;
     } catch (_err) {
       // Browser speech synthesis is best-effort only.
+      return false;
     }
   };
 
   if (window.speechSynthesis.getVoices().length > 0) {
-    speak();
-    return;
+    return speak();
   }
 
   window.speechSynthesis.onvoiceschanged = speak;
   window.setTimeout(speak, VOICE_FALLBACK_DELAY_MS);
+  return true;
 }
 
 export function replayPendingSpeech() {
@@ -90,11 +108,7 @@ function preferenceVoice(voices) {
   if (config.speechVoicePreference.toLowerCase() !== "female") {
     return voices.find((voice) => voice.default) || voices[0];
   }
-  return (
-    voices.find((voice) => FEMALE_VOICE_HINTS.some((hint) => voice.name.toLowerCase().includes(hint))) ||
-    voices.find((voice) => voice.default) ||
-    voices[0]
-  );
+  return voices.find((voice) => FEMALE_VOICE_HINTS.some((hint) => voice.name.toLowerCase().includes(hint))) || null;
 }
 
 function clearPendingSpeech() {

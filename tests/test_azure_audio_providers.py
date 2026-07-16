@@ -1,6 +1,8 @@
 import io
 import wave
 
+import pytest
+
 
 def test_azure_stt_uses_configured_deployment(monkeypatch):
     import config
@@ -23,6 +25,21 @@ def test_azure_stt_uses_configured_deployment(monkeypatch):
     assert calls["model"] == "stt-deployment"
     assert calls["response_format"] == "text"
     assert calls["file"][0] == "audio.webm"
+
+
+def test_azure_stt_reports_missing_deployment_as_voice_unavailable(monkeypatch):
+    from agent import stt
+    from agent import provider_status
+
+    monkeypatch.setattr(
+        stt,
+        "_call_stt",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("404 DeploymentNotFound")),
+    )
+    monkeypatch.setattr(provider_status, "record_provider_failure", lambda *args, **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="Voice transcription is unavailable"):
+        stt.transcribe(b"fake audio", "audio.webm")
 
 
 def test_azure_tts_uses_configured_deployment_and_voice(monkeypatch):

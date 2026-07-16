@@ -46,6 +46,8 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
     styles_facade = Path("plugin/src/styles.js").read_text(encoding="utf-8")
     widget_facade = Path("plugin/src/widget.js").read_text(encoding="utf-8")
     speech_facade = Path("plugin/src/speech.js").read_text(encoding="utf-8")
+    speech_source = Path("plugin/src/audio/speech.js").read_text(encoding="utf-8")
+    styles_source = Path("plugin/src/widget/styles.js").read_text(encoding="utf-8")
     availability_facade = Path("plugin/src/widgetAvailability.js").read_text(encoding="utf-8")
     conversation_source = Path("plugin/src/session/conversationMemory.js").read_text(encoding="utf-8")
     recorder_source = Path("plugin/src/audio/recorder.js").read_text(encoding="utf-8")
@@ -116,6 +118,13 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
     assert "callbacks.onActionResults" in api_source
     assert "const sharedAudioQueue = new AudioQueue()" in api_source
     assert "speakTextFallback(data.response_text)" in api_source
+    assert "from \"../audio/speech\"" in api_source
+    assert "new SpeechSynthesisUtterance" not in api_source
+    assert "FEMALE_VOICE_HINTS.some" in speech_source
+    assert ")) || null;" in speech_source
+    assert "contain: layout style;" in styles_source
+    assert "transition: all" not in styles_source
+    assert "mayabotPulseRecord" not in styles_source
     assert "retryBlocked()" in api_source
     assert "SHOW_COMPARISON" in product_executor
     assert "Product comparison" in product_executor
@@ -359,6 +368,3 @@ def test_navigation_fallback_uses_runtime_routes_without_trailing_slash_guess() 
     assert "AIHubAdapter?.config?.adapter?.routes" in source
     assert "`/${path}`" in source
     assert "`/${path}/`" not in source
-
-
-

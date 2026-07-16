@@ -169,12 +169,7 @@ async def _check_catalog(
                 evidence=f"JSON catalog at {url}",
             )
         if code == 200:
-            return SiteCapability(
-                name="catalog",
-                supported=True,
-                confidence=0.6,
-                evidence=f"Non-JSON 200 at {url}",
-            )
+            continue
 
     return SiteCapability(
         name="catalog",

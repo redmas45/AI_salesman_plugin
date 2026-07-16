@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 import config
 from api.contracts.models import HealthResponse
 from api.crm_admin.crm_admin_guard import require_admin_token
+from agent.providers.provider_status import provider_usage_status
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +20,11 @@ router = APIRouter(tags=["Utility"])
 
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """Check API and model configuration health."""
+    """Report infrastructure health and the latest explicit provider verification."""
+    runtime_status = provider_usage_status()
     return HealthResponse(
         status="ok",
+        provider_status=str(runtime_status.get("status") or "unverified"),
         models={
             "stt": f"azure:{config.AZURE_OPENAI_STT_DEPLOYMENT}",
             "llm": f"azure:{config.AZURE_OPENAI_CHAT_DEPLOYMENT}",

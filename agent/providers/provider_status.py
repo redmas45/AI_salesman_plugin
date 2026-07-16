@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import logging
+import wave
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
@@ -32,9 +34,9 @@ def record_provider_failure(provider: str, exc: BaseException, *, category: str 
 def record_provider_success(provider: str) -> None:
     """Record provider recovery after a successful chat request."""
     latest = _recent_provider_events(1)
-    if latest and latest[0].get("provider") == provider and latest[0].get("category") == "ok":
+    if latest and latest[0].get("provider") == provider and latest[0].get("category") == "chat_ok":
         return
-    _record_provider_event(provider, "ok", "Azure OpenAI chat request completed successfully.")
+    _record_provider_event(provider, "chat_ok", "Azure OpenAI chat request completed successfully.")
 
 
 def provider_usage_status() -> dict[str, Any]:
@@ -64,7 +66,7 @@ def provider_usage_status() -> dict[str, Any]:
 
 
 def check_azure_openai_runtime() -> dict[str, Any]:
-    """Run a small live Azure request and return refreshed provider status."""
+    """Verify the configured Azure chat, STT, and TTS deployments."""
     if not azure_openai_is_configured():
         _record_provider_event(
             PROVIDER_NAME,
@@ -73,6 +75,7 @@ def check_azure_openai_runtime() -> dict[str, Any]:
         )
         return provider_usage_status()
 
+    failures: list[tuple[str, BaseException]] = []
     try:
         create_chat_completion(
             [
@@ -83,15 +86,46 @@ def check_azure_openai_runtime() -> dict[str, Any]:
             json_response=True,
         )
     except AZURE_OPENAI_ERRORS as exc:
+        failures.append(("chat", exc))
+
+    failures.extend(_audio_runtime_failures())
+    if failures:
+        category = _provider_error_category(failures[0][1])
+        details = "; ".join(f"{component}: {_safe_error_message(exc)}" for component, exc in failures)
         _record_provider_event(
             PROVIDER_NAME,
-            _provider_error_category(exc),
-            f"Azure OpenAI runtime check failed: {_safe_error_message(exc)}",
+            category if category != "error" else "runtime_error",
+            f"Azure OpenAI runtime check failed: {details}",
         )
         return provider_usage_status()
 
-    _record_provider_event(PROVIDER_NAME, "ok", "Azure OpenAI runtime check passed.")
+    _record_provider_event(PROVIDER_NAME, "runtime_ok", "Azure OpenAI chat, STT, and TTS runtime checks passed.")
     return provider_usage_status()
+
+
+def _audio_runtime_failures() -> list[tuple[str, BaseException]]:
+    from agent.providers import stt, tts
+
+    failures: list[tuple[str, BaseException]] = []
+    try:
+        stt.verify_runtime(_silent_wav())
+    except AZURE_OPENAI_ERRORS as exc:
+        failures.append(("stt", exc))
+    try:
+        tts.verify_runtime()
+    except AZURE_OPENAI_ERRORS as exc:
+        failures.append(("tts", exc))
+    return failures
+
+
+def _silent_wav() -> bytes:
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16_000)
+        wav_file.writeframes(b"\x00\x00" * 4_000)
+    return output.getvalue()
 
 
 def _record_provider_event(provider: str, category: str, message: str) -> None:
@@ -120,8 +154,23 @@ def _record_provider_event(provider: str, category: str, message: str) -> None:
 def _provider_status(recent_events: list[dict[str, Any]]) -> str:
     if not azure_openai_is_configured():
         return "not_configured"
+    runtime_categories = {
+        "ok",
+        "runtime_ok",
+        "runtime_error",
+        "quota_exhausted",
+        "error",
+        "auth_error",
+        "invalid_key",
+        "not_configured",
+    }
     latest = next(
-        (event for event in recent_events if event.get("provider") == PROVIDER_NAME),
+        (
+            event
+            for event in recent_events
+            if event.get("provider") == PROVIDER_NAME
+            and str(event.get("category") or "").lower() in runtime_categories
+        ),
         None,
     )
     if not latest:
@@ -129,9 +178,9 @@ def _provider_status(recent_events: list[dict[str, Any]]) -> str:
     category = str(latest.get("category") or "").lower()
     if category == "quota_exhausted":
         return "quota_exhausted"
-    if category in {"error", "auth_error", "invalid_key"}:
+    if category in {"error", "runtime_error", "auth_error", "invalid_key"}:
         return "error"
-    if category != "ok" or not _provider_event_is_fresh(latest):
+    if category not in {"ok", "runtime_ok"} or not _provider_event_is_fresh(latest):
         return "unverified"
     return "ok"
 

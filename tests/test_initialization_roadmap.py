@@ -237,7 +237,7 @@ def test_auto_initialization_runs_assistant_smoke_stage_when_requested(monkeypat
     assert running_smoke["stages"][-1]["message"] == "Assistant prompt smoke tests are running."
 
 
-def test_auto_initialization_clears_setup_when_only_prompt_checks_need_repair(monkeypatch) -> None:
+def test_auto_initialization_keeps_setup_required_when_prompt_checks_fail(monkeypatch) -> None:
     setup_updates = []
 
     monkeypatch.setattr("agent.client_initialization._save_report", lambda site_id, report: None)
@@ -278,10 +278,10 @@ def test_auto_initialization_clears_setup_when_only_prompt_checks_need_repair(mo
     assert report["status"] == "partial"
     assert setup_updates
     assert setup_updates[-1][0] == "ai_kart"
-    assert setup_updates[-1][1]["needs_setup"] is False
+    assert all(update[1]["needs_setup"] is True for update in setup_updates)
 
 
-def test_operation_status_does_not_mark_setup_failed_for_prompt_repair_only() -> None:
+def test_operation_status_marks_setup_failed_for_prompt_repair() -> None:
     from api import crm
 
     operation_status = crm._client_operation_status(
@@ -312,9 +312,40 @@ def test_operation_status_does_not_mark_setup_failed_for_prompt_repair_only() ->
 
     integration = operation_status["operations"]["integration"]
 
-    assert integration["status"] == "complete"
-    assert "Prompt checks found repair items" in integration["message"]
+    assert integration["status"] == "failed"
+    assert "Assistant smoke tests failed" in integration["message"]
     assert integration["stages"][2]["status"] == "failed"
 
+
+def test_readiness_stage_fails_for_blocking_capability(monkeypatch) -> None:
+    from agent import client_initialization
+    from agent.scanning import scanner
+
+    class Report:
+        def to_dict(self):
+            return {
+                "platform": "custom",
+                "platform_confidence": 0.8,
+                "capabilities": [
+                    {
+                        "name": "expected_action:SHOW_PRODUCTS",
+                        "supported": False,
+                        "blocking": True,
+                    }
+                ],
+            }
+
+    async def scan_site(*args, **kwargs):
+        return Report()
+
+    monkeypatch.setattr(client_initialization, "_client_detail", lambda site_id: {"vertical_config": {}})
+    monkeypatch.setattr(scanner, "scan_site", scan_site)
+    monkeypatch.setattr(client_initialization.admin_db, "save_readiness_report", lambda *args: None)
+
+    stage = client_initialization._readiness_stage("ai_kart", "https://shop.example", "ecommerce")
+
+    assert stage["status"] == "failed"
+    assert stage["blockers"] == 1
+    assert "SHOW_PRODUCTS" in stage["message"]
 
 

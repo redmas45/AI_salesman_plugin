@@ -2,6 +2,7 @@
 
 from collections import defaultdict, deque
 from collections.abc import Callable
+import ipaddress
 import logging
 import threading
 import time
@@ -139,6 +140,20 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def _client_ip(self, request: Request) -> str:
         peer_ip = (request.client.host if request.client else "unknown")[:80]
         forwarded_for = request.headers.get("x-forwarded-for", "")
-        if peer_ip in config.TRUSTED_PROXY_IPS and forwarded_for:
+        if self._trusted_proxy(peer_ip) and forwarded_for:
             return forwarded_for.split(",", 1)[0].strip()[:80]
         return peer_ip
+
+    @staticmethod
+    def _trusted_proxy(peer_ip: str) -> bool:
+        try:
+            address = ipaddress.ip_address(peer_ip)
+        except ValueError:
+            return False
+        for entry in config.TRUSTED_PROXY_IPS:
+            try:
+                if address in ipaddress.ip_network(entry, strict=False):
+                    return True
+            except ValueError:
+                logger.warning("Ignoring invalid TRUSTED_PROXY_IPS entry: %s", entry)
+        return False

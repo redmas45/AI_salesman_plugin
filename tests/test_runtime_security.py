@@ -53,6 +53,21 @@ def test_rate_limit_accepts_forwarded_ip_from_trusted_peer(monkeypatch) -> None:
     assert RateLimitMiddleware(app)._client_ip(request) == "203.0.113.10"
 
 
+def test_rate_limit_accepts_forwarded_ip_from_trusted_proxy_cidr(monkeypatch) -> None:
+    monkeypatch.setattr(config, "TRUSTED_PROXY_IPS", {"172.16.0.0/12"})
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/admin/clients",
+            "headers": [(b"x-forwarded-for", b"203.0.113.11, 172.17.0.1")],
+            "client": ("172.17.0.1", 1234),
+        }
+    )
+
+    assert RateLimitMiddleware(app)._client_ip(request) == "203.0.113.11"
+
+
 def test_widget_registration_uses_stricter_rate_limit_rule() -> None:
     rule = RateLimitMiddleware(app)._matching_rule("/v1/widget/register")
 

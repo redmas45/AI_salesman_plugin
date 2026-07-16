@@ -196,6 +196,7 @@ class HealthResponse(BaseModel):
     status: str
     version: str = "1.0.0"
     models: dict[str, str]
+    provider_status: str = "unverified"
 
 class AddToCartRequest(BaseModel):
     site_id: str = Field(default=DEFAULT_SITE_ID, min_length=1, max_length=MAX_SITE_ID_LENGTH)

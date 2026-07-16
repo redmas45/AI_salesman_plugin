@@ -21,7 +21,6 @@ from db.admin_domain import admin_facade as admin_db
 logger = logging.getLogger(__name__)
 
 INITIALIZATION_SOURCE = "widget_registration"
-NON_BLOCKING_SETUP_FAILURE_STAGES = frozenset({"assistant_smoke_tests"})
 SMOKE_MAX_ATTEMPTS = 1
 
 
@@ -116,6 +115,7 @@ def run_widget_initialization(
         return final_report
 
     save_running()
+    _update_setup_status_safe(site_id, needs_setup=True)
 
     previous_client = _client_detail(site_id)
     flow_report: dict[str, Any] = {}
@@ -188,7 +188,7 @@ def run_widget_initialization(
     )
     _save_report(site_id, final_report)
 
-    if status == "ok" or _setup_evidence_ready(stages):
+    if status == "ok":
         _update_setup_status_safe(site_id, needs_setup=False, last_setup_at=_utc_now())
 
     return final_report
@@ -205,6 +205,15 @@ def _crawl_stage(site_id: str, site_url: str, max_pages: int, max_depth: int) ->
             reconcile_missing=True,
             source_name="widget_initialization_crawler",
         )
+        client = _client_detail(site_id)
+        if str(client.get("vertical_key") or "").lower() == "ecommerce":
+            from db.core.database import tenant_catalog_stats
+
+            active_products = int(tenant_catalog_stats(site_id).get("active_products") or 0)
+            if active_products == 0:
+                raise RuntimeError(
+                    "Crawl completed without any active products. Verify that the public website is accessible without login or deployment protection."
+                )
         admin_db.update_client_crawl_status(site_id, admin_db.CRAWL_STATUS_OK, "Auto initialization crawl completed.")
         return _stage("crawl", "ok", "Content crawl completed.")
     except Exception as exc:
@@ -292,9 +301,33 @@ def _readiness_stage(site_id: str, site_url: str, vertical_key: str) -> dict[str
         supported = sum(
             1
             for capability in report.get("capabilities", [])
-            if capability.get("supported") or capability.get("blocking") is False
+            if capability.get("supported")
         )
         total = len(report.get("capabilities", []))
+        blockers = [
+            capability
+            for capability in report.get("capabilities", [])
+            if capability.get("blocking") is not False and not capability.get("supported")
+        ]
+        if total == 0 or report.get("platform") == "unreachable" or blockers:
+            names = ", ".join(str(capability.get("name") or "unknown") for capability in blockers[:8])
+            message = (
+                "Readiness scan returned no capability evidence."
+                if total == 0
+                else "Readiness scan found blocking capability failures."
+            )
+            if names:
+                message = f"{message} Fix: {names}."
+            return _stage(
+                "readiness_scan",
+                "failed",
+                message,
+                supported=supported,
+                total=total,
+                blockers=len(blockers),
+                platform=report.get("platform"),
+                platform_confidence=report.get("platform_confidence"),
+            )
         return _stage(
             "readiness_scan",
             "ok",
@@ -349,7 +382,7 @@ def _update_crawl_status_safe(site_id: str, status: str, message: str) -> None:
         logger.warning("Setup crawl status could not be updated for %s: %s", site_id, exc)
 
 
-def _update_setup_status_safe(site_id: str, *, needs_setup: bool, last_setup_at: str) -> None:
+def _update_setup_status_safe(site_id: str, *, needs_setup: bool, last_setup_at: str | None = None) -> None:
     try:
         admin_db.update_client_setup_status(site_id, needs_setup=needs_setup, last_setup_at=last_setup_at)
     except psycopg.Error as exc:
@@ -410,27 +443,6 @@ def _overall_status(stages: list[dict[str, Any]]) -> str:
     if failed:
         return "error"
     return "ok"
-
-
-def _setup_evidence_ready(stages: list[dict[str, Any]]) -> bool:
-    return bool(_successful_setup_evidence_stages(stages)) and not _blocking_setup_failures(stages)
-
-
-def _successful_setup_evidence_stages(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        stage
-        for stage in stages
-        if stage.get("status") == "ok" and str(stage.get("name") or "") not in NON_BLOCKING_SETUP_FAILURE_STAGES
-    ]
-
-
-def _blocking_setup_failures(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        stage
-        for stage in stages
-        if stage.get("status") in {"failed", "canceled", "timed_out"}
-        and str(stage.get("name") or "") not in NON_BLOCKING_SETUP_FAILURE_STAGES
-    ]
 
 
 def _utc_now() -> str:

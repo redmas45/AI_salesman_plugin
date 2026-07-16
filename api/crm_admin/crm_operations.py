@@ -116,9 +116,14 @@ def readiness_operation_status(client: dict[str, Any]) -> dict[str, Any]:
     supported = sum(
         1
         for item in capabilities
-        if isinstance(item, dict) and (item.get("supported") or item.get("blocking") is False)
+        if isinstance(item, dict) and item.get("supported")
     )
     total = len(capabilities)
+    blockers = [
+        item
+        for item in capabilities
+        if isinstance(item, dict) and item.get("blocking") is not False and not item.get("supported")
+    ]
     if not report:
         return operation(
             "readiness",
@@ -134,18 +139,28 @@ def readiness_operation_status(client: dict[str, Any]) -> dict[str, Any]:
             ],
             result_tab="readiness",
         )
+    scan_status = "failed" if not capabilities or blockers or report.get("platform") == "unreachable" else "complete"
+    if not capabilities:
+        scan_message = "No readiness capabilities were verified."
+        compare_message = "No capability evidence was available to compare."
+    elif blockers:
+        scan_message = f"{len(blockers)} blocking readiness check(s) require attention."
+        compare_message = "Blocking action gaps found."
+    else:
+        scan_message = f"{supported}/{total} checks supported."
+        compare_message = "Action contract compared."
     stages = [
         operation_stage("readiness_context", "Preparing client context", "complete", "Client context loaded.", completed_at=scanned_at),
         operation_stage("readiness_evidence", "Loading latest adapter evidence", "complete", "Adapter evidence loaded.", completed_at=scanned_at),
-        operation_stage("readiness_scan", "Scanning website capabilities", "complete", f"{supported}/{total} checks supported.", completed_at=scanned_at),
-        operation_stage("readiness_compare", "Comparing domain action contract", "complete", "Action contract compared.", completed_at=scanned_at),
+        operation_stage("readiness_scan", "Scanning website capabilities", scan_status, scan_message, completed_at=scanned_at),
+        operation_stage("readiness_compare", "Comparing domain action contract", scan_status, compare_message, completed_at=scanned_at),
         operation_stage("readiness_save", "Saving readiness report", "complete", "Readiness report saved.", completed_at=scanned_at),
     ]
     return operation(
         "readiness",
         "Readiness scan",
-        "complete",
-        f"{supported}/{total} readiness checks supported.",
+        scan_status,
+        scan_message,
         stages,
         result_tab="readiness",
         completed_at=scanned_at,
@@ -189,8 +204,7 @@ def integration_operation_status(client: dict[str, Any], vertical_config: dict[s
     status = normalize_operation_status(str(initialization.get("status") or "unknown"), stages)
     message = str(initialization.get("error") or "") or operation_message(status, "Setup run")
     if only_prompt_checks_failed(stages):
-        status = "complete"
-        message = "Setup evidence completed. Prompt checks found repair items; open Assistant prompt smoke tests for exact evidence."
+        message = "Assistant smoke tests failed. Open the prompt checks for exact evidence before enabling this client."
     if status == "running" and initialization.get("cancel_requested"):
         message = "Setup stop requested. Waiting for the current stage checkpoint."
     return operation(

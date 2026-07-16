@@ -1,5 +1,6 @@
 import { config } from "../core/config";
 import { executeActions } from "../actionExecutor";
+import { replayPendingSpeech, speakText } from "../audio/speech";
 import {
   API_PATHS,
   AUDIO,
@@ -10,10 +11,8 @@ import {
 } from "../core/constants";
 
 const MAX_WS_RETRIES = 3;
-const FALLBACK_SPEECH_MAX_CHARS = 700;
 const RUNTIME_GLOBAL = "AIHubAdapterRuntime";
 const ADAPTER_GLOBAL = "AIHubAdapter";
-let pendingFallbackSpeechText = "";
 
 function wsUrlFromApiBase(apiUrl, siteId) {
   const url = new URL(API_PATHS.SHOP_WS, apiUrl);
@@ -85,7 +84,7 @@ class AudioQueue {
     if (typeof window === "undefined") return;
     const retry = () => {
       this.retryBlocked();
-      replayFallbackSpeech();
+      replayPendingSpeech();
     };
     window.addEventListener("pointerdown", retry, { capture: true, passive: true });
     window.addEventListener("keydown", retry, { capture: true });
@@ -393,37 +392,14 @@ function userFacingError(error) {
   const text = String(error?.message || error || "").toLowerCase();
   if (text.includes("quota")) return "Quota reached";
   if (text.includes("microphone") || text.includes("permission")) return "Mic unavailable";
+  if (text.includes("voice") || text.includes("transcription") || text.includes("speech")) return "Voice unavailable";
   if (text.includes("network") || text.includes("fetch") || text.includes("api request")) return "Connection issue";
   return "Try again";
 }
 
 function speakTextFallback(text) {
-  if (!text || !("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) return false;
-  pendingFallbackSpeechText = String(text).slice(0, FALLBACK_SPEECH_MAX_CHARS);
-  const utterance = new SpeechSynthesisUtterance(pendingFallbackSpeechText);
-  utterance.rate = 1;
-  utterance.pitch = 1;
-  utterance.volume = 1;
-  utterance.onstart = () => {
-    pendingFallbackSpeechText = "";
-  };
-  utterance.onend = () => {
-    pendingFallbackSpeechText = "";
-  };
-  try {
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.resume();
-    window.speechSynthesis.speak(utterance);
-    return true;
-  } catch (err) {
-    console.warn("Fallback speech failed", err);
-    return false;
-  }
-}
-
-function replayFallbackSpeech() {
-  if (!pendingFallbackSpeechText) return;
-  speakTextFallback(pendingFallbackSpeechText);
+  if (!text) return false;
+  return speakText(String(text).slice(0, 700));
 }
 
 function currentPageContext() {
