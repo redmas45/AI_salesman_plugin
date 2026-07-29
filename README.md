@@ -6,9 +6,20 @@ The client website stays independent. It owns its own users, products or busines
 
 ## Current State
 
-Current development checkpoint: **L15 universal runtime intelligence, tenant cache, and data freshness**
+Current development checkpoint: **L15 universal runtime intelligence, tenant cache, data freshness, and voice/provider hardening**
 
-Date: **2026-07-01**
+Last code change: **2026-07-16** (`d9ef17b`)
+
+Last verified: **2026-07-29**
+
+```text
+python -m pytest -q                          -> 643 passed, 1 skipped (~4m40s)
+python -m compileall agent api db tests       -> passed
+corepack pnpm run contracts:check             -> 73 actions matched
+corepack pnpm --filter ai-hub-crm lint        -> clean
+corepack pnpm --filter client-panel lint      -> clean
+corepack pnpm -r run build                    -> crm, client-panel, plugin, contracts all built
+```
 
 This repo has moved past the old ecommerce-only baseline. The current foundation supports:
 
@@ -26,6 +37,15 @@ This repo has moved past the old ecommerce-only baseline. The current foundation
 - Per-client tenant schemas for crawled data, knowledge, embeddings, data versions, and answer cache state.
 - Bounded Maya session memory with rolling summaries, recent turns, retrieved site context, and explicit answer scopes.
 - Tenant-local safe answer cache for repeated grounded questions, with bypasses for cart, checkout, quote, booking, payment, login, upload, and other side-effect actions.
+
+## Recent Enhancements (2026-07-16)
+
+- **Explicit provider readiness**: `/health` now reports a `provider_status` field derived from a real verification of the configured Azure chat, STT, and TTS deployments. `check_azure_openai_runtime()` exercises all three; failures are classified as `auth_error`, `quota_exhausted`, or `runtime_error`.
+- **Provider status expires**: A successful verification is only trusted for 15 minutes (`PROVIDER_VERIFICATION_MAX_AGE_SECONDS`). After that the status falls back to `unverified` instead of showing a stale green light. CRM must re-check via `POST /v1/admin/provider-usage/check`.
+- **Persisted provider events**: Provider failures and recoveries are written to `hub_provider_events` and surfaced in the CRM dashboard, with an in-process ring buffer as fallback when the database is unreachable.
+- **CIDR-aware trusted proxies**: The rate limiter previously matched `TRUSTED_PROXY_IPS` by exact string. It now parses entries as IP networks, so `10.0.0.0/8`-style ranges work and malformed entries are logged and ignored instead of silently trusting nothing. `TRUSTED_PROXY_IPS` is now wired through `docker-compose.yml`.
+- **Browser speech fallback is honest**: `speakText()` now returns a boolean and refuses to claim success when no voice is available, so the widget can fall back to server TTS instead of going silent. The female-voice hint list was widened across Windows, macOS, and cloud voice names.
+- **Audio diagnostics and widget stability**: Reworked recorder/playback lifecycle and widget styles to survive long voice sessions and repeated page transitions.
 
 ## Recent Enhancements (2026-07-01)
 
@@ -120,7 +140,7 @@ Golden rule: fixes must remain universal and runtime-discovered. Do not patch AI
   - low-sensitivity result forms, such as search, availability, calculator, and quote-results forms, may be submitted when their labels indicate they show options/results and their fields do not collect contact, payment, identity, upload, medical, application, or other sensitive/finalization data
   - lead capture, checkout, booking finalization, payment, application, claim, renewal, contact, and sensitive forms stay prepare-only or handoff-first until the website/provider/human confirms the next step
   - browser-discovered field schemas and action sequences are preserved during setup; later flow discovery must not replace a richer executable action contract with a weaker selector-only action
-- Local voice defaults are female for both backend TTS and browser greeting fallback: OpenAI `nova`, Groq `hannah`.
+- Voice defaults are female for both backend TTS and the browser greeting fallback. Backend TTS uses the Azure deployment in `AZURE_OPENAI_TTS_DEPLOYMENT` with voice `AZURE_OPENAI_TTS_VOICE` (default `coral`). The browser fallback picks the first matching name from the female-voice hint list in `plugin/src/audio/speech.js`, and reports failure so the widget can fall back to server TTS when no voice is available.
 
 Important reality: this is a strong automatic foundation, not a magic 100% automation guarantee for every website on the internet. Public pages with readable HTML, standard forms/buttons, Shopify/WooCommerce hints, and accessible APIs work best. Login-only pages, CAPTCHA, payment steps, private APIs, anti-bot systems, and heavily custom SPAs still need validation, feeds, API access, or explicit client support.
 
@@ -145,6 +165,12 @@ Shared Nginx routing is owned by the host:
 
 Demo websites can run on different domains. They should load the AI Hub install script from this public Hub domain.
 Public route changes belong in the host Nginx config, not in this repo.
+
+> **Known inconsistency:** `docker-compose.yml` still falls back to an older host
+> (`http://143.198.5.97/aihub`) for `PUBLIC_API_URL`, `PUBLIC_STOREFRONT_ORIGIN`, and
+> `CORS_ORIGINS` when those variables are unset. Always set `HUB_PUBLIC_URL`,
+> `PUBLIC_API_URL`, and `CORS_ORIGINS` explicitly in `.env` for any real deployment
+> so the stale default is never used.
 
 ## One-Line Install Contract
 
@@ -304,9 +330,9 @@ Prompt profiles are stored per client. CRM can create drafts, publish versions, 
 Key files:
 
 ```text
-db/prompts.py
+db/prompts.py                                    (facade -> db/prompting/prompt_profiles.py)
 agent/prompts/
-crm/src/views/client-workspace/PromptTab.tsx
+crm/src/views/client-workspace/tabs/PromptTab.tsx
 ```
 
 Key endpoints:
@@ -340,10 +366,11 @@ Ecommerce product RAG still works through the existing product tables. The gener
 Key files:
 
 ```text
-db/knowledge.py
-db/answer_cache.py
-db/session_memory.py
+db/knowledge.py          (facade -> db/knowledge_base/knowledge_items.py)
+db/answer_cache.py       (facade -> db/cache/answer_cache.py)
+db/session_memory.py     (facade -> db/runtime/session_memory.py)
 agent/retrieval/generic_rag.py
+agent/retrieval/product_rag.py
 agent/prompts/generic.py
 ```
 
@@ -360,17 +387,127 @@ Current rule: keep ecommerce stable while generic knowledge, generic entity disp
 
 Tenant/data rule: each client must read and write through its own tenant schema. Product, plan, service, review, knowledge, embedding, session, and cache data must not mix across clients. When a client's inventory or business records change, crawl/sync updates the tenant copy, bumps `tenant_data_versions`, and marks stale cached answers so RAG and Maya's replies follow the current website data.
 
+## API Surface
+
+Interactive docs are served at `/docs` (FastAPI/OpenAPI). Full route list by group:
+
+**AI runtime** (public; widget-facing, origin-checked and rate-limited)
+
+```text
+POST      /v1/shop                     One assistant turn, JSON response
+POST      /v1/shop/stream              One assistant turn, SSE event stream
+WEBSOCKET /v1/ws/shop                  Persistent voice session (preferred transport)
+WEBSOCKET /ws/chat                     Legacy bi-directional voice transport
+```
+
+**Widget serving and browser runtime** (public)
+
+```text
+GET  /install.js                       One-line installer
+GET  /mayabot.js                       Widget bundle
+GET  /mayabot-widget.js                Widget bundle alias
+GET  /mayabot-adapter.js               Browser adapter runtime bundle
+GET  /mayabot-frame                    Widget iframe host
+POST /v1/widget/register               Browser discovery beacon / client bootstrap
+GET  /v1/widget/config                 Generated per-client runtime config
+GET  /v1/widget/status                 Widget enable/disable state
+POST /v1/widget/action-event           Action execution telemetry
+POST /v1/widget/action-report          Batched action outcome report
+POST /v1/widget/interaction-event      Privacy-safe interaction learning
+POST /v1/widget/policy-event           Barrier/policy block report
+POST /v1/client-log                    Browser-side diagnostics
+```
+
+**Public catalog and knowledge** (public; used by widget overlays)
+
+```text
+GET  /v1/products                      GET /v1/products/by-ids
+GET  /v1/products/{product_id}/variants
+GET  /v1/categories                    GET /v1/catalog/status
+GET  /v1/knowledge                     GET /v1/knowledge/by-ids
+POST /v1/cart  /v1/cart/add  /v1/cart/update  /v1/cart/checkout
+GET  /v1/cart/{cart_id}
+POST /v1/catalog/crawler/run
+```
+
+**CRM admin** (all require the `x-crm-admin-token` header)
+
+```text
+GET   /v1/admin/overview               GET   /v1/admin/settings
+PATCH /v1/admin/settings               GET   /v1/admin/installer
+GET   /v1/admin/conversations          GET   /v1/admin/analytics
+POST  /v1/admin/analytics/summary      GET   /v1/admin/provider-usage
+POST  /v1/admin/provider-usage/check   GET   /v1/admin/verticals
+GET   /v1/admin/verticals/{vertical_key}
+
+GET/POST/DELETE  /v1/admin/clients[/{site_id}]
+POST  /v1/admin/clients/{site_id}/activate
+POST  /v1/admin/clients/{site_id}/available
+PATCH /v1/admin/clients/{site_id}/status
+PATCH /v1/admin/clients/{site_id}/vertical
+PATCH /v1/admin/clients/{site_id}/token-limits
+PATCH/DELETE /v1/admin/clients/{site_id}/panel-password
+
+POST  /v1/admin/clients/{site_id}/crawl
+POST  /v1/admin/clients/{site_id}/auto-integrate
+POST  /v1/admin/clients/{site_id}/auto-integrate/cancel
+POST  /v1/admin/clients/{site_id}/assistant-smoke-tests
+GET   /v1/admin/clients/{site_id}/operation-status
+GET/POST /v1/admin/scan/{site_id}
+GET   /v1/admin/capabilities/{site_id}
+GET   /v1/admin/crawl-report/{site_id}
+
+GET   /v1/admin/clients/{site_id}/adapter
+PATCH /v1/admin/clients/{site_id}/adapter/actions
+POST  /v1/admin/clients/{site_id}/adapter/action-candidates/review
+POST  /v1/admin/clients/{site_id}/adapter/action-proposals/refresh
+POST  /v1/admin/clients/{site_id}/adapter/action-proposals/review
+POST  /v1/admin/clients/{site_id}/adapter/flow-repair-proposals/review
+
+GET   /v1/admin/clients/{site_id}/flows
+POST  /v1/admin/clients/{site_id}/flows/discover
+GET   /v1/admin/clients/{site_id}/flows/regression
+GET   /v1/admin/clients/{site_id}/flows/rehearsal
+POST  /v1/admin/clients/{site_id}/flows/rehearse
+
+GET/POST /v1/admin/clients/{site_id}/prompt-profile
+POST  /v1/admin/prompt-versions/{version_id}/publish
+GET   /v1/admin/clients/{site_id}/knowledge
+GET   /v1/admin/clients/{site_id}/answer-cache
+GET   /v1/admin/clients/{site_id}/isolation-audit
+```
+
+**Client Panel** (bearer token issued by `/login`, HMAC-signed, expires, and is
+invalidated when the panel password is rotated or revoked)
+
+```text
+POST  /v1/client-panel/login
+GET   /v1/client-panel/me
+GET   /v1/client-panel/dashboard
+PATCH /v1/client-panel/token-policy
+```
+
+**Utility**
+
+```text
+GET /health                            Includes provider_status since 2026-07-16
+```
+
 ## Repository Layout
 
 ```text
-agent/       AI orchestration, prompts, RAG, crawler, verticals, actions, adapters
-api/         FastAPI app shell, route modules, CRM APIs, Client Panel APIs, widget serving
-crm/         React/Vite CRM frontend
-db/          Admin facade, schema, clients, prompts, knowledge, quota, analytics
-plugin/      Hosted browser widget and adapter runtime source
-tests/       Backend, ingestion, guardrail, vertical, knowledge, and widget tests
-data/        Local development data and fixtures
-docker/      Container entrypoint
+agent/            AI orchestration, prompts, RAG, crawler, verticals, actions, adapters
+api/              FastAPI app shell, route modules, CRM APIs, Client Panel APIs, widget serving
+crm/              React 19 / Vite 8 CRM frontend (admin)
+client-panel/     React 19 / Vite 8 Client Panel frontend (customer-facing analytics)
+db/               Admin facade, schema, clients, prompts, knowledge, quota, analytics
+plugin/           Hosted browser widget and adapter runtime source (esbuild IIFE bundles)
+packages/         Shared JS/TS action contracts consumed by crm/ and plugin/
+tests/            Backend, ingestion, guardrail, vertical, knowledge, and widget tests
+scripts/          Contract drift checker and persona runners
+data/             Local development data and fixtures
+docker/           Container entrypoint
+.github/          CI workflow
 ```
 
 Compatibility rule:
@@ -380,6 +517,17 @@ Existing imports from db.admin should keep working.
 Public API paths should stay stable.
 AI-KART must keep working without AI Hub.
 ```
+
+The repository uses a **facade module** convention to keep those import paths stable
+while the implementation is split into smaller files:
+
+- Python facades (`agent/orchestrator.py`, `api/main.py`, `db/admin.py`, and ~22 more)
+  rebind `sys.modules[__name__]` to the real implementation module.
+- TypeScript/JavaScript facades (`crm/src/App.tsx`, `plugin/src/widget.js`, and ~60 more)
+  are one-line `export * from './real/path'` re-exports.
+
+Import the facade path when you want the stable public name; import the implementation
+path when you need a specific symbol. Grep for both when tracing code.
 
 ## Local Development
 
@@ -464,20 +612,51 @@ DATABASE_URL=postgresql://shopbot:shopbot_password@db:5432/shopping_db
 Important Hub environment keys:
 
 ```env
+# Public identity and CORS
 HUB_PUBLIC_URL=https://demo1.ergobite.com
 PUBLIC_API_URL=https://demo1.ergobite.com
 CORS_ORIGINS=https://demo1.ergobite.com
-CRAWL_ON_STARTUP=false
-CRAWL_PERIODIC_ENABLED=false
-ENSURE_DEFAULT_CLIENT_ON_STARTUP=false
+DEPLOYMENT_MODE=production
+
+# Credentials (all three are required; the app refuses admin/panel auth without them)
+CRM_ADMIN_TOKEN=                      # min 12 chars, else CRM admin API returns 503
+CLIENT_PANEL_TOKEN_SECRET=            # HMAC signing key; min 16 chars, else login 503s
+CLIENT_PANEL_DEFAULT_PASSWORD=        # fallback only; min 12 chars or new clients get none
+
+# Azure OpenAI
 AZURE_OPENAI_API_KEY=
 AZURE_OPENAI_BASE_URL=https://your-resource.openai.azure.com/openai/v1/
 AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-5.4-mini
 AZURE_OPENAI_STT_DEPLOYMENT=gpt-4o-mini-transcribe
 AZURE_OPENAI_TTS_DEPLOYMENT=gpt-4o-mini-tts
-CRM_ADMIN_TOKEN=
-CLIENT_PANEL_DEFAULT_PASSWORD=
-CLIENT_PANEL_TOKEN_SECRET=
+AZURE_OPENAI_REASONING_EFFORT=none
+AZURE_OPENAI_TTS_VOICE=coral
+AZURE_OPENAI_TIMEOUT_SECONDS=30
+
+# Cost and payload ceilings
+LLM_MAX_TOKENS=320
+LLM_MAX_TOKENS_HARD_CAP=320           # LLM_MAX_TOKENS is clamped to this
+TTS_CHUNK_CHARS=1200
+TTS_MAX_INPUT_CHARS=12000
+MAX_AUDIO_UPLOAD_BYTES=10485760
+
+# Crawl and startup behaviour
+CRAWL_ON_STARTUP=false
+CRAWL_PERIODIC_ENABLED=false
+ENSURE_DEFAULT_CLIENT_ON_STARTUP=false
+CLEAN_SYNTHETIC_DEMO_CLIENTS_ON_STARTUP=true
+CRAWL_MAX_PAGES=60
+CRAWL_MAX_DEPTH=3
+SETUP_RUN_TIMEOUT_SECONDS=7200
+
+# Operational
+TRUSTED_PROXY_IPS=                    # comma-separated IPs or CIDRs; required behind Nginx
+                                      # so per-IP rate limiting sees the real client IP
+LOG_CONVERSATION_CONTENT=false        # keep false in production; true logs transcripts
+CLIENT_TLS_VERIFY=true
+RAG_TOP_K=10
+RAG_TOP_N=50
+ACTION_AUTO_APPROVE_CONFIDENCE=0.75
 ```
 
 `CURRENT_SITE_ID`, `DEFAULT_SITE_ID`, `AI_DEFAULT_SITE_ID`, `CLIENT_STORE_URL`, `PUBLIC_STOREFRONT_ORIGIN`, and `CURRENT_URL` are client/demo-site settings. Do not set them for a Hub-only deployment unless you intentionally want a fixed fallback client or startup crawler target.
@@ -489,6 +668,12 @@ Use:
 ```text
 docs/deployment.md
 ```
+
+> **Note:** `docs/` and `deploy/` are currently listed in `.gitignore`, so
+> `docs/deployment.md` and `deploy/nginx.conf` exist on the maintainer's machine but
+> are **not** in the repository. A fresh clone has no deployment runbook and no Nginx
+> reference config. Either remove those `.gitignore` entries and commit the files, or
+> move the runbook into a tracked location.
 
 High-level order:
 
@@ -546,11 +731,24 @@ corepack pnpm --filter mayabot-plugin build
 Useful focused tests:
 
 ```powershell
-python -m pytest tests/test_verticals.py -q
-python -m pytest tests/test_vertical_runtime.py -q
-python -m pytest tests/test_widget_install.py -q
+python -m pytest tests/test_vertical_registry.py tests/test_vertical_prompt_runtime.py -q
+python -m pytest tests/test_widget_install_scripts.py tests/test_widget_registration.py -q
 python -m pytest tests/test_flow_discovery.py tests/test_flow_rehearsal.py tests/test_flow_barriers.py -q
 python -m pytest tests/test_knowledge.py -q
+python -m pytest tests/test_runtime_security.py tests/test_input_guardrails.py tests/test_output_guardrails.py -q
+python -m pytest tests/test_orchestrator_product_matching.py tests/test_orchestrator_action_truth.py -q
+```
+
+Integration tests that need a live PostgreSQL are marked, so they can be excluded:
+
+```powershell
+python -m pytest -q -m "not integration"
+```
+
+Run the whole CI pipeline locally (the same sequence `.github/workflows/ci.yml` runs):
+
+```powershell
+corepack pnpm run ci
 ```
 
 Manual no-bias local onboarding test:
@@ -561,22 +759,44 @@ script into that website's `index.html`. Keep the local Hub database persistent
 while testing; only disable automatic default-client seeding to avoid hidden bias.
 Clients created by the script remain in that database until deleted from CRM.
 
-Recent local verification after the universal domain readiness matrix:
+Verification history:
 
 ```text
-python -m pytest -q                         -> 459 passed
-python -m compileall agent api db tests      -> passed
-corepack pnpm --filter mayabot-plugin build  -> passed
+2026-07-29 (current)  python -m pytest -q            -> 643 passed, 1 skipped
+2026-07-16            python -m pytest -q            -> 488 passed, 1 skipped
+earlier               python -m pytest -q            -> 459 passed
 ```
 
-Recent verification after the L15 runtime intelligence, cache, and tenant-isolation pass:
+Full check on 2026-07-29:
 
 ```text
-python -m pytest tests/test_sales_relevance_cache.py tests/test_orchestrator_matching.py tests/test_vertical_runtime.py tests/test_robustness_roadmap.py -q -> 106 passed
-python -m pytest -q                                                                                                                   -> 488 passed, 1 skipped
-python -m compileall agent api db tests                                                                                                -> passed
-corepack pnpm --filter ai-hub-crm build                                                                                                -> passed
+python -m pytest -q                           -> 643 passed, 1 skipped in 276s
+python -m compileall agent api db tests        -> passed
+corepack pnpm run contracts:check              -> 73 actions matched
+corepack pnpm --filter ai-hub-crm lint         -> clean
+corepack pnpm --filter client-panel lint       -> clean
+corepack pnpm -r run build                     -> contracts, client-panel, crm, plugin all built
 ```
+
+### Continuous Integration
+
+`.github/workflows/ci.yml` runs on every pull request and on pushes to `main`. It
+starts a `pgvector/pgvector:pg16` service and then runs, in order:
+
+```text
+python -m pip check
+pnpm run contracts:check
+pnpm --filter ai-hub-crm lint
+pnpm --filter client-panel lint
+pnpm -r run build
+python -m compileall agent api db tests
+python -m pytest -q
+```
+
+There is currently **no frontend test runner** (no vitest/jest/Playwright config in
+`crm/`, `client-panel/`, or `plugin/`). Browser behaviour is covered indirectly from
+the Python side by tests such as `tests/test_browser_runtime_action_execution.py`
+and `tests/test_browser_universal_form_flow.py`, which drive the built bundles.
 
 ## Operational Boundaries
 
@@ -664,6 +884,23 @@ Remaining reliability work before claiming near-universal autonomous control:
 - Deeper provider-specific integrations for payment, login, regulated decisions, CAPTCHA, and uncertain external widgets.
 
 Until those remaining layers exist, the system should be presented as automatic discovery plus admin-verifiable setup, not as guaranteed perfect autonomous control on every site.
+
+## Known Issues
+
+A full code review of the backend, both frontends, and the browser plugin lives in
+`review.md`. Confirmed defects worth knowing before you deploy:
+
+- The security middleware applies CSP and `X-Frame-Options` to `/client-panel` (the
+  legacy path) but not `/client_panel` (the path actually served to customers), so the
+  live Client Panel ships without those headers.
+- `config.VALID_UI_ACTIONS` is a third, unchecked copy of the action list and has
+  already drifted from `agent/actions/registry.py` by four construction-vertical
+  actions. `scripts/check_contracts.py` only compares the registry against the
+  TypeScript contracts, so it cannot catch this.
+- `agent/orchestration/orchestrator_pipeline.py` branches on `PYTEST_CURRENT_TEST`
+  in three places, so the production pipeline behaves differently under test than in
+  production.
+- `.env.example` sets `RAG_TOP_N=3` while `config.py` defaults to `50`.
 
 ## Troubleshooting
 
