@@ -1,4 +1,4 @@
-"""Azure OpenAI health status and local usage monitoring for CRM."""
+"""Azure AI chat and Speech health status with local usage monitoring."""
 
 from __future__ import annotations
 
@@ -47,9 +47,10 @@ def provider_usage_status() -> dict[str, Any]:
         "status": _provider_status(recent_events),
         "provider": PROVIDER_NAME,
         "llm_model": config.AZURE_OPENAI_CHAT_DEPLOYMENT,
-        "stt_model": config.AZURE_OPENAI_STT_DEPLOYMENT,
-        "tts_model": config.AZURE_OPENAI_TTS_DEPLOYMENT,
+        "stt_model": "Azure Speech fast transcription",
+        "tts_model": config.AZURE_SPEECH_TTS_VOICE,
         "azure_openai_api_key_configured": bool(config.AZURE_OPENAI_API_KEY),
+        "azure_speech_key_configured": bool(config.AZURE_SPEECH_KEY),
         "local_tokens": {
             "estimated_total": local_usage["tokens_estimated"],
             "turns_total": local_usage["total_turns"],
@@ -66,7 +67,7 @@ def provider_usage_status() -> dict[str, Any]:
 
 
 def check_azure_openai_runtime() -> dict[str, Any]:
-    """Verify the configured Azure chat, STT, and TTS deployments."""
+    """Verify the configured Azure AI chat, STT, and TTS services."""
     if not azure_openai_is_configured():
         _record_provider_event(
             PROVIDER_NAME,
@@ -88,18 +89,21 @@ def check_azure_openai_runtime() -> dict[str, Any]:
     except AZURE_OPENAI_ERRORS as exc:
         failures.append(("chat", exc))
 
-    failures.extend(_audio_runtime_failures())
+    if not config.AZURE_SPEECH_ENDPOINT or not config.AZURE_SPEECH_KEY:
+        failures.append(("speech", RuntimeError("Azure Speech configuration is incomplete.")))
+    else:
+        failures.extend(_audio_runtime_failures())
     if failures:
         category = _provider_error_category(failures[0][1])
         details = "; ".join(f"{component}: {_safe_error_message(exc)}" for component, exc in failures)
         _record_provider_event(
             PROVIDER_NAME,
             category if category != "error" else "runtime_error",
-            f"Azure OpenAI runtime check failed: {details}",
+            f"Azure AI runtime check failed: {details}",
         )
         return provider_usage_status()
 
-    _record_provider_event(PROVIDER_NAME, "runtime_ok", "Azure OpenAI chat, STT, and TTS runtime checks passed.")
+    _record_provider_event(PROVIDER_NAME, "runtime_ok", "Azure AI chat, STT, and TTS runtime checks passed.")
     return provider_usage_status()
 
 
@@ -109,11 +113,11 @@ def _audio_runtime_failures() -> list[tuple[str, BaseException]]:
     failures: list[tuple[str, BaseException]] = []
     try:
         stt.verify_runtime(_silent_wav())
-    except AZURE_OPENAI_ERRORS as exc:
+    except stt.STT_PROVIDER_ERRORS as exc:
         failures.append(("stt", exc))
     try:
         tts.verify_runtime()
-    except AZURE_OPENAI_ERRORS as exc:
+    except tts.TTS_PROVIDER_ERRORS as exc:
         failures.append(("tts", exc))
     return failures
 

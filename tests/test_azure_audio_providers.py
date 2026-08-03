@@ -4,27 +4,33 @@ import wave
 import pytest
 
 
-def test_azure_stt_uses_configured_deployment(monkeypatch):
+def test_azure_stt_uses_configured_speech_resource(monkeypatch):
     import config
     from agent import stt
 
     calls = {}
 
-    class FakeTranscriptions:
-        def create(self, **kwargs):
-            calls.update(kwargs)
-            return "hello from azure"
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
 
-    fake_client = type("FakeClient", (), {"audio": type("Audio", (), {"transcriptions": FakeTranscriptions()})()})()
-    monkeypatch.setattr(config, "AZURE_OPENAI_STT_DEPLOYMENT", "stt-deployment")
-    monkeypatch.setattr(stt, "get_azure_openai_client", lambda: fake_client)
+        def json(self):
+            return {"combinedPhrases": [{"text": "hello from azure"}]}
+
+    def fake_post(url, **kwargs):
+        calls.update({"url": url, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setattr(config, "AZURE_SPEECH_ENDPOINT", "https://speech.example.com")
+    monkeypatch.setattr(config, "AZURE_SPEECH_KEY", "speech-key")
+    monkeypatch.setattr(stt.httpx, "post", fake_post)
 
     transcript = stt.transcribe(b"fake audio", "audio.webm")
 
     assert transcript == "hello from azure"
-    assert calls["model"] == "stt-deployment"
-    assert calls["response_format"] == "text"
-    assert calls["file"][0] == "audio.webm"
+    assert calls["url"].endswith("/speechtotext/transcriptions:transcribe?api-version=2025-10-15")
+    assert calls["headers"]["Ocp-Apim-Subscription-Key"] == "speech-key"
+    assert calls["files"]["audio"][0] == "audio.webm"
 
 
 def test_azure_stt_reports_missing_deployment_as_voice_unavailable(monkeypatch):
@@ -42,31 +48,35 @@ def test_azure_stt_reports_missing_deployment_as_voice_unavailable(monkeypatch):
         stt.transcribe(b"fake audio", "audio.webm")
 
 
-def test_azure_tts_uses_configured_deployment_and_voice(monkeypatch):
+def test_azure_tts_uses_configured_speech_voice(monkeypatch):
     import config
     from agent import tts
 
     calls = {}
 
-    class FakeSpeech:
-        def create(self, **kwargs):
-            calls.update(kwargs)
-            return type("Response", (), {"content": b"fake-wav"})()
+    class FakeResponse:
+        content = b"fake-wav"
 
-    fake_client = type("FakeClient", (), {"audio": type("Audio", (), {"speech": FakeSpeech()})()})()
-    monkeypatch.setattr(config, "AZURE_OPENAI_TTS_DEPLOYMENT", "tts-deployment")
-    monkeypatch.setattr(config, "AZURE_OPENAI_TTS_VOICE", "coral")
-    monkeypatch.setattr(tts, "get_azure_openai_client", lambda: fake_client)
+        def raise_for_status(self):
+            return None
+
+    def fake_post(url, **kwargs):
+        calls.update({"url": url, **kwargs})
+        return FakeResponse()
+
+    monkeypatch.setattr(config, "AZURE_SPEECH_ENDPOINT", "https://speech.example.com")
+    monkeypatch.setattr(config, "AZURE_SPEECH_KEY", "speech-key")
+    monkeypatch.setattr(config, "AZURE_SPEECH_TTS_VOICE", "en-IN-NeerjaNeural")
+    monkeypatch.setattr(config, "AZURE_SPEECH_TTS_STYLE", "empathetic")
+    monkeypatch.setattr(tts.httpx, "post", fake_post)
 
     audio = tts.synthesize("hello")
 
     assert audio == b"fake-wav"
-    assert calls == {
-        "model": "tts-deployment",
-        "voice": "coral",
-        "input": "hello",
-        "response_format": "wav",
-    }
+    assert calls["url"] == "https://speech.example.com/tts/cognitiveservices/v1"
+    assert calls["headers"]["Ocp-Apim-Subscription-Key"] == "speech-key"
+    assert b'en-IN-NeerjaNeural' in calls["content"]
+    assert b'empathetic' in calls["content"]
 
 
 def test_tts_splits_long_text_and_merges_wav_chunks(monkeypatch):

@@ -26,9 +26,9 @@ async def health() -> HealthResponse:
         status="ok",
         provider_status=str(runtime_status.get("status") or "unverified"),
         models={
-            "stt": f"azure:{config.AZURE_OPENAI_STT_DEPLOYMENT}",
+            "stt": "azure-speech:fast-transcription",
             "llm": f"azure:{config.AZURE_OPENAI_CHAT_DEPLOYMENT}",
-            "tts": f"azure:{config.AZURE_OPENAI_TTS_DEPLOYMENT} / {config.AZURE_OPENAI_TTS_VOICE}",
+            "tts": f"azure-speech:{config.AZURE_SPEECH_TTS_VOICE}",
             "embedding": config.EMBEDDING_MODEL,
         },
     )

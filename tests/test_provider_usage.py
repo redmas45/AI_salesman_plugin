@@ -83,16 +83,16 @@ def test_provider_usage_status_reports_azure_deployments(monkeypatch):
     )
     monkeypatch.setattr(provider_status.config, "AZURE_OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(provider_status.config, "AZURE_OPENAI_CHAT_DEPLOYMENT", "chat")
-    monkeypatch.setattr(provider_status.config, "AZURE_OPENAI_STT_DEPLOYMENT", "stt")
-    monkeypatch.setattr(provider_status.config, "AZURE_OPENAI_TTS_DEPLOYMENT", "tts")
+    monkeypatch.setattr(provider_status.config, "AZURE_SPEECH_KEY", "speech-key")
+    monkeypatch.setattr(provider_status.config, "AZURE_SPEECH_TTS_VOICE", "en-IN-NeerjaNeural")
 
     status = provider_status.provider_usage_status()
 
     assert status["status"] == "ok"
     assert status["provider"] == "azure_openai"
     assert status["llm_model"] == "chat"
-    assert status["stt_model"] == "stt"
-    assert status["tts_model"] == "tts"
+    assert status["stt_model"] == "Azure Speech fast transcription"
+    assert status["tts_model"] == "en-IN-NeerjaNeural"
     assert status["local_tokens"]["estimated_total"] == 120
     assert status["billing"]["status"] == "azure_portal"
 

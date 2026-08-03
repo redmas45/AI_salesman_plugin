@@ -22,7 +22,7 @@ export function ProviderCompactAlert({
   const latest = providerUsage?.recent_events?.[0];
   const copy = providerAlertCopy(providerUsage?.status || 'unverified');
   const detail = latest?.message || copy.summary;
-  const settingsKey = 'AZURE_OPENAI_API_KEY';
+  const settingsKey = 'AZURE_SPEECH_KEY';
   return (
     <details className="dashboard-provider-alert" role="alert">
       <summary>
@@ -77,7 +77,7 @@ export function ProviderUsagePanel({
       <div className="provider-usage-head">
         <div>
           <span className="kpi-label">AI provider usage</span>
-          <h3>Azure OpenAI runtime</h3>
+          <h3>Azure AI runtime</h3>
         </div>
         <StatusPill value={providerStatusLabel(providerUsage.status)} />
       </div>
@@ -126,7 +126,7 @@ export function ProviderUsagePanel({
             <CheckCircle2 size={14} aria-hidden="true" />
             {checkingProvider ? 'Checking...' : 'Check runtime'}
           </button>
-          <button type="button" onClick={() => onOpenSettings?.('AZURE_OPENAI_API_KEY')}>
+          <button type="button" onClick={() => onOpenSettings?.('AZURE_SPEECH_KEY')}>
             <Settings size={14} aria-hidden="true" />
             Configure
           </button>
@@ -164,7 +164,7 @@ function providerStatusLabel(status: string) {
 
 function providerStatusMessage(providerUsage: NonNullable<Overview['provider_usage']>) {
   if (providerUsage.status === 'quota_exhausted') return 'Azure quota is exhausted. Customer AI turns are blocked.';
-  if (providerUsage.status === 'not_configured') return 'Azure OpenAI configuration is incomplete.';
+  if (providerUsage.status === 'not_configured') return 'Azure AI configuration is incomplete.';
   if (providerUsage.status === 'error') return 'Azure rejected or failed the latest runtime check.';
   if (providerUsage.status === 'unverified') return 'Azure access has not been verified recently.';
   if (providerUsage.status === 'ok') return 'Azure runtime check passed. Maya can answer customer turns.';
@@ -173,7 +173,7 @@ function providerStatusMessage(providerUsage: NonNullable<Overview['provider_usa
 
 function providerStatusDetail(providerUsage: NonNullable<Overview['provider_usage']>) {
   if (providerUsage.status === 'quota_exhausted') return 'The runtime key exists, but Azure is rejecting chat calls for quota or billing.';
-  if (providerUsage.status === 'not_configured') return 'Set the Azure key, base URL, and chat deployment before Maya can answer.';
+  if (providerUsage.status === 'not_configured') return 'Set the Azure AI endpoint, key, and chat deployment before Maya can answer.';
   if (providerUsage.status === 'error') return 'Customer AI turns may be blocked. Check the latest event and verify the runtime key.';
   if (providerUsage.status === 'unverified') return 'Run a live provider check before relying on Maya in a demo or client session.';
   return providerUsage.billing.message || 'Provider usage is being monitored from CRM.';
@@ -181,7 +181,7 @@ function providerStatusDetail(providerUsage: NonNullable<Overview['provider_usag
 
 function providerAlertCopy(status: string) {
   if (status === 'quota_exhausted') return { title: 'Azure quota exhausted', summary: 'Customer AI turns are paused until billing or quota is restored.' };
-  if (status === 'not_configured') return { title: 'Azure OpenAI not configured', summary: 'Customer AI turns are paused until runtime configuration is complete.' };
+  if (status === 'not_configured') return { title: 'Azure AI not configured', summary: 'Customer AI turns are paused until runtime configuration is complete.' };
   if (status === 'error') return { title: 'Azure provider error', summary: 'The latest runtime check failed. Review the event before a client demo.' };
   return { title: 'Azure access needs verification', summary: 'The last successful provider check is stale or missing.' };
 }

@@ -140,7 +140,7 @@ Golden rule: fixes must remain universal and runtime-discovered. Do not patch AI
   - low-sensitivity result forms, such as search, availability, calculator, and quote-results forms, may be submitted when their labels indicate they show options/results and their fields do not collect contact, payment, identity, upload, medical, application, or other sensitive/finalization data
   - lead capture, checkout, booking finalization, payment, application, claim, renewal, contact, and sensitive forms stay prepare-only or handoff-first until the website/provider/human confirms the next step
   - browser-discovered field schemas and action sequences are preserved during setup; later flow discovery must not replace a richer executable action contract with a weaker selector-only action
-- Voice defaults are female for both backend TTS and the browser greeting fallback. Backend TTS uses the Azure deployment in `AZURE_OPENAI_TTS_DEPLOYMENT` with voice `AZURE_OPENAI_TTS_VOICE` (default `coral`). The browser fallback picks the first matching name from the female-voice hint list in `plugin/src/audio/speech.js`, and reports failure so the widget can fall back to server TTS when no voice is available.
+- Voice defaults are female for both backend TTS and the browser greeting fallback. Backend TTS uses Azure Speech with `AZURE_SPEECH_TTS_VOICE` (default `en-IN-NeerjaNeural`) and `AZURE_SPEECH_TTS_STYLE` (default `empathetic`). The browser fallback picks the first matching name from the female-voice hint list in `plugin/src/audio/speech.js`, and reports failure so the widget can fall back to server TTS when no voice is available.
 
 Important reality: this is a strong automatic foundation, not a magic 100% automation guarantee for every website on the internet. Public pages with readable HTML, standard forms/buttons, Shopify/WooCommerce hints, and accessible APIs work best. Login-only pages, CAPTCHA, payment steps, private APIs, anti-bot systems, and heavily custom SPAs still need validation, feeds, API access, or explicit client support.
 
@@ -623,15 +623,16 @@ CRM_ADMIN_TOKEN=                      # min 12 chars, else CRM admin API returns
 CLIENT_PANEL_TOKEN_SECRET=            # HMAC signing key; min 16 chars, else login 503s
 CLIENT_PANEL_DEFAULT_PASSWORD=        # fallback only; min 12 chars or new clients get none
 
-# Azure OpenAI
-AZURE_OPENAI_API_KEY=
-AZURE_OPENAI_BASE_URL=https://your-resource.openai.azure.com/openai/v1/
-AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-5.4-mini
-AZURE_OPENAI_STT_DEPLOYMENT=gpt-4o-mini-transcribe
-AZURE_OPENAI_TTS_DEPLOYMENT=gpt-4o-mini-tts
+# Azure AI Services: one endpoint/key for chat, STT, and TTS
+AZURE_SPEECH_ENDPOINT=https://your-resource.cognitiveservices.azure.com
+AZURE_SPEECH_KEY=
+AZURE_RESOURCE_ID=/subscriptions/.../providers/Microsoft.CognitiveServices/accounts/your-resource
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-5-mini
 AZURE_OPENAI_REASONING_EFFORT=none
-AZURE_OPENAI_TTS_VOICE=coral
 AZURE_OPENAI_TIMEOUT_SECONDS=30
+AZURE_SPEECH_TTS_VOICE=en-IN-NeerjaNeural
+AZURE_SPEECH_TTS_STYLE=empathetic
+AZURE_SPEECH_TIMEOUT_SECONDS=30
 
 # Cost and payload ceilings
 LLM_MAX_TOKENS=320

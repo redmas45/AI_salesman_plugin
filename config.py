@@ -7,20 +7,32 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parent / ".env")
 
-AZURE_OPENAI_API_KEY: str = os.getenv("AZURE_OPENAI_API_KEY", "").strip()
-AZURE_OPENAI_BASE_URL: str = os.getenv("AZURE_OPENAI_BASE_URL", "").strip()
-AZURE_OPENAI_CHAT_DEPLOYMENT: str = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-5.4-mini").strip()
-AZURE_OPENAI_STT_DEPLOYMENT: str = os.getenv(
-    "AZURE_OPENAI_STT_DEPLOYMENT",
-    "gpt-4o-mini-transcribe",
+AZURE_SPEECH_ENDPOINT: str = os.getenv("AZURE_SPEECH_ENDPOINT", "").strip().rstrip("/")
+AZURE_SPEECH_KEY: str = os.getenv("AZURE_SPEECH_KEY", "").strip()
+AZURE_RESOURCE_ID: str = os.getenv("AZURE_RESOURCE_ID", "").strip()
+
+# The configured Azure AI Services resource exposes OpenAI v1 and Speech APIs
+# through one endpoint/key pair. Legacy OpenAI variables remain valid overrides.
+AZURE_OPENAI_API_KEY: str = (os.getenv("AZURE_OPENAI_API_KEY") or AZURE_SPEECH_KEY).strip()
+AZURE_OPENAI_BASE_URL: str = (
+    os.getenv("AZURE_OPENAI_BASE_URL")
+    or (f"{AZURE_SPEECH_ENDPOINT}/openai/v1/" if AZURE_SPEECH_ENDPOINT else "")
 ).strip()
-AZURE_OPENAI_TTS_DEPLOYMENT: str = os.getenv(
-    "AZURE_OPENAI_TTS_DEPLOYMENT",
-    "gpt-4o-mini-tts",
+AZURE_OPENAI_CHAT_DEPLOYMENT: str = os.getenv(
+    "AZURE_OPENAI_CHAT_DEPLOYMENT",
+    "gpt-5-mini",
 ).strip()
 AZURE_OPENAI_REASONING_EFFORT: str = os.getenv("AZURE_OPENAI_REASONING_EFFORT", "none").strip().lower()
-AZURE_OPENAI_TTS_VOICE: str = os.getenv("AZURE_OPENAI_TTS_VOICE", "coral").strip()
 AZURE_OPENAI_TIMEOUT_SECONDS: float = float(os.getenv("AZURE_OPENAI_TIMEOUT_SECONDS", "30") or 30)
+AZURE_SPEECH_TTS_VOICE: str = os.getenv(
+    "AZURE_SPEECH_TTS_VOICE",
+    "en-IN-NeerjaNeural",
+).strip()
+AZURE_SPEECH_TTS_STYLE: str = os.getenv("AZURE_SPEECH_TTS_STYLE", "empathetic").strip()
+AZURE_SPEECH_TIMEOUT_SECONDS: float = float(
+    os.getenv("AZURE_SPEECH_TIMEOUT_SECONDS", str(AZURE_OPENAI_TIMEOUT_SECONDS))
+    or AZURE_OPENAI_TIMEOUT_SECONDS
+)
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)

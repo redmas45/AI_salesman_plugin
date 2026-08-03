@@ -80,13 +80,13 @@ def test_settings_validation_accepts_action_auto_approve_threshold() -> None:
 def test_settings_validation_accepts_azure_provider_settings() -> None:
     assert _validated_settings(
         {
-            "AZURE_OPENAI_API_KEY": "test-key",
-            "AZURE_OPENAI_BASE_URL": "https://example.openai.azure.com/openai/v1/",
+            "AZURE_SPEECH_KEY": "test-key",
+            "AZURE_SPEECH_ENDPOINT": "https://example.cognitiveservices.azure.com",
             "AZURE_OPENAI_REASONING_EFFORT": "none",
         }
     ) == {
-        "AZURE_OPENAI_API_KEY": "test-key",
-        "AZURE_OPENAI_BASE_URL": "https://example.openai.azure.com/openai/v1/",
+        "AZURE_SPEECH_KEY": "test-key",
+        "AZURE_SPEECH_ENDPOINT": "https://example.cognitiveservices.azure.com",
         "AZURE_OPENAI_REASONING_EFFORT": "none",
     }
 
@@ -96,12 +96,12 @@ def test_settings_validation_rejects_invalid_azure_timeout() -> None:
         _validated_settings({"AZURE_OPENAI_TIMEOUT_SECONDS": "0"})
 
 
-def test_settings_validation_rejects_full_chat_completions_url() -> None:
+def test_settings_validation_rejects_speech_endpoint_with_path() -> None:
     with pytest.raises(RuntimeError, match="must end with /openai/v1/"):
         _validated_settings(
             {
-                "AZURE_OPENAI_BASE_URL": (
-                    "https://example.openai.azure.com/openai/v1/chat/completions"
+                "AZURE_SPEECH_ENDPOINT": (
+                    "https://example.cognitiveservices.azure.com/tts/cognitiveservices/v1"
                 )
             }
         )

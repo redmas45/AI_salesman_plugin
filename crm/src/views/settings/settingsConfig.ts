@@ -5,6 +5,7 @@ export const NUMERIC_SETTING_LABELS: Record<string, string> = {
   LLM_MAX_TOKENS: 'LLM max tokens',
   LLM_MAX_TOKENS_HARD_CAP: 'LLM hard token cap',
   AZURE_OPENAI_TIMEOUT_SECONDS: 'Azure request timeout seconds',
+  AZURE_SPEECH_TIMEOUT_SECONDS: 'Azure Speech timeout seconds',
   RAG_TOP_K: 'RAG top K',
   RAG_TOP_N: 'RAG top N',
   TTS_CHUNK_CHARS: 'TTS chunk characters',
@@ -20,6 +21,7 @@ export const NUMERIC_SETTING_LABELS: Record<string, string> = {
 export const FLOAT_SETTING_RANGES: Record<string, [number, number]> = {
   ACTION_AUTO_APPROVE_CONFIDENCE: [0, 1],
   AZURE_OPENAI_TIMEOUT_SECONDS: [1, 300],
+  AZURE_SPEECH_TIMEOUT_SECONDS: [1, 300],
 };
 
 export const INTEGER_SETTING_RANGES: Record<string, [number, number]> = {
@@ -34,13 +36,13 @@ export const INTEGER_SETTING_RANGES: Record<string, [number, number]> = {
 export const SETTING_GROUPS = [
   {
     title: 'Speech-to-text',
-    keys: ['AZURE_OPENAI_STT_DEPLOYMENT', 'STT_LANGUAGE'],
+    keys: ['STT_LANGUAGE'],
   },
   {
     title: 'Text-to-speech',
     keys: [
-      'AZURE_OPENAI_TTS_DEPLOYMENT',
-      'AZURE_OPENAI_TTS_VOICE',
+      'AZURE_SPEECH_TTS_VOICE',
+      'AZURE_SPEECH_TTS_STYLE',
       'TTS_CHUNK_CHARS',
       'TTS_MAX_INPUT_CHARS',
     ],
@@ -53,13 +55,15 @@ export const SETTING_GROUPS = [
     ],
   },
   {
-    title: 'Azure OpenAI',
+    title: 'Azure AI Services',
     keys: [
-      'AZURE_OPENAI_API_KEY',
-      'AZURE_OPENAI_BASE_URL',
+      'AZURE_SPEECH_ENDPOINT',
+      'AZURE_SPEECH_KEY',
+      'AZURE_RESOURCE_ID',
       'AZURE_OPENAI_CHAT_DEPLOYMENT',
       'AZURE_OPENAI_REASONING_EFFORT',
       'AZURE_OPENAI_TIMEOUT_SECONDS',
+      'AZURE_SPEECH_TIMEOUT_SECONDS',
     ],
   },
   {

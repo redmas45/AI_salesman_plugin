@@ -223,8 +223,8 @@ function SettingsControlSummary({
   const periodicCrawl = settingEnabled(byKey.get('CRAWL_PERIODIC_ENABLED'));
   const deploymentMode = settingText(byKey.get('DEPLOYMENT_MODE'), 'local');
   const llmModel = settingText(byKey.get('AZURE_OPENAI_CHAT_DEPLOYMENT'), 'not configured');
-  const sttModel = settingText(byKey.get('AZURE_OPENAI_STT_DEPLOYMENT'), 'not configured');
-  const ttsModel = settingText(byKey.get('AZURE_OPENAI_TTS_DEPLOYMENT'), 'not configured');
+  const sttModel = 'Fast transcription';
+  const ttsModel = settingText(byKey.get('AZURE_SPEECH_TTS_VOICE'), 'not configured');
   const restartText = pendingChanges
     ? 'Unsaved local edits'
     : restartRequired
@@ -243,10 +243,10 @@ function SettingsControlSummary({
       />
       <SettingsSummaryCard
         icon={WalletCards}
-        label="Azure OpenAI"
-        value={settingText(byKey.get('AZURE_OPENAI_API_KEY'), '') ? 'Configured' : 'Key missing'}
-        detail="Runtime access and deployments"
-        tone={settingText(byKey.get('AZURE_OPENAI_API_KEY'), '') ? 'neutral' : 'warn'}
+        label="Azure AI Services"
+        value={settingText(byKey.get('AZURE_SPEECH_KEY'), '') ? 'Configured' : 'Key missing'}
+        detail="Chat, speech recognition, and neural voice"
+        tone={settingText(byKey.get('AZURE_SPEECH_KEY'), '') ? 'neutral' : 'warn'}
         active={focus === 'provider'}
         onClick={() => onFocusChange('provider')}
       />
@@ -319,14 +319,14 @@ function SettingsSummaryCard({
 function settingMatchesFocus(groupTitle: string, setting: Setting, focus: SettingsFocus) {
   if (focus === 'all') return true;
   if (focus === 'secrets') return setting.is_secret || groupTitle === 'Client panel and CRM';
-  if (focus === 'provider') return groupTitle === 'Azure OpenAI';
+  if (focus === 'provider') return groupTitle === 'Azure AI Services';
   if (focus === 'crawler') return groupTitle === 'Crawler' || setting.key.startsWith('CRAWL_');
   if (focus === 'deployment') return groupTitle === 'Deployment';
   return ['Speech-to-text', 'Text-to-speech', 'LLM', 'RAG', 'Runtime automation'].includes(groupTitle);
 }
 
 function settingFocusForKey(key: string): SettingsFocus {
-  if (key.startsWith('AZURE_OPENAI')) return 'provider';
+  if (key.startsWith('AZURE_OPENAI') || key.startsWith('AZURE_SPEECH')) return 'provider';
   if (key.includes('CRAWL')) return 'crawler';
   if (key.startsWith('ACTION_')) return 'runtime';
   if (key.includes('TOKEN') || key.includes('KEY') || key.includes('SECRET')) return 'secrets';

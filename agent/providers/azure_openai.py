@@ -10,7 +10,11 @@ from openai import OpenAI, OpenAIError
 import config
 
 AZURE_OPENAI_ERRORS = (OpenAIError, RuntimeError, TypeError, ValueError)
-AZURE_OPENAI_HOST_SUFFIXES = (".openai.azure.com", ".services.ai.azure.com")
+AZURE_OPENAI_HOST_SUFFIXES = (
+    ".openai.azure.com",
+    ".services.ai.azure.com",
+    ".cognitiveservices.azure.com",
+)
 AZURE_OPENAI_V1_PATH = "/openai/v1/"
 AZURE_OPENAI_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh"})
 

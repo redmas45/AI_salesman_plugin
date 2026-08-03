@@ -20,14 +20,15 @@ ENV_FILE = Path(config.BASE_DIR) / ".env"
 SETTING_KEYS = {
     "ACTION_AUTO_APPROVE_CONFIDENCE",
     "AI_DEFAULT_SITE_ID",
-    "AZURE_OPENAI_API_KEY",
-    "AZURE_OPENAI_BASE_URL",
     "AZURE_OPENAI_CHAT_DEPLOYMENT",
     "AZURE_OPENAI_REASONING_EFFORT",
-    "AZURE_OPENAI_STT_DEPLOYMENT",
     "AZURE_OPENAI_TIMEOUT_SECONDS",
-    "AZURE_OPENAI_TTS_DEPLOYMENT",
-    "AZURE_OPENAI_TTS_VOICE",
+    "AZURE_RESOURCE_ID",
+    "AZURE_SPEECH_ENDPOINT",
+    "AZURE_SPEECH_KEY",
+    "AZURE_SPEECH_TIMEOUT_SECONDS",
+    "AZURE_SPEECH_TTS_STYLE",
+    "AZURE_SPEECH_TTS_VOICE",
     "BACKEND_PORT",
     "CLIENT_PANEL_DEFAULT_PASSWORD",
     "CLIENT_PANEL_TOKEN_SECRET",
@@ -67,7 +68,7 @@ SETTING_KEYS = {
 }
 
 SECRET_SETTING_KEYS = {
-    "AZURE_OPENAI_API_KEY",
+    "AZURE_SPEECH_KEY",
     "CLIENT_PANEL_DEFAULT_PASSWORD",
     "CLIENT_PANEL_TOKEN_SECRET",
     "CRM_ADMIN_TOKEN",
@@ -77,6 +78,7 @@ SECRET_SETTING_KEYS = {
 FLOAT_SETTING_RANGES = {
     "ACTION_AUTO_APPROVE_CONFIDENCE": (0.0, 1.0),
     "AZURE_OPENAI_TIMEOUT_SECONDS": (1.0, 300.0),
+    "AZURE_SPEECH_TIMEOUT_SECONDS": (1.0, 300.0),
 }
 
 INTEGER_SETTING_RANGES = {
@@ -197,8 +199,8 @@ def _validate_numeric_setting(key: str, value: str) -> None:
 
 
 def _validate_azure_setting(key: str, value: str) -> None:
-    if key == "AZURE_OPENAI_BASE_URL":
-        validate_azure_openai_base_url(value)
+    if key == "AZURE_SPEECH_ENDPOINT":
+        validate_azure_openai_base_url(f"{value.rstrip('/')}/openai/v1/")
     if key == "AZURE_OPENAI_REASONING_EFFORT":
         validate_reasoning_effort(value)
 
