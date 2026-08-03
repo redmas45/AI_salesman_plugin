@@ -127,16 +127,16 @@ function TokenLimitsPanel({
   client: Client;
   onUpdateTokenLimits: (siteId: string, tokenLimit: number, sessionTokenLimit: number) => Promise<void>;
 }) {
-  const [tokenLimit, setTokenLimit] = useState(String(client.token_limit ?? client.quota.client.limit ?? 5000));
+  const [tokenLimit, setTokenLimit] = useState(String(client.token_limit ?? client.quota.client.limit ?? 500000));
   const [sessionTokenLimit, setSessionTokenLimit] = useState(
-    String(client.session_token_limit ?? client.quota.session.limit ?? 1000),
+    String(client.session_token_limit ?? client.quota.session.limit ?? 500000),
   );
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
   useEffect(() => {
-    setTokenLimit(String(client.token_limit ?? client.quota.client.limit ?? 5000));
-    setSessionTokenLimit(String(client.session_token_limit ?? client.quota.session.limit ?? 1000));
+    setTokenLimit(String(client.token_limit ?? client.quota.client.limit ?? 500000));
+    setSessionTokenLimit(String(client.session_token_limit ?? client.quota.session.limit ?? 500000));
     setMessage('');
   }, [client.site_id, client.token_limit, client.session_token_limit, client.quota.client.limit, client.quota.session.limit]);
 

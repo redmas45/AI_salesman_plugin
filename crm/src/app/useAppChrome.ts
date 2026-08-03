@@ -1,15 +1,11 @@
 import { useEffect } from 'react';
-import type { Dispatch, RefObject, SetStateAction } from 'react';
-import type { AnalyticsSectionId, Theme, View } from '../types';
-import type { ClientWorkspaceTabId } from '../verticals/types';
+import type { Dispatch, SetStateAction } from 'react';
+import type { Theme, View } from '../types';
 import { THEME_STORAGE_KEY } from './appState';
 
 const TOAST_DISMISS_DELAY_MS = 2600;
 
 interface UseAppChromeParams {
-  analyticsSection: AnalyticsSectionId;
-  clientInitialTab: ClientWorkspaceTabId;
-  contentRef: RefObject<HTMLElement | null>;
   pageTitle: string;
   selectedClientSiteId: string;
   setToast: Dispatch<SetStateAction<string>>;
@@ -19,9 +15,6 @@ interface UseAppChromeParams {
 }
 
 export function useAppChrome({
-  analyticsSection,
-  clientInitialTab,
-  contentRef,
   pageTitle,
   selectedClientSiteId,
   setToast,
@@ -52,6 +45,6 @@ export function useAppChrome({
   }, [setToast, toast]);
 
   useEffect(() => {
-    contentRef.current?.scrollTo({ top: 0, left: 0 });
-  }, [analyticsSection, clientInitialTab, contentRef, selectedClientSiteId, view]);
+    window.scrollTo({ top: 0, left: 0 });
+  }, [selectedClientSiteId, view]);
 }

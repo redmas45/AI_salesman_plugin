@@ -52,9 +52,6 @@ export function App() {
   const pageTitle = titleForView(view);
 
   useAppChrome({
-    analyticsSection,
-    clientInitialTab,
-    contentRef,
     pageTitle,
     selectedClientSiteId: selectedClient?.site_id ?? '',
     setToast,

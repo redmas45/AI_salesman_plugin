@@ -10,6 +10,8 @@ from api import client_panel
 from api import crm
 from api.main import app
 from db import clients as client_db
+from db.core.schema import ADMIN_SCHEMA_SQL
+from db.runtime.quota import DEFAULT_CLIENT_TOKEN_LIMIT, DEFAULT_SESSION_TOKEN_LIMIT
 
 INTERNAL_CLIENT_PANEL_FIELDS = {
     "readiness_report",
@@ -20,6 +22,14 @@ INTERNAL_CLIENT_PANEL_FIELDS = {
     "sync_runs",
     "prompt_profile_id",
 }
+
+
+def test_default_token_limits_support_long_demo_sessions():
+    assert DEFAULT_CLIENT_TOKEN_LIMIT == 500_000
+    assert DEFAULT_SESSION_TOKEN_LIMIT == 500_000
+    assert "DEFAULT 500000" in ADMIN_SCHEMA_SQL
+    assert "WHERE token_limit = 5000 AND session_token_limit = 1000" in ADMIN_SCHEMA_SQL
+    assert "WHERE token_limit = 1000" in ADMIN_SCHEMA_SQL
 
 
 def test_crm_updates_client_token_limits(monkeypatch):

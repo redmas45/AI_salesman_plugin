@@ -25,8 +25,8 @@ CREATE TABLE IF NOT EXISTS hub_clients (
     compliance_mode TEXT NOT NULL DEFAULT 'standard',
     adapter_name TEXT NOT NULL DEFAULT 'generic_adapter.js',
     status TEXT NOT NULL DEFAULT 'live',
-    token_limit INTEGER NOT NULL DEFAULT 5000,
-    session_token_limit INTEGER NOT NULL DEFAULT 1000,
+    token_limit INTEGER NOT NULL DEFAULT 500000,
+    session_token_limit INTEGER NOT NULL DEFAULT 500000,
     panel_password_hash TEXT NOT NULL DEFAULT '',
     last_crawl_status TEXT NOT NULL DEFAULT 'not_started',
     last_crawl_message TEXT NOT NULL DEFAULT '',
@@ -77,7 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_hub_usage_events_site_created
 CREATE TABLE IF NOT EXISTS hub_conversation_sessions (
     session_id TEXT NOT NULL,
     site_id TEXT NOT NULL,
-    token_limit INTEGER NOT NULL DEFAULT 1000,
+    token_limit INTEGER NOT NULL DEFAULT 500000,
     token_used INTEGER NOT NULL DEFAULT 0,
     turn_count INTEGER NOT NULL DEFAULT 0,
     summary_text TEXT NOT NULL DEFAULT '',
@@ -233,9 +233,23 @@ CREATE TABLE IF NOT EXISTS hub_prompt_eval_runs (
 );
 
 ALTER TABLE hub_clients
-    ADD COLUMN IF NOT EXISTS token_limit INTEGER NOT NULL DEFAULT 5000;
+    ADD COLUMN IF NOT EXISTS token_limit INTEGER NOT NULL DEFAULT 500000;
 ALTER TABLE hub_clients
-    ADD COLUMN IF NOT EXISTS session_token_limit INTEGER NOT NULL DEFAULT 1000;
+    ADD COLUMN IF NOT EXISTS session_token_limit INTEGER NOT NULL DEFAULT 500000;
+ALTER TABLE hub_clients
+    ALTER COLUMN token_limit SET DEFAULT 500000;
+ALTER TABLE hub_clients
+    ALTER COLUMN session_token_limit SET DEFAULT 500000;
+UPDATE hub_clients
+SET token_limit = 500000,
+    session_token_limit = 500000,
+    updated_at = now()
+WHERE token_limit = 5000 AND session_token_limit = 1000;
+ALTER TABLE hub_conversation_sessions
+    ALTER COLUMN token_limit SET DEFAULT 500000;
+UPDATE hub_conversation_sessions
+SET token_limit = 500000
+WHERE token_limit = 1000;
 ALTER TABLE hub_clients
     ADD COLUMN IF NOT EXISTS panel_password_hash TEXT NOT NULL DEFAULT '';
 ALTER TABLE hub_clients
