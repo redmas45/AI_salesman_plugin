@@ -72,24 +72,55 @@ def exports(runtime: Any) -> dict[str, Any]:
             elapsed_ms=runtime._ms,
         )
 
+    def resolved_turn_context(
+        site_id: str,
+        safe_transcript: str,
+        conversation_history: list | None = None,
+        session_summary: str = "",
+        recent_product_ids: tuple[str, ...] = (),
+    ) -> Any:
+        """Resolve the current turn against bounded recent conversation context.
+
+        Shared by the sync and streaming pipelines so both behave identically.
+        Uses the built-in product-type nouns plus a TTL-cached tenant brand list,
+        so no full catalog load happens on a turn.
+        """
+        from agent.products.product_matching_lexical import BUILTIN_TYPE_NOUNS
+        from agent.retrieval.catalog_vocabulary import catalog_brand_vocabulary
+        from agent.retrieval.resolved_context import resolve_turn_context
+
+        return resolve_turn_context(
+            safe_transcript,
+            history=list(conversation_history or []),
+            session_summary=session_summary or "",
+            recent_product_ids=tuple(recent_product_ids or ()),
+            catalog_brands=catalog_brand_vocabulary(site_id),
+            catalog_types=tuple(BUILTIN_TYPE_NOUNS),
+        )
+
     def ecommerce_clarification_response(
         transcript: str,
         safe_transcript: str,
         skip_tts: bool,
         timings: dict[str, float],
         start_time: float,
+        *,
+        site_id: str = "",
+        conversation_history: list | None = None,
+        session_summary: str = "",
     ) -> dict[str, Any] | None:
-        """Ask one clarification for an under-determined e-commerce request.
+        """Ask one clarification only when the RESOLVED turn is still insufficient.
 
-        Uses the built-in product-type vocabulary (no catalog load) so a concrete
-        product noun suppresses the clarification, while malformed/undecided asks and
-        recipient-only gifts get a single grounded question instead of random products.
+        Resolution folds in recent conversation context, so a category, brand,
+        recipient, or budget the customer already supplied is never re-asked.
         """
-        from agent.products.product_matching_lexical import BUILTIN_TYPE_NOUNS
-        from agent.retrieval.query_constraints import clarification_question, extract_ecommerce_constraints
-
-        constraints = extract_ecommerce_constraints(safe_transcript, catalog_types=tuple(BUILTIN_TYPE_NOUNS))
-        if not constraints.should_ask_clarification():
+        resolved = resolved_turn_context(
+            site_id,
+            safe_transcript,
+            conversation_history=conversation_history,
+            session_summary=session_summary,
+        )
+        if not resolved.should_ask_clarification():
             return None
         return runtime.conversation_shortcuts.clarification_response(
             transcript,
@@ -99,7 +130,7 @@ def exports(runtime: Any) -> dict[str, Any]:
             synthesize_audio=runtime._synthesize_audio_b64,
             ai_log=runtime._ai_log,
             elapsed_ms=runtime._ms,
-            message=clarification_question(constraints),
+            message=resolved.clarification_question(),
         )
 
     def navigation_intent_response(
@@ -236,6 +267,7 @@ def exports(runtime: Any) -> dict[str, Any]:
         "_needs_transcript_clarification": needs_transcript_clarification,
         "_clarification_response": clarification_response,
         "_ecommerce_clarification_response": ecommerce_clarification_response,
+        "_resolved_turn_context": resolved_turn_context,
         "_navigation_intent_response": navigation_intent_response,
         "_navigation_response_label": runtime.navigation_intent.navigation_response_label,
         "_sort_intent_response": sort_intent_response,

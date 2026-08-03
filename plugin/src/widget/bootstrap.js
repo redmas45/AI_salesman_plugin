@@ -13,6 +13,9 @@ import {
   STATUS,
 } from "../core/constants";
 
+// How long a first click waits to see whether it is really a double click.
+const DOUBLE_CLICK_WINDOW_MS = 280;
+
 window.__mayabot_identifier = "voice-orb";
 let activeRecorder = null;
 let activeWidgetCleanup = null;
@@ -27,6 +30,8 @@ function boot() {
   const elements = initWidget();
 
   let clearTimer = null;
+  let autoGreetTimer = null;
+  let isRecording = false;
   function scheduleVisibleReset(delayMs = DEFAULT_VISIBLE_RESET_DELAY_MS) {
     if (clearTimer) window.clearTimeout(clearTimer);
     clearTimer = window.setTimeout(() => {
@@ -37,6 +42,8 @@ function boot() {
   }
 
   function handleStatusChange(statusStr, detail = "") {
+    // The recorder is the source of truth for whether the mic is open.
+    isRecording = statusStr === STATUS.RECORDING;
     elements.status.className = "";
     if (statusStr === STATUS.RECORDING) {
       if (clearTimer) {
@@ -113,11 +120,28 @@ function boot() {
   const recorder = setupRecorder(handleStop, handleStatusChange);
   activeRecorder = recorder;
 
-  // While Maya is speaking, the orb is a Stop control. Interrupting speech must
-  // never start a recording. The target handler runs after window capture replay
-  // listeners and immediately cancels anything they attempted to resume.
-  let justStoppedPlayback = false;
-  let stopClickGuardTimer = null;
+  // ---------------------------------------------------------------------------
+  // Orb gesture state machine (the single owner of orb intent).
+  //
+  //   speaking  + click        -> stop all playback, never record
+  //   speaking  + double click -> stop, then start recording exactly once
+  //   idle      + click        -> nothing (a stray click must not open the mic)
+  //   idle      + double click -> start recording exactly once
+  //   recording + click        -> stop and submit
+  //   Enter/Space              -> direct toggle, so keyboard users need no timing
+  //
+  // Recording is only ever started from the second click of a pair, so the two
+  // click events a double click produces cannot toggle recording twice.
+  // ---------------------------------------------------------------------------
+  let pendingClickTimer = null;
+  let clickCount = 0;
+
+  function clearPendingClick() {
+    if (pendingClickTimer) window.clearTimeout(pendingClickTimer);
+    pendingClickTimer = null;
+    clickCount = 0;
+  }
+
   function stopSpeakingIfActive() {
     if (!isSpeaking()) return false;
     stopPlayback();
@@ -125,33 +149,58 @@ function boot() {
     return true;
   }
 
-  elements.btn.setAttribute("aria-label", "Maya voice assistant. Tap to talk, or tap to stop when speaking.");
-  elements.btn.setAttribute("title", "Tap to talk — tap or press Escape to stop Maya");
+  function startRecordingOnce() {
+    if (isRecording) return;
+    recorder.toggle();
+  }
 
-  elements.btn.addEventListener(
-    "pointerdown",
-    () => {
-      if (!stopSpeakingIfActive()) return;
-      justStoppedPlayback = true;
-      if (stopClickGuardTimer) window.clearTimeout(stopClickGuardTimer);
-      stopClickGuardTimer = window.setTimeout(() => {
-        justStoppedPlayback = false;
-        stopClickGuardTimer = null;
-      }, 750);
-    },
-    { capture: true },
-  );
-
-  elements.btn.addEventListener("click", () => {
-    if (justStoppedPlayback) {
-      justStoppedPlayback = false;
-      if (stopClickGuardTimer) window.clearTimeout(stopClickGuardTimer);
-      stopClickGuardTimer = null;
+  function handleKeyboardActivation() {
+    if (processingTurn) {
+      stopSpeakingIfActive();
       return;
     }
-    if (processingTurn) return;
+    if (isRecording) {
+      recorder.toggle();
+      return;
+    }
     if (stopSpeakingIfActive()) return;
-    recorder.toggle();
+    startRecordingOnce();
+  }
+
+  elements.btn.setAttribute(
+    "aria-label",
+    "Maya voice assistant. Double-click to talk; click to stop. Press Enter or Space to talk.",
+  );
+  elements.btn.setAttribute("title", "Double-click to talk; click to stop");
+
+  elements.btn.addEventListener("click", (event) => {
+    // Enter/Space on a button synthesises a click with detail 0. Keyboard users
+    // get a direct toggle rather than having to double-press.
+    if (event.detail === 0) {
+      handleKeyboardActivation();
+      return;
+    }
+    if (processingTurn) {
+      stopSpeakingIfActive();
+      return;
+    }
+
+    if (isRecording) {
+      clearPendingClick();
+      recorder.toggle();
+      return;
+    }
+
+    clickCount += 1;
+    if (clickCount === 1) {
+      // Stop immediately so speech never continues while the user waits to see
+      // whether this becomes a double click.
+      stopSpeakingIfActive();
+      pendingClickTimer = window.setTimeout(clearPendingClick, DOUBLE_CLICK_WINDOW_MS);
+      return;
+    }
+    clearPendingClick();
+    startRecordingOnce();
   });
 
   const handleEscape = (event) => {
@@ -170,13 +219,19 @@ function boot() {
   activeWidgetCleanup = () => {
     document.removeEventListener("keydown", handleEscape);
     document.removeEventListener("pointerdown", handlePlaybackReplay, { capture: true });
-    if (stopClickGuardTimer) window.clearTimeout(stopClickGuardTimer);
+    // Every timer this boot created must die with it, or a disable/enable cycle
+    // leaves callbacks firing against removed nodes.
+    clearPendingClick();
+    if (clearTimer) window.clearTimeout(clearTimer);
+    clearTimer = null;
+    if (autoGreetTimer) window.clearTimeout(autoGreetTimer);
+    autoGreetTimer = null;
     activeWidgetCleanup = null;
   };
 
   if (shouldAutoGreet()) {
     markAutoGreeted();
-    window.setTimeout(() => {
+    autoGreetTimer = window.setTimeout(() => {
       if (conversationMemory.history.length > 0) return;
       const greeting = `Welcome to ${config.brandName}. How can I help you today?`;
       addMessage(elements, greeting, "ai");

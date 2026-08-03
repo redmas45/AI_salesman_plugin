@@ -405,6 +405,19 @@ async def crm_settings() -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to load settings.") from exc
 
 
+@router.get("/client-panel-readiness")
+async def crm_client_panel_readiness() -> dict[str, Any]:
+    """Report whether client panel sign-in can issue tokens.
+
+    Exposes only a readiness boolean and a corrective message so an administrator
+    can tell "wrong password" apart from "secure login is not configured". The
+    secret value is never returned or logged.
+    """
+    from api.client_panels.panel_routes import token_signing_status
+
+    return {"client_panel_token_signing": token_signing_status()}
+
+
 @router.get("/conversations")
 async def crm_conversations(range: str = admin_db.ANALYTICS_DEFAULT_RANGE, site_id: str = "") -> dict[str, Any]:
     """Return date-grouped customer conversation logs."""

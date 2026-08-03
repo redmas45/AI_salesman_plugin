@@ -243,9 +243,10 @@ def test_comparison_with_one_llm_id_recovers_second_retrieved_product():
         [{"id": "1"}, {"id": "2"}, {"id": "3"}],
     )
 
-    assert response["ui_actions"] == [
-        {"action": "SHOW_COMPARISON", "params": {"product_ids": ["1", "2", "3"]}}
-    ]
+    assert [action["action"] for action in response["ui_actions"]] == ["SHOW_COMPARISON"]
+    # "these two options" asks for exactly two. The recovery used to pad the list to
+    # the first four retrieved products regardless of the requested count.
+    assert response["ui_actions"][0]["params"]["product_ids"] == ["1", "2"]
 
 
 def test_explicit_single_product_detail_uses_detail_action():
@@ -488,12 +489,8 @@ def test_product_comparison_action_does_not_get_search_navigation(monkeypatch):
         blocked_text="Blocked.",
     )
 
-    assert validated["ui_actions"] == [
-        {
-            "action": "SHOW_COMPARISON",
-            "params": {"product_ids": ["1", "2"]},
-        }
-    ]
+    assert [action["action"] for action in validated["ui_actions"]] == ["SHOW_COMPARISON"]
+    assert validated["ui_actions"][0]["params"]["product_ids"] == ["1", "2"]
 
 
 def test_comparison_request_recovers_comparison_when_model_omits_action(monkeypatch):
@@ -516,9 +513,8 @@ def test_comparison_request_recovers_comparison_when_model_omits_action(monkeypa
         blocked_text="Blocked.",
     )
 
-    assert validated["ui_actions"] == [
-        {"action": "SHOW_COMPARISON", "params": {"product_ids": ["1", "2"]}}
-    ]
+    assert [action["action"] for action in validated["ui_actions"]] == ["SHOW_COMPARISON"]
+    assert validated["ui_actions"][0]["params"]["product_ids"] == ["1", "2"]
 
 
 def test_open_cheaper_compared_item_promotes_single_result_to_detail(monkeypatch):
@@ -570,9 +566,8 @@ def test_comparison_drops_competing_product_list_and_search_navigation(monkeypat
         blocked_text="Blocked.",
     )
 
-    assert validated["ui_actions"] == [
-        {"action": "SHOW_COMPARISON", "params": {"product_ids": ["1", "2"]}}
-    ]
+    assert [action["action"] for action in validated["ui_actions"]] == ["SHOW_COMPARISON"]
+    assert validated["ui_actions"][0]["params"]["product_ids"] == ["1", "2"]
     assert "What matters most to you" in validated["response_text"]
 
 

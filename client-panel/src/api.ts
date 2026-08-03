@@ -51,7 +51,17 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+// A 503 from sign-in means the server cannot sign tokens, which is a deployment
+// problem rather than a bad password. Saying "invalid credentials" there sends the
+// account owner on a password hunt they cannot win.
+const SERVICE_UNAVAILABLE_MESSAGE =
+  'Sign-in is temporarily unavailable because secure login is not configured on the server. ' +
+  'Your password may be correct - no change is needed. Please contact your AI Hub administrator.';
+const INVALID_CREDENTIALS_MESSAGE = 'Account ID or password is incorrect. Please check both and try again.';
+
 async function errorMessage(response: Response): Promise<string> {
+  if (response.status === 503) return SERVICE_UNAVAILABLE_MESSAGE;
+  if (response.status === 401) return INVALID_CREDENTIALS_MESSAGE;
   try {
     const body = (await response.json()) as { detail?: string };
     return body.detail || `Request failed with status ${response.status}.`;

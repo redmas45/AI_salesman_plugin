@@ -6,6 +6,11 @@ import re
 from typing import Any
 
 from agent.responses import cart_responses
+from agent.products.comparison_selection import (
+    DEFAULT_COMPARISON_COUNT,
+    product_brand,
+    select_comparison_products,
+)
 from agent.products.product_response import (
     ProductCatalogFormatter,
     ProductDisplayGrounder,
@@ -38,6 +43,87 @@ from api.contracts.models import (
     PRODUCT_IDS_PARAM,
     PRODUCT_ID_PARAM,
 )
+from agent.retrieval.query_constraints import extract_ecommerce_constraints
+
+_COMPARISON_OPERAND_STOPWORDS = frozenset(
+    {"one", "two", "three", "four", "both", "first", "second", "third", "last"}
+)
+
+
+def _ordered_comparison_candidates(
+    products: list[dict], requested_ids: list[Any] | None = None
+) -> list[dict]:
+    by_id = {str(item.get("id")): item for item in products if item.get("id") is not None}
+    ordered: list[dict] = []
+    seen: set[str] = set()
+    for product_id in requested_ids or []:
+        key = str(product_id)
+        if key in by_id and key not in seen:
+            ordered.append(by_id[key])
+            seen.add(key)
+    ordered.extend(item for key, item in by_id.items() if key not in seen)
+    return ordered
+
+
+def _brands_named_by_product_operand(
+    transcript: str,
+    products: list[dict],
+) -> tuple[str, ...]:
+    """Infer brands from unique product-name terms such as "iPhone" in a pair."""
+    normalized_transcript = normalize_lookup_text(transcript)
+    token_sets = [
+        set(normalize_lookup_text(item.get("name") or item.get("title") or "").split())
+        for item in products
+    ]
+    token_counts: dict[str, int] = {}
+    for tokens in token_sets:
+        for token in tokens:
+            if len(token) >= 3 and token not in _COMPARISON_OPERAND_STOPWORDS:
+                token_counts[token] = token_counts.get(token, 0) + 1
+
+    brands: list[str] = []
+    for product, tokens in zip(products, token_sets):
+        uniquely_named = any(
+            token_counts.get(token) == 1
+            and re.search(rf"\b{re.escape(token)}\b", normalized_transcript)
+            for token in tokens
+        )
+        brand = product_brand(product)
+        if uniquely_named and brand and brand not in brands:
+            brands.append(brand)
+    return tuple(brands)
+
+
+def _select_comparison_candidates(
+    transcript: str,
+    products: list[dict],
+    requested_ids: list[Any] | None = None,
+) -> list[dict]:
+    ordered = _ordered_comparison_candidates(products, requested_ids)
+    catalog_brands = tuple(dict.fromkeys(product_brand(item) for item in ordered if product_brand(item)))
+    constraints = extract_ecommerce_constraints(transcript, catalog_brands=catalog_brands)
+    requested_products = _ordered_comparison_candidates(products, requested_ids)[: len(requested_ids or [])]
+    operand_brands = _brands_named_by_product_operand(transcript, requested_products)
+    requested_brands = tuple(dict.fromkeys((*constraints.brands, *operand_brands)))
+    return select_comparison_products(
+        ordered,
+        requested_count=comparison_product_limit(transcript),
+        brands=requested_brands,
+        price_constraints=constraints.price_constraints(),
+        exclusions=constraints.exclusions,
+    )
+
+
+def _apply_selected_products(action: dict[str, Any], selected: list[dict]) -> bool:
+    product_ids = [str(product["id"]) for product in selected]
+    if len(product_ids) >= 2:
+        action["action"] = ACTION_SHOW_COMPARISON
+        action["params"] = {PRODUCT_IDS_PARAM: product_ids}
+        return True
+    if product_ids:
+        action["action"] = ACTION_SHOW_PRODUCTS
+        action["params"] = {PRODUCT_IDS_PARAM: product_ids}
+    return False
 
 
 def promote_comparison_action(
@@ -54,28 +140,35 @@ def promote_comparison_action(
         if action.get("action") != ACTION_SHOW_COMPARISON:
             continue
         product_ids = action.get("params", {}).get(PRODUCT_IDS_PARAM, [])
-        if isinstance(product_ids, list) and len(product_ids) >= 2:
-            action["params"][PRODUCT_IDS_PARAM] = product_ids[:requested_limit]
+        if not retrieved_products:
+            if isinstance(product_ids, list) and len(product_ids) >= 2:
+                action["params"][PRODUCT_IDS_PARAM] = product_ids[:requested_limit]
             return
-        fallback_ids = [str(product["id"]) for product in retrieved_products or [] if product.get("id")][:4]
-        if len(fallback_ids) >= 2:
-            action["params"] = {PRODUCT_IDS_PARAM: fallback_ids}
+        selected = _select_comparison_candidates(
+            transcript,
+            retrieved_products or [],
+            product_ids if isinstance(product_ids, list) else [],
+        )
+        if not _apply_selected_products(action, selected):
+            response["intent"] = "product_search"
         return
 
     for action in actions:
         if action.get("action") == ACTION_SHOW_PRODUCTS:
             product_ids = action.get("params", {}).get(PRODUCT_IDS_PARAM, [])
-            if isinstance(product_ids, list) and len(product_ids) >= 2:
-                action["action"] = ACTION_SHOW_COMPARISON
-                action["params"] = {PRODUCT_IDS_PARAM: product_ids[:requested_limit]}
+            selected = _select_comparison_candidates(
+                transcript,
+                retrieved_products or [],
+                product_ids if isinstance(product_ids, list) else [],
+            )
+            if _apply_selected_products(action, selected):
                 response["intent"] = "product_compare"
-                return
+            return
 
-    fallback_ids = [str(product["id"]) for product in retrieved_products or [] if product.get("id")][
-        :requested_limit
-    ]
-    if len(fallback_ids) < 2:
+    selected = _select_comparison_candidates(transcript, retrieved_products or [])
+    if len(selected) < 2:
         return
+    fallback_ids = [str(product["id"]) for product in selected]
     response["intent"] = "product_compare"
     response["confidence"] = max(float(response.get("confidence") or 0.0), 0.88)
     response["ui_actions"] = [
@@ -98,7 +191,11 @@ def ensure_named_comparison_response(
     if len(exact_products) < 2:
         return
 
-    selected = exact_products[:4]
+    # Honour the count the customer actually asked for ("compare two ...").
+    exact_ids = [product.get("id") for product in exact_products]
+    selected = _select_comparison_candidates(transcript, exact_products, exact_ids)
+    if len(selected) < 2:
+        return
     product_ids = [str(product["id"]) for product in selected]
     response["intent"] = "product_compare"
     response["confidence"] = max(float(response.get("confidence") or 0.0), 0.9)
@@ -141,7 +238,7 @@ def comparison_product_limit(transcript: str) -> int:
         return 3
     if re.search(r"\b(four|4)\b", text):
         return 4
-    return 4
+    return DEFAULT_COMPARISON_COUNT
 
 
 def ensure_product_answer_response(

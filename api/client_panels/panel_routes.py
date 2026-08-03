@@ -144,6 +144,37 @@ def _bearer_token(authorization: str) -> str:
     return authorization.split(" ", 1)[1].strip()
 
 
+def token_signing_status() -> dict[str, Any]:
+    """Report whether client-panel tokens can be signed, without leaking the secret.
+
+    Returns only a boolean, the required minimum, and a corrective message. The
+    secret value and its exact length are never returned or logged.
+    """
+    secret = config.CLIENT_PANEL_TOKEN_SECRET or ""
+    configured = bool(secret)
+    ready = len(secret) >= MIN_TOKEN_SECRET_LENGTH
+    if ready:
+        message = "Client panel sign-in is ready."
+    elif not configured:
+        message = (
+            "CLIENT_PANEL_TOKEN_SECRET is not set, so client panel sign-in fails with a service error "
+            f"even when the password is correct. An administrator must set a secret of at least "
+            f"{MIN_TOKEN_SECRET_LENGTH} characters in the deployment environment and recreate the container."
+        )
+    else:
+        message = (
+            f"CLIENT_PANEL_TOKEN_SECRET is shorter than the required {MIN_TOKEN_SECRET_LENGTH} characters, "
+            "so client panel sign-in fails with a service error even when the password is correct. "
+            "Replace it with a longer secret and recreate the container."
+        )
+    return {
+        "ready": ready,
+        "configured": configured,
+        "minimum_length": MIN_TOKEN_SECRET_LENGTH,
+        "message": message,
+    }
+
+
 def _sign(body: str) -> str:
     secret = config.CLIENT_PANEL_TOKEN_SECRET
     if len(secret) < MIN_TOKEN_SECRET_LENGTH:

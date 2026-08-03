@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from api.contracts.models import ACTION_SHOW_COMPARISON, ACTION_SHOW_PRODUCTS, PRODUCT_IDS_PARAM
+from agent.products.comparison_facts import comparison_fact_sentence
 from agent.products.product_response_text import (
     concise_text,
     normalize_lookup_text,
@@ -284,7 +285,7 @@ class ProductCatalogFormatter:
         )
 
     def comparison_text(self, products: list[dict]) -> str:
-        names = " and ".join(self.display_name(product) for product in products[:2])
+        names = ", ".join(self.display_name(product) for product in products[:4])
         bullets = [
             f"- {self.display_name(product)}: {self.comparison_fact_text(product)}"
             for product in products[:4]
@@ -292,10 +293,7 @@ class ProductCatalogFormatter:
         return f"I found {names}. Here is a source-backed comparison:\n" + "\n".join(bullets)
 
     def comparison_fact_text(self, product: dict) -> str:
-        parts = self.fact_parts(product)
-        if self.price(product) is None:
-            parts.append("Price not published in retrieved data.")
-        return " ".join(parts) if parts else "Only basic catalog data is published for this item."
+        return comparison_fact_sentence(product)
 
     def search_fact_parts(self, product: dict) -> list[str]:
         parts: list[str] = []
@@ -423,9 +421,12 @@ class ProductDisplayGrounder:
         if not selected:
             return
 
-        if display_action_name == ACTION_SHOW_COMPARISON or wants_comparison(transcript):
+        if display_action_name == ACTION_SHOW_COMPARISON or (
+            wants_comparison(transcript) and len(selected) >= 2
+        ):
             response["intent"] = "product_compare"
             response["response_text"] = self._comparison_response_text(selected, transcript)
+            self._attach_comparison_facts(display_action, selected)
             return
 
         if len(selected) == 1 and wants_source_answer(transcript):
@@ -442,6 +443,25 @@ class ProductDisplayGrounder:
         if self._wants_accessory_recommendation(transcript):
             response_text = self._formatter.with_accessory_recommendation(response_text, selected)
         response["response_text"] = response_text
+
+    def _attach_comparison_facts(self, action: dict[str, Any], selected: list[dict]) -> None:
+        """Rebuild the action's comparison facts from the retrieved records.
+
+        This runs after the output guardrail, which strips unknown params, so the
+        payload the widget receives is always derived from real rows here - any
+        fact payload the model may have produced is discarded rather than trusted.
+        """
+        if str(action.get("action") or "").upper() != ACTION_SHOW_COMPARISON:
+            return
+        from agent.products.comparison_facts import comparison_facts_payload
+
+        params = action.get("params")
+        if not isinstance(params, dict):
+            params = {}
+            action["params"] = params
+        payload = comparison_facts_payload(selected)
+        if payload:
+            params["comparison"] = payload
 
     def products_selected_by_display_action(
         self,

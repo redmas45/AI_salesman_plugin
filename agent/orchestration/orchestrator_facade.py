@@ -130,6 +130,7 @@ def _cached_answer_response(
     start_time: float,
     *,
     session_id: str = "",
+    constraint_signature: str = "",
 ) -> dict[str, Any] | None:
     return _turn_runtime().cached_answer_response(
         site_id,
@@ -139,6 +140,7 @@ def _cached_answer_response(
         skip_tts,
         timings,
         start_time,
+        constraint_signature=constraint_signature,
     )
 
 
@@ -189,6 +191,7 @@ def _maybe_store_answer_cache(
     retrieval_evidence: dict[str, Any],
     *,
     session_id: str = "",
+    constraint_signature: str = "",
 ) -> None:
     return _turn_runtime().maybe_store_answer_cache(
         site_id,
@@ -197,6 +200,7 @@ def _maybe_store_answer_cache(
         result,
         retrieved_items,
         retrieval_evidence,
+        constraint_signature=constraint_signature,
     )
 
 

@@ -14,7 +14,11 @@ export function canExecuteProductAction(action) {
 
 export async function executeProductAction(action) {
   if (action.action === ACTIONS.SHOW_COMPARISON) {
-    return showProducts(action.parameters || {}, "Product comparison", { syncListing: false });
+    return showProducts(action.parameters || {}, "Product comparison", {
+      syncListing: false,
+      // Older actions carry only product_ids; facts stay optional.
+      comparisonFacts: (action.parameters || {}).comparison,
+    });
   }
   if (action.action === ACTIONS.SHOW_PRODUCTS) {
     return showProducts(
@@ -49,7 +53,7 @@ async function showProducts(params, fallbackTitle = DEFAULT_RECOMMENDATION_TITLE
   const overlay = await showProductOverlay(
     productIds,
     params.title || searchQuery || fallbackTitle,
-    { searchQuery },
+    { searchQuery, comparisonFacts: options.comparisonFacts },
   );
   const evidence = {
     ...(overlay.evidence || {}),

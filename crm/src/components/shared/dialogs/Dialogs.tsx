@@ -6,6 +6,7 @@ import { NoticeBanner } from '../feedback/NoticeBanner';
 import type { Client, CreateClientPayload } from '../../../types';
 import { panelPasswordLabel } from '../../../utils/format';
 import { clientPanelHref } from '../../../utils/clientLinks';
+import { generateSecurePassword } from '../../../utils/password';
 import { CRM_VERTICALS, DEFAULT_CRM_VERTICAL_KEY } from '../../../verticals/registry';
 
 export interface AddClientDialogProps {
@@ -101,18 +102,20 @@ export function ClientPanelPasswordDialog({
   onRevokePassword,
 }: ClientPanelPasswordDialogProps) {
   const [password, setPassword] = useState('');
-  const [generatedPassword, setGeneratedPassword] = useState('');
+  // Only ever set AFTER a successful save, so the dialog can never imply that an
+  // unsaved value is the live credential.
+  const [savedPassword, setSavedPassword] = useState('');
   const [message, setMessage] = useState('');
   const [working, setWorking] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showSavedPassword, setShowSavedPassword] = useState(false);
 
   useEffect(() => {
     setPassword('');
-    setGeneratedPassword('');
+    setSavedPassword('');
     setMessage('');
     setShowPassword(false);
-    setShowCurrentPassword(false);
+    setShowSavedPassword(false);
   }, [client?.site_id]);
 
   if (!client) return null;
@@ -126,14 +129,16 @@ export function ClientPanelPasswordDialog({
       return;
     }
     setWorking(true);
-    setGeneratedPassword('');
+    setSavedPassword('');
     setMessage('');
     try {
-      const returnedPassword = await onUpdatePassword(activeClient.site_id, nextPassword, false);
-      setGeneratedPassword(returnedPassword || nextPassword);
-      setShowCurrentPassword(true);
+      // The CRM always sends the explicit value; server-side auto_generate stays
+      // supported for other callers but is never used from this dialog.
+      await onUpdatePassword(activeClient.site_id, nextPassword, false);
+      setSavedPassword(nextPassword);
+      setShowSavedPassword(true);
       setPassword('');
-      setMessage('Password updated. Current password is visible below.');
+      setMessage('Password saved. Copy it now - it is shown only once.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Password update failed.');
     } finally {
@@ -141,31 +146,23 @@ export function ClientPanelPasswordDialog({
     }
   }
 
-  async function generateAndSetPassword() {
-    setWorking(true);
-    setGeneratedPassword('');
-    setMessage('');
-    try {
-      const nextPassword = await onUpdatePassword(activeClient.site_id, '', true);
-      setGeneratedPassword(nextPassword);
-      setShowCurrentPassword(true);
-      setPassword('');
-      setMessage('Password generated and set. Current password is visible below.');
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Password update failed.');
-    } finally {
-      setWorking(false);
-    }
+  /** Fills the New password field only. No API call, nothing persisted. */
+  function generatePassword() {
+    setPassword(generateSecurePassword());
+    setShowPassword(true);
+    setSavedPassword('');
+    setShowSavedPassword(false);
+    setMessage('Password generated below. Choose Save password to apply it.');
   }
 
   async function revokePassword() {
     setWorking(true);
-    setGeneratedPassword('');
+    setSavedPassword('');
     setMessage('');
     try {
       await onRevokePassword(activeClient.site_id);
       setPassword('');
-      setShowCurrentPassword(false);
+      setShowSavedPassword(false);
       setMessage('Client panel login is revoked.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Password revoke failed.');
@@ -174,10 +171,15 @@ export function ClientPanelPasswordDialog({
     }
   }
 
-  async function copyGeneratedPassword() {
-    if (!generatedPassword) return;
-    await navigator.clipboard.writeText(generatedPassword);
-    setMessage('Current password copied.');
+  async function copySavedPassword() {
+    const value = savedPassword || password;
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      setMessage('Password copied to the clipboard.');
+    } catch {
+      setMessage('Copying failed. Select the password and copy it manually.');
+    }
   }
 
   const disabled = busy || working;
@@ -186,7 +188,7 @@ export function ClientPanelPasswordDialog({
   const messageTone: 'success' | 'error' | 'info' =
     message.toLowerCase().includes('failed') || message.toLowerCase().includes('must')
       ? 'error'
-      : message.toLowerCase().includes('updated') || message.toLowerCase().includes('copied') || message.toLowerCase().includes('generated')
+      : message.toLowerCase().includes('saved') || message.toLowerCase().includes('copied') || message.toLowerCase().includes('generated')
         ? 'success'
         : 'info';
 
@@ -207,30 +209,39 @@ export function ClientPanelPasswordDialog({
         </div>
         <div className="generated-password-box current-password-box">
           <div>
-            <span className="text-xs font-semibold uppercase text-muted">Current password</span>
-            {generatedPassword ? (
-              <code>{showCurrentPassword ? generatedPassword : 'Hidden'}</code>
+            <span className="text-xs font-semibold uppercase text-muted">
+              {savedPassword ? 'Saved password (shown once)' : 'Client panel login'}
+            </span>
+            {savedPassword ? (
+              <code>{showSavedPassword ? savedPassword : 'Hidden'}</code>
             ) : (
               <p className="mt-1 text-sm text-muted">
                 {passwordStatus === 'configured'
-                  ? 'Configured. Set or generate a new password to reveal it here.'
+                  ? 'Configured. Only the hash is stored, so the existing password cannot be displayed.'
                   : passwordStatus === 'revoked'
-                    ? 'Revoked. Generate or set a password to enable owner login.'
+                    ? 'Revoked. Save a password to re-enable owner login.'
                     : 'Not configured yet.'}
               </p>
             )}
           </div>
-          {generatedPassword ? (
+          {savedPassword ? (
             <div className="flex flex-wrap justify-end gap-2">
               <Button
                 type="button"
                 variant="secondary"
-                icon={showCurrentPassword ? EyeOff : Eye}
-                onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                icon={showSavedPassword ? EyeOff : Eye}
+                aria-label={showSavedPassword ? 'Hide saved password' : 'Show saved password'}
+                onClick={() => setShowSavedPassword(!showSavedPassword)}
               >
-                {showCurrentPassword ? 'Hide' : 'Show'}
+                {showSavedPassword ? 'Hide' : 'Show'}
               </Button>
-              <Button type="button" variant="secondary" icon={Copy} onClick={copyGeneratedPassword}>
+              <Button
+                type="button"
+                variant="secondary"
+                icon={Copy}
+                aria-label="Copy saved password to the clipboard"
+                onClick={copySavedPassword}
+              >
                 Copy
               </Button>
             </div>
@@ -269,17 +280,26 @@ export function ClientPanelPasswordDialog({
             {showPassword ? 'Hide' : 'Show'}
           </Button>
         </div>
-        {message ? <NoticeBanner tone={messageTone} message={message} /> : null}
+        <div aria-live="polite" role="status">
+          {message ? <NoticeBanner tone={messageTone} message={message} /> : null}
+        </div>
         <div className="modal-footer">
           <Button type="button" variant="danger" icon={Trash2} disabled={disabled} onClick={revokePassword}>
             Revoke password
           </Button>
           <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="secondary" disabled={disabled} icon={RefreshCw} onClick={generateAndSetPassword}>
-              Generate and set
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={disabled}
+              icon={RefreshCw}
+              aria-label="Generate a password into the New password field without saving it"
+              onClick={generatePassword}
+            >
+              Generate password
             </Button>
             <Button type="submit" disabled={disabled}>
-              Set password
+              Save password
             </Button>
           </div>
         </div>

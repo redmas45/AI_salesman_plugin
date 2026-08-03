@@ -49,19 +49,27 @@ def _price_signature(text: str) -> str:
     return " ".join(parts)
 
 
-def normalize_question(text: str) -> str:
+def normalize_question(text: str, constraint_signature: str = "") -> str:
     """Normalize a customer question for exact cache matching.
 
     The normalized key includes a price-constraint signature so the hard price
-    constraint is part of cache identity (constraint-aware caching).
+    constraint is part of cache identity (constraint-aware caching). When the
+    caller supplies a resolved-turn signature (brand/type/budget/recipient/count
+    carried over from earlier turns), that becomes part of the identity too, so
+    the same words asked in two different conversational contexts never collide.
     """
     normalized = re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
     normalized = re.sub(r"\s+", " ", normalized)
     signature = _price_signature(text)
-    if not signature:
+    resolved = re.sub(r"\s+", " ", str(constraint_signature or "").strip().lower())
+    prefix = ""
+    if signature:
+        prefix += f"price {signature} "
+    if resolved:
+        prefix += f"ctx {resolved} "
+    if not prefix:
         return normalized[:MAX_CACHE_QUESTION_CHARS]
-    prefix = f"price {signature} "
-    return f"{prefix}{normalized[: MAX_CACHE_QUESTION_CHARS - len(prefix)]}".strip()
+    return f"{prefix}{normalized[: max(0, MAX_CACHE_QUESTION_CHARS - len(prefix))]}".strip()
 
 
 def current_data_version(site_id: str) -> int:
@@ -109,9 +117,14 @@ def bump_data_version(site_id: str, reason: str = "data_changed") -> int:
     return int(row["version"] if row else 1)
 
 
-def lookup_answer_cache(site_id: str, question: str, session_id: str = "") -> dict[str, Any] | None:
+def lookup_answer_cache(
+    site_id: str,
+    question: str,
+    session_id: str = "",
+    constraint_signature: str = "",
+) -> dict[str, Any] | None:
     """Return a fresh exact or semantic answer scoped to one browser session."""
-    normalized = normalize_question(question)
+    normalized = normalize_question(question, constraint_signature)
     safe_session_id = normalize_session_id(session_id)
     if not normalized or not safe_session_id:
         return None
@@ -191,9 +204,10 @@ def store_answer_cache(
     ui_actions: list[dict[str, Any]] | None = None,
     confidence: float = 0.0,
     ttl_days: int = DEFAULT_CACHE_TTL_DAYS,
+    constraint_signature: str = "",
 ) -> dict[str, Any] | None:
     """Upsert a safe answer into a tenant-local browser-session cache."""
-    normalized = normalize_question(question)
+    normalized = normalize_question(question, constraint_signature)
     safe_session_id = normalize_session_id(session_id)
     answer = str(answer_text or "").strip()[:MAX_CACHE_ANSWER_CHARS]
     if not normalized or not answer or not safe_session_id:

@@ -183,7 +183,7 @@ def test_orchestrator_cache_hit_skips_retrieval_and_llm(monkeypatch) -> None:
     monkeypatch.setattr(
         orchestrator,
         "lookup_answer_cache",
-        lambda site_id, question, session_id: {
+        lambda site_id, question, session_id, constraint_signature="": {
             "answer_text": "The website says this plan includes cashless hospitalization.",
             "answer_scope": SCOPE_GROUNDED_FACT,
             "confidence": 0.95,

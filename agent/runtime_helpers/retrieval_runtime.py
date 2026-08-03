@@ -42,7 +42,8 @@ def cached_answer_response(
     should_bypass_answer_cache: Callable[[str], bool],
     is_ecommerce_site: Callable[[str], bool],
     should_bypass_ecommerce_answer_cache: Callable[[str], bool],
-    lookup_answer_cache: Callable[[str, str, str], dict[str, Any] | None],
+    lookup_answer_cache: Callable[..., dict[str, Any] | None],
+    constraint_signature: str = "",
     claims_no_matching_products: Callable[[Any], bool],
     enrich_cached_product_actions: Callable[[str, list[dict[str, Any]]], list[dict[str, Any]]],
     synthesize_audio_b64: Callable[[str, bool], tuple[str, float | None]],
@@ -58,7 +59,7 @@ def cached_answer_response(
 
     started_at = time.perf_counter()
     try:
-        cached = lookup_answer_cache(site_id, safe_transcript, session_id)
+        cached = lookup_answer_cache(site_id, safe_transcript, session_id, constraint_signature)
     except recoverable_errors as exc:
         logger.warning("PIPELINE | answer cache lookup skipped for %s: %s", site_id, exc)
         timings["cache_ms"] = elapsed_ms(started_at)
@@ -176,6 +177,7 @@ def maybe_store_answer_cache(
     is_safe_cache_response: Callable[[str, dict[str, Any], list[dict[str, Any]]], bool],
     source_ids_and_urls: Callable[[list[dict[str, Any]]], tuple[list[str], list[str]]],
     store_answer_cache: Callable[..., dict[str, Any] | None],
+    constraint_signature: str = "",
     recoverable_errors: tuple[type[BaseException], ...],
     logger: logging.Logger,
 ) -> None:
@@ -195,6 +197,7 @@ def maybe_store_answer_cache(
             source_urls=source_urls,
             ui_actions=result.get("ui_actions") if isinstance(result.get("ui_actions"), list) else [],
             confidence=float(result.get("confidence") or 0.0),
+            constraint_signature=constraint_signature,
         )
         retrieval_evidence["cache_write"] = "stored" if cached else "skipped"
         if cached:

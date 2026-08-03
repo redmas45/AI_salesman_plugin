@@ -95,9 +95,27 @@ def run_pipeline(
             site_id, transcript, inventory_type, skip_tts, timings, t0
         )
 
+    constraint_signature = ""
     if ecommerce_runtime:
+        # Resolve this turn against bounded recent context ONCE, then reuse it for
+        # the clarification decision and for cache identity so the sync and
+        # streaming pipelines behave identically.
+        resolved_context = runtime._resolved_turn_context(
+            site_id,
+            safe_transcript,
+            conversation_history=conversation_history,
+            session_summary=session_summary,
+        )
+        constraint_signature = resolved_context.cache_identity()
         clarification = runtime._ecommerce_clarification_response(
-            transcript, safe_transcript, skip_tts, timings, t0
+            transcript,
+            safe_transcript,
+            skip_tts,
+            timings,
+            t0,
+            site_id=site_id,
+            conversation_history=conversation_history,
+            session_summary=session_summary,
         )
         if clarification:
             return clarification
@@ -110,6 +128,7 @@ def run_pipeline(
         timings,
         t0,
         session_id=session_id,
+        constraint_signature=constraint_signature,
     )
     if cached_response:
         import os
@@ -250,6 +269,7 @@ def run_pipeline(
         retrieved_products,
         retrieval_evidence,
         session_id=session_id,
+        constraint_signature=constraint_signature,
     )
 
     runtime.print(f'🧠 LLM RESPONSE: "{validated["response_text"][:150]}"')
@@ -380,9 +400,27 @@ def run_stream_pipeline(
         yield from stream_final_result(result)
         return
 
+    constraint_signature = ""
     if ecommerce_runtime:
+        # Resolve this turn against bounded recent context ONCE, then reuse it for
+        # the clarification decision and for cache identity so the sync and
+        # streaming pipelines behave identically.
+        resolved_context = runtime._resolved_turn_context(
+            site_id,
+            safe_transcript,
+            conversation_history=conversation_history,
+            session_summary=session_summary,
+        )
+        constraint_signature = resolved_context.cache_identity()
         clarification = runtime._ecommerce_clarification_response(
-            transcript, safe_transcript, skip_tts, timings, t0
+            transcript,
+            safe_transcript,
+            skip_tts,
+            timings,
+            t0,
+            site_id=site_id,
+            conversation_history=conversation_history,
+            session_summary=session_summary,
         )
         if clarification:
             yield from stream_final_result(clarification)
@@ -396,6 +434,7 @@ def run_stream_pipeline(
         timings,
         t0,
         session_id=session_id,
+        constraint_signature=constraint_signature,
     )
     if cached_response:
         yield from stream_final_result(cached_response)
@@ -506,6 +545,7 @@ def run_stream_pipeline(
         retrieved_products,
         retrieval_evidence,
         session_id=session_id,
+        constraint_signature=constraint_signature,
     )
     runtime._ai_log("assistant", validated["response_text"])
     runtime._ai_log("actions", final_actions)

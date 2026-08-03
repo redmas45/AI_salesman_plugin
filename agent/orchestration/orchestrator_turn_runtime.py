@@ -66,6 +66,7 @@ class OrchestratorTurnRuntime:
         skip_tts: bool,
         timings: dict[str, float],
         start_time: float,
+        constraint_signature: str = "",
     ) -> dict[str, Any] | None:
         return retrieval_runtime.cached_answer_response(
             site_id,
@@ -79,6 +80,7 @@ class OrchestratorTurnRuntime:
             is_ecommerce_site=self.is_ecommerce_site,
             should_bypass_ecommerce_answer_cache=self.should_bypass_ecommerce_answer_cache,
             lookup_answer_cache=self.lookup_answer_cache,
+            constraint_signature=constraint_signature,
             claims_no_matching_products=self.claims_no_matching_products,
             enrich_cached_product_actions=self.enrich_cached_product_actions,
             synthesize_audio_b64=self.synthesize_audio_b64,
@@ -96,6 +98,7 @@ class OrchestratorTurnRuntime:
         result: dict[str, Any],
         retrieved_items: list[dict[str, Any]],
         retrieval_evidence: dict[str, Any],
+        constraint_signature: str = "",
     ) -> None:
         return retrieval_runtime.maybe_store_answer_cache(
             site_id,
@@ -107,6 +110,7 @@ class OrchestratorTurnRuntime:
             is_safe_cache_response=self.is_safe_cache_response,
             source_ids_and_urls=self.source_ids_and_urls,
             store_answer_cache=self.store_answer_cache,
+            constraint_signature=constraint_signature,
             recoverable_errors=self.recoverable_errors,
             logger=self.logger,
         )

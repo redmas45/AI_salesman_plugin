@@ -130,6 +130,52 @@ def test_comparison_action_respects_requested_two_product_limit() -> None:
     assert response["ui_actions"][0]["params"]["product_ids"] == ["one", "two"]
 
 
+def test_comparison_action_applies_budget_stock_and_brand_diversity_in_production_path() -> None:
+    response = {
+        "response_text": "Here are options.",
+        "intent": "product_compare",
+        "ui_actions": [
+            {
+                "action": "SHOW_COMPARISON",
+                "params": {"product_ids": ["alpha-1", "alpha-2", "beta-1", "gamma-1"]},
+            }
+        ],
+    }
+    products = [
+        {"id": "alpha-1", "name": "Alpha One", "brand": "Alpha", "price": 30000, "stock": 4},
+        {"id": "alpha-2", "name": "Alpha Two", "brand": "Alpha", "price": 28000, "stock": 4},
+        {"id": "beta-1", "name": "Beta One", "brand": "Beta", "price": 26000, "stock": 3},
+        {"id": "gamma-1", "name": "Gamma One", "brand": "Gamma", "price": 52000, "stock": 0},
+    ]
+
+    orchestrator._promote_comparison_action(
+        response,
+        "Compare two phones under 30000.",
+        products,
+    )
+
+    assert response["ui_actions"][0]["params"]["product_ids"] == ["alpha-1", "beta-1"]
+
+
+def test_comparison_action_resolves_named_product_family_against_named_brand() -> None:
+    response = {
+        "response_text": "Here is the comparison.",
+        "intent": "product_compare",
+        "ui_actions": [
+            {"action": "SHOW_COMPARISON", "params": {"product_ids": ["iphone", "oppo"]}}
+        ],
+    }
+    products = [
+        {"id": "iphone", "name": "Apple iPhone", "brand": "Apple", "price": 79999, "stock": 5},
+        {"id": "oppo", "name": "OPPO Phone", "brand": "OPPO", "price": 21999, "stock": 5},
+    ]
+
+    orchestrator._promote_comparison_action(response, "Compare iPhone and OPPO", products)
+
+    assert response["ui_actions"][0]["action"] == "SHOW_COMPARISON"
+    assert response["ui_actions"][0]["params"]["product_ids"] == ["iphone", "oppo"]
+
+
 def test_grounded_product_facts_include_rating_and_review_count() -> None:
     text = orchestrator._comparison_fallback_text(
         [
@@ -313,9 +359,8 @@ def test_named_comparison_response_is_forced_when_llm_misses_exact_products():
     )
 
     assert response["intent"] == "product_compare"
-    assert response["ui_actions"] == [
-        {"action": "SHOW_COMPARISON", "params": {"product_ids": ["2", "3"]}}
-    ]
+    assert [action["action"] for action in response["ui_actions"]] == ["SHOW_COMPARISON"]
+    assert response["ui_actions"][0]["params"]["product_ids"] == ["2", "3"]
     assert "NOVA Sticker" in response["response_text"]
     assert "NOVA T-Shirt" in response["response_text"]
 
@@ -354,9 +399,8 @@ def test_brand_phone_comparison_response_is_forced_when_llm_misses_products(monk
     )
 
     assert response["intent"] == "product_compare"
-    assert response["ui_actions"] == [
-        {"action": "SHOW_COMPARISON", "params": {"product_ids": ["apple-phone-1", "samsung-phone-1"]}}
-    ]
+    assert [action["action"] for action in response["ui_actions"]] == ["SHOW_COMPARISON"]
+    assert response["ui_actions"][0]["params"]["product_ids"] == ["apple-phone-1", "samsung-phone-1"]
     assert "Apple Prime" in response["response_text"]
     assert "Samsung Daily" in response["response_text"]
 
@@ -408,7 +452,7 @@ def test_product_comparison_fallback_does_not_invent_zero_price():
     )
 
     assert "$0.00" not in text
-    assert "Price not published in retrieved data" in text
+    assert "Price: Not published." in text
     assert "Price: 599" in text
 
 
@@ -524,14 +568,9 @@ def test_run_forces_apple_samsung_comparison_when_llm_returns_no_records(monkeyp
     assert result["intent"] == "product_compare"
     assert "Apple Prime" in result["response_text"]
     assert "Samsung Daily" in result["response_text"]
-    assert result["ui_actions"] == [
-        {
-            "action": "SHOW_COMPARISON",
-            "params": {"product_ids": ["apple-phone-1", "samsung-phone-1"]},
-        }
-    ]
+    assert [action["action"] for action in result["ui_actions"]] == ["SHOW_COMPARISON"]
+    assert result["ui_actions"][0]["params"]["product_ids"] == ["apple-phone-1", "samsung-phone-1"]
     assert result["retrieval"]["source"] == "products"
     assert result["retrieval"]["retrieved_count"] >= 2
     assert result["retrieval"]["retrieved_ids"][:2] == ["apple-phone-1", "samsung-phone-1"]
     assert result["retrieval"]["issue"] == "ok"
-

@@ -20,6 +20,8 @@ const PLACEHOLDER_IMAGE = [
 const MAX_EVIDENCE_IDS = 12;
 let currentProducts = [];
 let currentTitle = DEFAULT_RECOMMENDATION_TITLE;
+// Grounded comparison facts for the current overlay, indexed by product id.
+let currentFacts = new Map();
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -105,14 +107,46 @@ function ensureStyles() {
       scrollbar-width: thin;
     }
     .mayabot-product-card {
-      display: grid;
-      grid-template-rows: auto auto auto 1fr;
+      display: flex;
+      flex-direction: column;
       gap: 9px;
       min-width: 0;
       border: 1px solid rgba(22, 22, 21, 0.1);
       border-radius: 8px;
       background: #ffffff;
       padding: 12px;
+    }
+    /* Facts scroll inside the card so Add/View stay reachable on short screens. */
+    .mayabot-product-facts {
+      margin: 0;
+      display: grid;
+      gap: 6px;
+      overflow: auto;
+      max-height: 190px;
+      flex: 1 1 auto;
+      min-height: 0;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .mayabot-fact {
+      display: grid;
+      grid-template-columns: minmax(64px, 38%) 1fr;
+      gap: 8px;
+      align-items: start;
+      border-top: 1px solid rgba(22, 22, 21, 0.07);
+      padding-top: 5px;
+    }
+    .mayabot-fact:first-child { border-top: 0; padding-top: 0; }
+    .mayabot-fact dt {
+      margin: 0;
+      color: rgba(22, 22, 21, 0.55);
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+    .mayabot-fact dd {
+      margin: 0;
+      color: #161615;
+      overflow-wrap: anywhere;
     }
     .mayabot-product-image {
       width: 100%;
@@ -146,8 +180,9 @@ function ensureStyles() {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
-      align-self: end;
-      margin-top: 2px;
+      align-self: stretch;
+      margin-top: auto;
+      flex: 0 0 auto;
     }
     .mayabot-product-actions button {
       min-height: 36px;
@@ -191,11 +226,8 @@ function ensureStyles() {
       #mayabot-product-panel {
         bottom: 82px;
       }
-      #mayabot-product-panel.count-1,
-      #mayabot-product-panel.count-2,
-      #mayabot-product-panel.count-3,
-      #mayabot-product-panel.count-many {
-        --mayabot-card-count: 1;
+      .mayabot-product-grid {
+        grid-template-columns: minmax(0, 1fr);
       }
     }
   `;
@@ -323,6 +355,42 @@ function productPriceText(product) {
   return Number.isFinite(price) && price > 0 ? price.toLocaleString() : "Price unavailable";
 }
 
+const MAX_RENDERED_FACTS = 6;
+const MAX_FACT_LABEL_CHARS = 24;
+const MAX_FACT_VALUE_CHARS = 120;
+
+/** Index the server's grounded comparison payload by product id. */
+function factsByProductId(comparison) {
+  const index = new Map();
+  if (!Array.isArray(comparison)) return index;
+  comparison.forEach((entry) => {
+    if (!entry || typeof entry !== "object") return;
+    const id = String(entry.product_id || "").trim();
+    if (!id || !Array.isArray(entry.facts)) return;
+    const facts = entry.facts
+      .filter((fact) => fact && typeof fact === "object" && fact.label && fact.value)
+      .slice(0, MAX_RENDERED_FACTS)
+      .map((fact) => ({
+        label: String(fact.label).slice(0, MAX_FACT_LABEL_CHARS),
+        value: String(fact.value).slice(0, MAX_FACT_VALUE_CHARS),
+      }));
+    if (facts.length) index.set(id, facts);
+  });
+  return index;
+}
+
+function factsMarkup(productId) {
+  const facts = currentFacts.get(String(productId));
+  if (!facts || !facts.length) return "";
+  const rows = facts
+    .map(
+      (fact) =>
+        `<div class="mayabot-fact"><dt>${escapeHtml(fact.label)}</dt><dd>${escapeHtml(fact.value)}</dd></div>`,
+    )
+    .join("");
+  return `<dl class="mayabot-product-facts">${rows}</dl>`;
+}
+
 function renderProducts(products, title) {
   const panel = ensurePanel();
   const grid = panel.querySelector(".mayabot-product-grid");
@@ -351,6 +419,7 @@ function renderProducts(products, title) {
           <img class="mayabot-product-image" src="${escapeHtml(product.imageUrl || PLACEHOLDER_IMAGE)}" alt="${escapeHtml(product.name)}">
           <h3 class="mayabot-product-name">${escapeHtml(product.name || product.title || "Product")}</h3>
           <p class="mayabot-product-meta">${escapeHtml(product.brand)} - ${escapeHtml(productPriceText(product))}</p>
+          ${factsMarkup(product.id)}
           <div class="mayabot-product-actions">
             <button type="button" data-add="${safeId}">Add</button>
             <button type="button" class="secondary" data-view="${safeId}">View</button>
@@ -387,6 +456,7 @@ function collapseVoiceBubble() {
 export async function showProductOverlay(productIds, title = DEFAULT_RECOMMENDATION_TITLE, options = {}) {
   const requestedIds = cleanIds(productIds);
   const searchQuery = String(options.searchQuery || "").trim();
+  currentFacts = factsByProductId(options.comparisonFacts);
   if (!requestedIds.length && !searchQuery) {
     renderProducts([], title);
     return overlayResult([], [], "missing_product_ids");
