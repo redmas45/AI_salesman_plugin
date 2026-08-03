@@ -1,8 +1,8 @@
-import { useState, useMemo, useEffect } from 'react';
-import { Activity, ChevronDown, Search, X } from 'lucide-react';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { Activity, Check, ChevronDown, Copy, Search, X } from 'lucide-react';
 import type { ActionExecutionEvent, ConversationsResponse } from '../../types';
 import type { ClientWorkspaceTabId } from '../../verticals/types';
-import { Button } from '../../components/ui/Button';
+import { Button, IconButton } from '../../components/ui/Button';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { StatusPill } from '../../components/ui/Badge';
 import { RangeControl } from '../../components/shared/RangeControl';
@@ -214,11 +214,104 @@ function ConversationInsightCard({
   );
 }
 
+type CopyState = 'idle' | 'copied' | 'error';
+type ConversationSession = ConversationsResponse['groups'][number]['sessions'][number] & { date: string };
+
+const COPY_FEEDBACK_MS = 2000;
+
+async function writeClipboardText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    if (!document.execCommand('copy')) throw new Error('Clipboard copy was rejected');
+  } finally {
+    textarea.remove();
+  }
+}
+
+function useClipboard(): { state: CopyState; copy: (text: string) => void } {
+  const [state, setState] = useState<CopyState>('idle');
+  const resetTimer = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    },
+    [],
+  );
+
+  const copy = (text: string) => {
+    void writeClipboardText(text)
+      .then(() => setState('copied'))
+      .catch(() => setState('error'))
+      .finally(() => {
+        if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+        resetTimer.current = window.setTimeout(() => setState('idle'), COPY_FEEDBACK_MS);
+      });
+  };
+  return { state, copy };
+}
+
+function CopyTurnButton({ text, label }: { text: string; label: string }) {
+  const { state, copy } = useClipboard();
+  const accessibleLabel =
+    state === 'copied' ? `${label} copied` : state === 'error' ? `Copying ${label.toLowerCase()} failed` : `Copy ${label.toLowerCase()}`;
+  return (
+    <>
+      <IconButton
+        icon={state === 'copied' ? Check : Copy}
+        label={accessibleLabel}
+        tone={state === 'error' ? 'danger' : 'default'}
+        onClick={() => copy(text)}
+      />
+      <span className="sr-only" aria-live="polite">{state === 'copied' ? `${label} copied` : state === 'error' ? `Copying ${label.toLowerCase()} failed` : ''}</span>
+    </>
+  );
+}
+
+function formatConversationForCopy(session: ConversationSession): string {
+  const header = `Conversation ${session.session_id} (${session.site_id}, ${session.date})`;
+  const body = session.turns
+    .map((turn) => `User: ${turn.transcript || '-'}\nMaya: ${turn.response_text || '-'}`)
+    .join('\n\n');
+  return `${header}\n\n${body}`;
+}
+
+function CopyConversationButton({ session }: { session: ConversationSession }) {
+  const { state, copy } = useClipboard();
+  const label = state === 'copied' ? 'Copied' : state === 'error' ? 'Copy failed' : 'Copy conversation';
+  return (
+    <>
+      <Button
+        variant="secondary"
+        size="sm"
+        type="button"
+        icon={state === 'copied' ? Check : Copy}
+        aria-label={state === 'copied' ? 'Conversation copied' : state === 'error' ? 'Copying conversation failed' : 'Copy the whole conversation to the clipboard'}
+        onClick={() => copy(formatConversationForCopy(session))}
+      >
+        {label}
+      </Button>
+      <span className="sr-only" aria-live="polite">{state === 'copied' ? 'Conversation copied' : state === 'error' ? 'Copying conversation failed' : ''}</span>
+    </>
+  );
+}
+
 function CrmConversationCard({
   session,
   onOpenClient,
 }: {
-  session: ConversationsResponse['groups'][number]['sessions'][number] & { date: string };
+  session: ConversationSession;
   onOpenClient: (siteId: string, initialTab?: ClientWorkspaceTabId) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -252,6 +345,7 @@ function CrmConversationCard({
         >
           Open client activity
         </Button>
+        <CopyConversationButton session={session} />
         <span>
           Latest intent: <strong>{latestTurn?.intent || 'unknown'}</strong>
         </span>
@@ -267,6 +361,7 @@ function CrmConversationCard({
                   <span>{shortTime(turn.created_at)}</span>
                   <span>{turn.transport}</span>
                   <StatusPill value={turn.status || 'ok'} />
+                  <CopyTurnButton text={turn.transcript || ''} label="Customer message" />
                 </div>
               </div>
             </div>
@@ -278,6 +373,7 @@ function CrmConversationCard({
                   <span>{turn.intent || 'unknown'}</span>
                   <span>{number(turn.tokens)} tokens</span>
                   <span>{number(turn.latency_ms)} ms</span>
+                  <CopyTurnButton text={turn.response_text || ''} label="Maya reply" />
                 </div>
               </div>
             </div>

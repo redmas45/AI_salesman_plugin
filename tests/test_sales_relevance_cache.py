@@ -293,6 +293,7 @@ def test_llm_uses_session_summary_and_parses_answer_scope(monkeypatch) -> None:
 def test_generic_prompt_declares_answer_scope_and_sales_relevance(monkeypatch) -> None:
     monkeypatch.setattr(generic_prompt, "get_allowed_actions", lambda site_id: {"SHOW_ENTITIES"})
     monkeypatch.setattr(generic_prompt, "prompt_profile_context", lambda site_id: "")
+    monkeypatch.setattr(generic_prompt, "capability_prompt_context", lambda site_id: "")
 
     prompt = generic_prompt.build_generic_system_prompt(
         site_id="policy_site",

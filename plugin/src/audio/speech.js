@@ -35,11 +35,16 @@ const FEMALE_VOICE_HINTS = Object.freeze([
 
 let pendingSpeechText = "";
 let selectedSpeechVoiceName = "";
+let pendingVoiceTimer = null;
+let speechGeneration = 0;
 
 export function speakText(text) {
   if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) return false;
+  cancelPendingVoiceLoad();
+  const generation = ++speechGeneration;
   pendingSpeechText = text;
   const speak = () => {
+    if (generation !== speechGeneration || pendingSpeechText !== text) return false;
     try {
       const utterance = new SpeechSynthesisUtterance(text);
       const voice = preferredSpeechVoice(window.speechSynthesis.getVoices());
@@ -52,6 +57,7 @@ export function speakText(text) {
       utterance.pitch = SPEECH_PITCH;
       utterance.onstart = clearPendingSpeech;
       utterance.onend = clearPendingSpeech;
+      cancelPendingVoiceLoad();
       window.speechSynthesis.cancel();
       window.speechSynthesis.resume();
       window.speechSynthesis.speak(utterance);
@@ -67,7 +73,10 @@ export function speakText(text) {
   }
 
   window.speechSynthesis.onvoiceschanged = speak;
-  window.setTimeout(speak, VOICE_FALLBACK_DELAY_MS);
+  pendingVoiceTimer = window.setTimeout(() => {
+    pendingVoiceTimer = null;
+    speak();
+  }, VOICE_FALLBACK_DELAY_MS);
   return true;
 }
 
@@ -76,7 +85,17 @@ export function replayPendingSpeech() {
   speakText(pendingSpeechText);
 }
 
+export function isSpeechActive() {
+  try {
+    return Boolean(pendingSpeechText) || Boolean(window.speechSynthesis?.speaking) || Boolean(window.speechSynthesis?.pending);
+  } catch (_err) {
+    return Boolean(pendingSpeechText);
+  }
+}
+
 export function resetSpeech() {
+  speechGeneration += 1;
+  cancelPendingVoiceLoad();
   pendingSpeechText = "";
   selectedSpeechVoiceName = "";
   try {
@@ -112,5 +131,12 @@ function preferenceVoice(voices) {
 }
 
 function clearPendingSpeech() {
+  cancelPendingVoiceLoad();
   pendingSpeechText = "";
+}
+
+function cancelPendingVoiceLoad() {
+  if (pendingVoiceTimer) window.clearTimeout(pendingVoiceTimer);
+  pendingVoiceTimer = null;
+  if (window.speechSynthesis) window.speechSynthesis.onvoiceschanged = null;
 }

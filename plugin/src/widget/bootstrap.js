@@ -1,10 +1,10 @@
 import { injectStyles } from "./styles";
 import { initWidget, addMessage, updateMessage } from "./ui";
 import { setupRecorder } from "../audio/recorder";
-import { processAudio } from "../runtime/api";
+import { processAudio, isSpeaking, stopPlayback } from "../runtime/api";
 import { config } from "../core/config";
 import { createConversationMemory } from "../session/conversationMemory";
-import { replayPendingSpeech, resetSpeech, speakText } from "../audio/speech";
+import { replayPendingSpeech, speakText } from "../audio/speech";
 import { startWidgetAvailabilityLoop } from "../session/widgetAvailability";
 import {
   AUTO_GREETING_DELAY_MS,
@@ -15,6 +15,7 @@ import {
 
 window.__mayabot_identifier = "voice-orb";
 let activeRecorder = null;
+let activeWidgetCleanup = null;
 
 function boot() {
   if (window.__mayabotBooted || document.getElementById("mayabot-widget")) {
@@ -112,10 +113,66 @@ function boot() {
   const recorder = setupRecorder(handleStop, handleStatusChange);
   activeRecorder = recorder;
 
+  // While Maya is speaking, the orb is a Stop control. Interrupting speech must
+  // never start a recording. The target handler runs after window capture replay
+  // listeners and immediately cancels anything they attempted to resume.
+  let justStoppedPlayback = false;
+  let stopClickGuardTimer = null;
+  function stopSpeakingIfActive() {
+    if (!isSpeaking()) return false;
+    stopPlayback();
+    handleStatusChange(STATUS.READY);
+    return true;
+  }
+
+  elements.btn.setAttribute("aria-label", "Maya voice assistant. Tap to talk, or tap to stop when speaking.");
+  elements.btn.setAttribute("title", "Tap to talk — tap or press Escape to stop Maya");
+
+  elements.btn.addEventListener(
+    "pointerdown",
+    () => {
+      if (!stopSpeakingIfActive()) return;
+      justStoppedPlayback = true;
+      if (stopClickGuardTimer) window.clearTimeout(stopClickGuardTimer);
+      stopClickGuardTimer = window.setTimeout(() => {
+        justStoppedPlayback = false;
+        stopClickGuardTimer = null;
+      }, 750);
+    },
+    { capture: true },
+  );
+
   elements.btn.addEventListener("click", () => {
+    if (justStoppedPlayback) {
+      justStoppedPlayback = false;
+      if (stopClickGuardTimer) window.clearTimeout(stopClickGuardTimer);
+      stopClickGuardTimer = null;
+      return;
+    }
     if (processingTurn) return;
+    if (stopSpeakingIfActive()) return;
     recorder.toggle();
   });
+
+  const handleEscape = (event) => {
+    if (event.key === "Escape") stopSpeakingIfActive();
+  };
+  document.addEventListener("keydown", handleEscape);
+
+  // Resume browser speech that autoplay blocked — but never when the gesture is on
+  // the orb, where a tap means "stop", not "replay".
+  const handlePlaybackReplay = (event) => {
+    if (elements.btn.contains(event.target)) return;
+    replayPendingSpeech();
+  };
+  document.addEventListener("pointerdown", handlePlaybackReplay, { capture: true });
+
+  activeWidgetCleanup = () => {
+    document.removeEventListener("keydown", handleEscape);
+    document.removeEventListener("pointerdown", handlePlaybackReplay, { capture: true });
+    if (stopClickGuardTimer) window.clearTimeout(stopClickGuardTimer);
+    activeWidgetCleanup = null;
+  };
 
   if (shouldAutoGreet()) {
     markAutoGreeted();
@@ -133,10 +190,11 @@ function boot() {
 function shutdownWidget() {
   activeRecorder?.cancel();
   activeRecorder = null;
+  activeWidgetCleanup?.();
+  stopPlayback();
   window.__mayabotBooted = false;
   document.getElementById("mayabot-widget")?.remove();
   document.getElementById("mayabot-product-panel")?.remove();
-  resetSpeech();
 }
 
 function shouldAutoGreet() {
@@ -171,5 +229,3 @@ if (document.readyState === "loading") {
 } else {
   startWidgetAvailabilityLoop({ boot, shutdownWidget });
 }
-
-document.addEventListener("pointerdown", replayPendingSpeech, { capture: true });

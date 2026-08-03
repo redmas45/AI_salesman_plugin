@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from agent.products.product_matching import ProductCatalogMatcher
+from agent.products.product_matching_lexical import products_matching_query_facets
 from agent.products.product_response import normalize_lookup_text
 from api.contracts.models import (
     ACTION_COMPARE_ENTITIES,
@@ -544,6 +545,10 @@ def products_for_explicit_request(
     products: list[dict[str, Any]],
     query: str,
 ) -> list[dict[str, Any]]:
+    facet_matches = products_matching_query_facets(products, query)
+    if facet_matches is not products:
+        return facet_matches
+
     terms = explicit_product_terms(query)
     if not terms:
         return products

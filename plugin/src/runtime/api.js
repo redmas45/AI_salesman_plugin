@@ -1,6 +1,6 @@
 import { config } from "../core/config";
 import { executeActions } from "../actionExecutor";
-import { replayPendingSpeech, speakText } from "../audio/speech";
+import { isSpeechActive, replayPendingSpeech, resetSpeech, speakText } from "../audio/speech";
 import {
   API_PATHS,
   AUDIO,
@@ -39,6 +39,8 @@ class AudioQueue {
     this.queue = [];
     this.blocked = [];
     this.playing = false;
+    this.current = null;
+    this.lastPlaybackStartMs = 0;
     this.installUnlockListeners();
   }
 
@@ -54,17 +56,25 @@ class AudioQueue {
     const item = this.queue.shift();
     const audio = new Audio(AUDIO.DATA_WAV_PREFIX + item.audioB64);
     audio.preload = "auto";
+    this.current = audio;
+    // Track playback start for latency diagnostics (slice 13).
+    audio.onplay = () => {
+      this.lastPlaybackStartMs = typeof performance !== "undefined" ? performance.now() : 0;
+    };
     audio.onended = () => {
+      this.current = null;
       this.playing = false;
       this.playNext();
     };
     audio.onerror = () => {
+      this.current = null;
       if (item.fallbackText) speakTextFallback(item.fallbackText);
       this.playing = false;
       this.playNext();
     };
     audio.play().catch((err) => {
       console.warn("Audio playback failed", err);
+      this.current = null;
       if (this.isAutoplayBlocked(err)) {
         if (item.fallbackText) {
           speakTextFallback(item.fallbackText);
@@ -107,9 +117,41 @@ class AudioQueue {
     const text = `${error?.name || ""} ${error?.message || error || ""}`.toLowerCase();
     return text.includes("notallowed") || text.includes("user didn't interact") || text.includes("not allowed");
   }
+
+  // Authoritative stop: cancel queued + active generated audio AND browser speech.
+  stop() {
+    this.queue = [];
+    this.blocked = [];
+    if (this.current) {
+      try {
+        this.current.pause();
+        this.current.currentTime = 0;
+      } catch (_err) {
+        // Pausing a not-yet-started element can throw; ignore.
+      }
+      this.current.onended = null;
+      this.current.onerror = null;
+      this.current = null;
+    }
+    this.playing = false;
+    resetSpeech();
+  }
+
+  isSpeaking() {
+    return this.playing || this.queue.length > 0 || isSpeechActive();
+  }
 }
 
 const sharedAudioQueue = new AudioQueue();
+
+// Single authoritative playback controls for the orb / keyboard / stop button.
+export function stopPlayback() {
+  sharedAudioQueue.stop();
+}
+
+export function isSpeaking() {
+  return sharedAudioQueue.isSpeaking();
+}
 
 class HttpTransport {
   async sendAudio(blob, callbacks, conversationHistory = []) {

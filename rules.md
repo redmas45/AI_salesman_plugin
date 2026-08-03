@@ -90,3 +90,59 @@ Large files hide design flaws, slow review, and make demo-critical changes risky
 * **Orchestrator Thinness:** Orchestrators should coordinate workflow steps, not contain all business logic. Move retrieval ranking, product formatting, action repair, cache policy, prompt assembly, and browser action grounding into separately testable services.
 * **No Mega-Modules:** If a module contains multiple unrelated sections, split by domain capability instead of by technical convenience. Example: product response grounding belongs in a product response service, not in a voice pipeline orchestrator.
 * **Performance Reality:** Classes and objects do not automatically make software faster or more memory efficient. Performance comes from bounded data structures, avoiding repeated I/O, avoiding unnecessary copies, lazy loading expensive dependencies, and using clear ownership so caches and resources are managed intentionally.
+
+## 12. Plan, Review, and Git Control
+
+* **Read Before Editing:** Read `AGENTS.md`, this file, `handoff.md`, relevant manifests, tests, and nearby implementation before changing code.
+* **Approved Scope Only:** Follow the reviewed plan. Record material scope discoveries in `handoff.md` and obtain approval before expanding the task.
+* **No Delivery Actions:** Delegated workers must not commit, push, create or switch branches, open pull requests, tag releases, or deploy. They leave local working-tree changes for independent review; the user performs Git and deployment actions manually after a green signal.
+* **Preserve Existing Work:** Never reset, clean, stage, rewrite, or remove unrelated working-tree changes. Work with concurrent changes when they affect the task.
+
+## 13. Repository Ownership and Vertical Independence
+
+* **Hub Ownership:** `AI_salesman_plugin` owns universal ingestion, normalization, retrieval, prompts, memory, cache, voice runtime, CRM, adapters, and cross-vertical behavior.
+* **Demo Website Ownership:** `Vercel_website` owns AI-KART catalog truth, product API, media, storefront behavior, responsive UI, and source-catalog validation.
+* **Fix the Owning Boundary:** Do not hide malformed website data with tenant-specific Hub code. Do not make Hub correctness depend on every connected website being perfectly curated.
+* **No Production Fixture Rules:** AI-KART names and screenshot transcripts may appear in tests, but production logic must use typed domain fields and vertical contracts rather than hardcoded demo names.
+* **Separate Review:** Keep Hub and AI-KART changes independently reviewable and verify each repository with its own toolchain.
+
+## 14. Deterministic Retrieval and Dialogue Contracts
+
+* **Parse Before Retrieval:** Resolve domain intent, entity/brand, item or service type, budget/range, recipient, occasion, requested attributes, exclusions, ambiguity, and references before candidate ranking.
+* **Hard Constraints Are Authoritative:** Explicit brand, type, price, availability, exclusion, and ownership constraints use field-aware conjunctive checks. Semantic similarity and LLM output cannot override them.
+* **Candidate Generation Is Not Approval:** Lexical, semantic, fuzzy, cached, and history-derived candidates pass through one deterministic validator before they can be mentioned or actioned.
+* **Clarify Real Ambiguity:** Low-confidence, malformed, recipient-only, or genuinely underspecified requests get one useful clarification instead of arbitrary recommendations.
+* **Ground Every Record:** Every product, plan, destination, service, or other entity named in a response or UI action must belong to the final validated candidate set.
+* **Use Precise Counts:** Distinguish matching records, variants, and stock units. Never claim whole-catalog truth from a retrieval window.
+* **Topic-Aware Memory:** Preserve explicit references while resetting stale constraints when the user changes subject or corrects the assistant.
+* **Constraint-Safe Cache:** Cache identity includes site/tenant, data version, session scope, normalized intent, and hard constraints. Cached and uncached behavior must remain semantically equivalent.
+* **Prompt Is Not Enforcement:** Prompt changes may improve style and interpretation but never replace runtime validation for budgets, identity, category, stock, actions, or grounding.
+
+## 15. Voice, Conversation UI, and Accessibility
+
+* **Single Playback Owner:** One controller owns generated audio, browser speech, playback queues, cancellation, object cleanup, and speaking state.
+* **Immediate Interruption:** Orb click while speaking, a visible stop control, and `Escape` must stop active and queued audio without accidentally starting recording.
+* **Copy Controls:** Conversation and message copy actions use familiar icons, accessible labels, keyboard operation, and explicit success/failure feedback.
+* **Responsive Verification:** Check affected interfaces at 320, 375, 390, 768, 1024, 1440, and 1920 CSS pixels plus 200% zoom. Text and controls must not overlap or become unreachable.
+
+## 16. Performance and Latency Evidence
+
+* **Measure Before Optimizing:** Record cold/warm state, cache state, sample count, environment, and p50/p95 for cache, retrieval, LLM, TTS, first text, first audio, and total time.
+* **Use Staged Work:** Prefer deterministic structured fast paths. Run semantic, fuzzy, LLM, or provider work only when it can improve the result.
+* **Correctness Before Speed:** Never lower validation thresholds, omit hard checks, replay unsafe cache entries, or return ungrounded partial answers to improve latency.
+* **Comparable Results Only:** Do not compare unlike local/public, cold/warm, cached/uncached, or provider environments without labeling the difference.
+
+## 17. Regression and Cross-Vertical Verification
+
+* **Reproduce First:** Add a failing regression test for each reported defect before implementing its fix.
+* **Cover Failure Modes:** Test ambiguity, correction, no-match, stale context, cache parity, provider failure, accessibility, cancellation, and latency in addition to happy paths.
+* **Generalization Evidence:** Use exact reported transcripts for regressions and neutral variants for generalization. Shared changes must also pass travel and policy fixtures.
+* **Layered Verification:** Run focused tests while editing, followed by relevant Python, frontend, catalog, lint, build, integration, and browser checks.
+* **Report Honestly:** A timed-out, skipped, unavailable, flaky, or unrun check is not a pass. Record its exact state in `handoff.md`.
+
+## 18. Delegated Worker Handoff
+
+* **Maintain the Journal:** Update the ignored `handoff.md` throughout implementation, not only at completion.
+* **Record Reviewable Rationale:** Log concise decisions, alternatives, evidence, changed files, commands, results, timings, assumptions, blockers, and remaining risks.
+* **Protect Sensitive Reasoning and Data:** Do not record private chain-of-thought, hidden reasoning, secrets, `.env` values, credentials, raw audio, customer PII, or unrestricted provider payloads.
+* **Stop for Review:** Finish with separate working-tree summaries for each repository and a complete verification ledger, then stop for independent review without any Git or deployment action.

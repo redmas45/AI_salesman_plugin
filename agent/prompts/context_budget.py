@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import config
@@ -9,6 +10,13 @@ import config
 MAX_RECENT_MESSAGES = 4
 MAX_SUMMARY_CHARS = 1200
 MAX_HISTORY_CONTENT_CHARS = 700
+
+# Follow-up / correction markers that continue the current topic (never a reset).
+_FOLLOWUP_RE = re.compile(
+    r"^\s*(no|nope|actually|instead|wait|i meant|rather)\b"
+    r"|\b(that one|this one|the other one|the cheaper one|the same|cheaper|under|below|budget)\b",
+    re.IGNORECASE,
+)
 
 
 def build_context_messages(
@@ -42,13 +50,21 @@ def summarize_turns(
     transcript: str,
     response_text: str,
 ) -> str:
-    """Create a deterministic rolling summary without another LLM call."""
+    """Create a deterministic rolling summary without another LLM call.
+
+    Topic-aware: when the current turn switches to a clearly different product topic
+    (and is not a follow-up/correction), prior context is dropped so stale products
+    from an earlier topic cannot contaminate retrieval or bias the LLM.
+    """
     lines: list[str] = []
     previous = str(existing_summary or "").strip()
-    if previous:
+    reset = _is_topic_shift(previous, transcript)
+
+    if previous and not reset:
         lines.extend(_summary_lines(previous))
 
-    for msg in _sanitize_history(history or [])[-6:]:
+    history_window = [] if reset else _sanitize_history(history or [])[-6:]
+    for msg in history_window:
         role = "User" if msg["role"] == "user" else "Maya"
         lines.append(f"{role}: {msg['content']}")
 
@@ -87,6 +103,33 @@ def _sanitize_history(history: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 def _summary_lines(summary: str) -> list[str]:
     return [line.strip() for line in str(summary or "").splitlines() if line.strip()]
+
+
+def _dominant_topic(text: str) -> str:
+    """The most recently mentioned normalized product type, or ``""``.
+
+    Rolling summaries contain older turns first, so using the first noun keeps a
+    stale topic forever. Plurals are normalized because natural turns usually say
+    "phones", "laptops", and "smartwatches".
+    """
+    from agent.products.product_matching_lexical import BUILTIN_TYPE_NOUNS, canonical_type_token
+
+    topics = [
+        canonical_type_token(token)
+        for token in re.findall(r"[a-z]+", str(text or "").lower())
+    ]
+    recognized = [topic for topic in topics if topic in BUILTIN_TYPE_NOUNS]
+    return recognized[-1] if recognized else ""
+
+
+def _is_topic_shift(previous_summary: str, transcript: str) -> bool:
+    """True when the current turn names a different product topic and is not a
+    follow-up/correction of the prior topic."""
+    if not previous_summary or _FOLLOWUP_RE.search(str(transcript or "")):
+        return False
+    current_topic = _dominant_topic(transcript)
+    previous_topic = _dominant_topic(previous_summary)
+    return bool(current_topic and previous_topic and current_topic != previous_topic)
 
 
 def _short_text(value: Any, limit: int) -> str:

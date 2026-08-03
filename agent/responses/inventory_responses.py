@@ -7,6 +7,37 @@ from api.contracts.models import ACTION_SHOW_PRODUCTS, PRODUCT_IDS_PARAM
 RecoverableErrors = tuple[type[BaseException], ...]
 
 
+# Browse/search phrasings ("I'm looking for X", "I want to buy X"). These are a
+# product *search* intent, not an inventory *count* question, so the response
+# must say "matching products" rather than pluralizing the search term.
+_BROWSE_PHRASE_RE = re.compile(
+    r"\bi(?:\s*am|'m|\s*m)?\s+(?:interested\s+in|looking\s+for|planning\s+on|shopping\s+for|browsing\s+for|searching\s+for)\b"
+    r"|\bi\s+(?:want|would\s+like|need|wanna)\s+to\s+(?:buy|get|purchase|order|find)\b"
+    r"|\bi\s+(?:want|need)\s+(?:a|an|some)\b",
+    re.IGNORECASE,
+)
+
+
+def is_browse_search_phrase(transcript: str) -> bool:
+    """True when the turn is a product-browse phrasing rather than a count question."""
+    return bool(_BROWSE_PHRASE_RE.search((transcript or "").lower()))
+
+
+def _term_matches_a_brand(term: str, products: list[dict[str, Any]]) -> bool:
+    """True when the searched term is itself a catalog brand (e.g. "apple").
+
+    A brand must never be pluralized into a product type ("apples"); when the
+    term is a brand the count wording falls back to "matching products".
+    """
+    normalized = (term or "").strip().lower()
+    if not normalized:
+        return False
+    return any(
+        normalized == str(product.get("brand") or product.get("vendor") or "").strip().lower()
+        for product in products
+    )
+
+
 def is_inventory_stats_query(transcript: str) -> bool:
     text = (transcript or "").lower()
     if re.search(r"\b(review|rating|result|page|cart|order)\s+count\b", text):
@@ -61,7 +92,10 @@ def clean_inventory_type_term(raw: str) -> str:
     for word in words:
         if word.endswith("ies") and len(word) > 4:
             normalized_words.append(f"{word[:-3]}y")
-        elif word.endswith("s") and len(word) > 3:
+        elif word.endswith(("ches", "shes", "sses", "xes", "zes")) and len(word) > 5:
+            # "smartwatches" -> "smartwatch", "watches" -> "watch", "boxes" -> "box".
+            normalized_words.append(word[:-2])
+        elif word.endswith("s") and not word.endswith("ss") and len(word) > 3:
             normalized_words.append(word[:-1])
         else:
             normalized_words.append(word)
@@ -131,13 +165,24 @@ def inventory_type_count_response(
     timings["inventory_lookup_ms"] = elapsed_ms(started_at)
 
     matches = matching_products(products, item_type)
-    plural = pluralize(item_type, len(matches))
+    # A browse phrasing ("looking for X") is a product search; a "how many / do
+    # you have" phrasing is an inventory count. A term that is itself a brand is
+    # never pluralized into a product type. Both cases render "matching products".
+    is_browse = is_browse_search_phrase(transcript)
+    term_is_brand = _term_matches_a_brand(item_type, matches or products)
+    use_product_wording = is_browse or term_is_brand
+    intent = "product_search" if is_browse else "inventory_status"
     final_actions: list[dict[str, Any]] = []
 
     if matches:
+        count = len(matches)
         names = [str(product.get("name") or product.get("title") or "").strip() for product in matches[:3]]
         shown_names = ", ".join(name for name in names if name)
-        response_text = f"I found {len(matches)} {plural} in stock"
+        if use_product_wording:
+            product_noun = "product" if count == 1 else "products"
+            response_text = f"I found {count} matching {product_noun}"
+        else:
+            response_text = f"I found {count} {pluralize(item_type, count)} in stock"
         if shown_names:
             response_text += f": {shown_names}"
         response_text += "."
@@ -151,14 +196,16 @@ def inventory_type_count_response(
             }
         ]
     else:
+        missing_text = (
+            f"I don't have any {item_type} products right now."
+            if use_product_wording
+            else f"I don't have {item_type}s right now."
+        )
         categories = available_categories(products)
         if categories:
-            response_text = (
-                f"I don't have {item_type}s right now. "
-                f"I do have categories like {', '.join(categories[:5])}."
-            )
+            response_text = f"{missing_text} I do have categories like {', '.join(categories[:5])}."
         else:
-            response_text = f"I don't have {item_type}s right now."
+            response_text = missing_text
 
     ai_log("assistant", response_text)
     ai_log("actions", final_actions)
@@ -176,7 +223,7 @@ def inventory_type_count_response(
     return {
         "transcript": transcript,
         "response_text": response_text,
-        "intent": "inventory_status",
+        "intent": intent,
         "confidence": 1.0,
         "ui_actions": final_actions,
         "audio_b64": audio_b64,

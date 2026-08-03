@@ -52,74 +52,15 @@ def extract_price_constraints(query: str) -> dict:
     """
     Parse price constraints from a user's natural language query.
 
-    Returns a dict with optional keys:
-        max_price (float): Upper price limit  ("under 300", "below 500", "less than 1000")
-        min_price (float): Lower price limit  ("above 200", "over 500", "more than 100")
+    Delegates to :func:`agent.retrieval.query_constraints.parse_budget` so that
+    price has a single source of truth across retrieval, actions, the formatter,
+    the cache, and the final response. Returns a dict with optional keys:
+        max_price (float): Upper price limit  ("under 300", "budget of 1500")
+        min_price (float): Lower price limit  ("above 200", "over 500")
     """
-    constraints = {}
-    q = re.sub(r"\binr\b", " ", query.lower()).strip()
+    from agent.retrieval.query_constraints import parse_budget
 
-    # Pattern: "between X and Y" / "from X to Y"
-    between_pat = re.compile(
-        r"(?:between|from)\s+(?:₹|rs\.?|rupees?)?\s*(\d+(?:[.,]\d+)?)"
-        r"\s*(?:and|to|-)\s*"
-        r"(?:₹|rs\.?|rupees?)?\s*(\d+(?:[.,]\d+)?)",
-        re.IGNORECASE,
-    )
-    m = between_pat.search(q)
-    if m:
-        lo = float(m.group(1).replace(",", ""))
-        hi = float(m.group(2).replace(",", ""))
-        constraints["min_price"] = min(lo, hi)
-        constraints["max_price"] = max(lo, hi)
-        logger.info("RAG | Price constraint (between): %s", constraints)
-        return constraints
-
-    # Pattern: "under / below / less than / within / upto / at most / max / cheaper than X"
-    max_pat = re.compile(
-        r"(?:under|below|less\s+than|within|upto|up\s+to|at\s+most|max|maximum|cheaper\s+than|not\s+(?:more|above)\s+(?:than)?)"
-        r"\s*(?:₹|rs\.?|rupees?)?\s*(\d+(?:[.,]\d+)?)",
-        re.IGNORECASE,
-    )
-    m = max_pat.search(q)
-    if m:
-        constraints["max_price"] = float(m.group(1).replace(",", ""))
-
-    # Pattern: "above / over / more than / at least / min / starting from / costlier than X"
-    min_pat = re.compile(
-        r"(?:above|over|more\s+than|at\s+least|min|minimum|starting\s+from|costlier\s+than|not\s+(?:less|below|under)\s+(?:than)?)"
-        r"\s*(?:₹|rs\.?|rupees?)?\s*(\d+(?:[.,]\d+)?)",
-        re.IGNORECASE,
-    )
-    m = min_pat.search(q)
-    if m:
-        constraints["min_price"] = float(m.group(1).replace(",", ""))
-
-    # Pattern: "I (only) have X rupees" / "my budget is X" / "budget X"
-    budget_pat = re.compile(
-        r"(?:i\s+(?:only\s+)?have|(?:my\s+)?budget\s+(?:is)?)\s*(?:₹|rs\.?|rupees?)?\s*(\d+(?:[.,]\d+)?)",
-        re.IGNORECASE,
-    )
-    m = budget_pat.search(q)
-    if m and "max_price" not in constraints:
-        constraints["max_price"] = float(m.group(1).replace(",", ""))
-
-    # Pattern: standalone "X rupees" with implicit budget context (only if no other constraint found)
-    if not constraints:
-        rupee_pat = re.compile(
-            r"(?:₹|rs\.?)\s*(\d+(?:[.,]\d+)?)|(\d+(?:[.,]\d+)?)\s*(?:₹|rs\.?|rupees?)",
-            re.IGNORECASE,
-        )
-        m = rupee_pat.search(q)
-        if m:
-            val = float((m.group(1) or m.group(2)).replace(",", ""))
-            # If the query tone suggests a budget/limit, treat as max_price
-            if any(
-                word in q
-                for word in ["only", "just", "budget", "afford", "cheap", "save"]
-            ):
-                constraints["max_price"] = val
-
+    constraints = parse_budget(query)
     if constraints:
         logger.info(
             "RAG | Price constraints extracted: %s from query: %r",

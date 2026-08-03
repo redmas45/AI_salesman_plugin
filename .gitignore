@@ -48,6 +48,10 @@ data/*/crawl.json
 docs/
 deploy/certs/
 
+# Local worker/reviewer implementation journal
+handoff.md
+tmp_pytest/
+
 # IDEs
 .idea/
 .vscode/

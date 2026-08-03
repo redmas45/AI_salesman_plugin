@@ -156,24 +156,205 @@ def lexical_products_from_query(
     return [product for _score, _name, product in scored[:limit]]
 
 
+# Generic marketing modifiers that carry no product-type meaning; they must never
+# be treated as a product type nor admit a product on their own.
+GENERIC_MODIFIERS = frozenset(
+    {
+        "flex", "classic", "active", "pro", "prime", "elite", "signature", "luxe",
+        "urban", "smart", "daily", "premium", "budget", "standard", "basic",
+        "plus", "max", "ultra", "lite", "new", "best", "casual", "essential",
+    }
+)
+
+GENERIC_TAXONOMY_TERMS = frozenset(
+    {
+        "accessories", "beauty", "care", "electronics", "fashion", "fitness",
+        "food", "grocery", "home", "kitchen", "men", "personal", "products",
+        "sports", "women",
+    }
+)
+
+# A built-in vocabulary of common e-commerce product-type nouns. This is merged
+# with the tenant catalog's own taxonomy so type detection stays grounded in what
+# the store actually sells rather than any single site's naming.
+BUILTIN_TYPE_NOUNS = frozenset(
+    {
+        "smartwatch", "watch", "band", "tracker", "laptop", "notebook", "tablet",
+        "phone", "smartphone", "mobile", "headphone", "earbud", "earbuds", "earphone",
+        "speaker", "soundbar", "tv", "television", "camera", "lens", "drone", "monitor",
+        "keyboard", "mouse", "router", "printer", "charger", "cable", "adapter",
+        "powerbank", "battery", "case", "cover", "shoe", "sneaker", "sandal", "slipper",
+        "boot", "shirt", "tshirt", "tee", "dress", "kurta", "saree", "jeans", "trouser",
+        "pant", "jacket", "hoodie", "sweater", "cap", "hat", "sock", "belt", "tie",
+        "perfume", "fragrance", "deodorant", "cream", "lotion", "shampoo", "serum",
+        "lipstick", "sunscreen", "bag", "backpack", "wallet", "handbag", "luggage",
+        "sunglasses", "book", "novel", "diary", "pen", "pencil", "marker", "fryer",
+        "airfryer", "mixer", "grinder", "blender", "kettle", "cooker", "toaster", "oven",
+        "fan", "iron", "bottle", "cookware", "pan", "mattress", "pillow", "bedsheet",
+        "curtain", "dumbbell", "treadmill", "cycle", "racket", "protein", "nuts",
+        "fruits", "snack", "chocolate", "coffee", "tea", "juice", "sweater",
+    }
+)
+
+
+def product_strong_text(product: Product) -> str:
+    """Searchable text WITHOUT the free-text description.
+
+    Brand and type gating runs against strong fields only (name, brand, category,
+    subcategory, tags) so a description-only mention can never satisfy an explicit
+    brand or type request.
+    """
+    values = [
+        product.get("name"),
+        product.get("title"),
+        product.get("brand"),
+        product.get("vendor"),
+        product.get("category"),
+        product.get("category_name"),
+        product.get("category_slug"),
+        product.get("subcategory"),
+        product.get("tags"),
+    ]
+    return normalize_lookup_text(" ".join(str(value or "") for value in values))
+
+
+def catalog_type_vocabulary(products: list[Product]) -> set[str]:
+    """Recognized product-type tokens = built-in nouns + the catalog's taxonomy."""
+    vocab: set[str] = set(BUILTIN_TYPE_NOUNS)
+    for product in products:
+        taxonomy = " ".join(
+            str(product.get(field) or "")
+            for field in ("category", "category_name", "category_slug", "subcategory")
+        )
+        brand_tokens = set(
+            normalize_lookup_text(product.get("brand") or product.get("vendor") or "").split()
+        )
+        vocab.update(
+            token
+            for token in normalize_lookup_text(taxonomy).split()
+            if len(token) >= 3 and token not in brand_tokens
+        )
+    return vocab - GENERIC_MODIFIERS - GENERIC_TAXONOMY_TERMS
+
+
+def canonical_type_token(token: str) -> str:
+    """Normalize common English plurals for type-vocabulary matching."""
+    normalized = normalize_lookup_text(token)
+    if normalized in BUILTIN_TYPE_NOUNS:
+        return normalized
+    if normalized.endswith("ies") and len(normalized) > 4:
+        return f"{normalized[:-3]}y"
+    if normalized.endswith(("ches", "shes", "sses", "xes", "zes")) and len(normalized) > 5:
+        return normalized[:-2]
+    if normalized.endswith("s") and not normalized.endswith("ss") and len(normalized) > 3:
+        return normalized[:-1]
+    return normalized
+
+
+def requested_type_tokens(normalized_query: str, products: list[Product]) -> set[str]:
+    """Type tokens explicitly requested: the phone-family aliases plus any query
+    token that is a recognized catalog/built-in type (excluding generic modifiers).
+    """
+    tokens = set(requested_product_type_aliases(normalized_query))
+    vocabulary = catalog_type_vocabulary(products)
+    for raw_token in normalized_query.split():
+        normalized_token = normalize_lookup_text(raw_token)
+        token = normalized_token if normalized_token in vocabulary else canonical_type_token(raw_token)
+        if len(token) < 3 or token in LOOKUP_STOPWORDS or token in GENERIC_MODIFIERS:
+            continue
+        if token in vocabulary:
+            tokens.add(token)
+    return tokens
+
+
+def products_matching_query_facets(products: list[Product], query: str) -> list[Product]:
+    """Filter a candidate pool by explicit brand/type facets from the query.
+
+    This is the shared retrieval-boundary equivalent of the fast inventory
+    matcher. It prevents semantic/fuzzy candidates from bypassing brand+type
+    conjunction on recommendation, comparison, and other non-browse phrasings.
+    """
+    normalized_query = normalize_lookup_text(query)
+    if not normalized_query or not products:
+        return products
+
+    brands = requested_catalog_brands(normalized_query, products)
+    type_tokens = requested_type_tokens(normalized_query, products)
+    if not brands and not type_tokens:
+        return products
+
+    matches: list[Product] = []
+    for product in products:
+        strong_text = product_strong_text(product)
+        name = normalize_lookup_text(product.get("name") or product.get("title") or "")
+        brand_ok = _brand_matches_on_strong(product, brands, strong_text) if brands else True
+        type_ok = _type_matches_on_strong(type_tokens, strong_text, name) if type_tokens else True
+        if brand_ok and type_ok:
+            matches.append(product)
+    return matches
+
+
+def _brand_matches_on_strong(product: Product, brands: list[str], strong_text: str) -> bool:
+    brand_field = normalize_lookup_text(product.get("brand") or product.get("vendor") or "")
+    if brand_field:
+        return any(brand_field == brand or phrase_in_text(brand, brand_field) for brand in brands)
+    return any(phrase_in_text(brand, strong_text) for brand in brands)
+
+
+def _type_matches_on_strong(type_tokens: set[str], strong_text: str, name: str) -> bool:
+    return any(phrase_in_text(token, name) or phrase_in_text(token, strong_text) for token in type_tokens)
+
+
 def matching_inventory_products(
     products: list[Product],
     item_type: str,
     *,
     product_search_text: ProductSearchText,
 ) -> list[Product]:
+    """Field-aware, conjunctive product matching.
+
+    When the query names both a brand and a product type, a product must match
+    BOTH on strong fields (brand+type conjunction). A single explicit facet must
+    match that facet; a query with no recognized facet falls back to token overlap
+    on strong fields (never description-only). Ranking reuses the existing weighted
+    scorer for backward-compatible ordering.
+    """
     normalized_type = clean_inventory_type(item_type)
     if not normalized_type:
         return []
-    requested_types = requested_product_type_aliases(normalized_type)
+
+    brands = requested_catalog_brands(normalized_type, products)
+    type_tokens = requested_type_tokens(normalized_type, products)
     query_tokens = significant_lookup_tokens(normalized_type)
+    ranking_aliases = requested_product_type_aliases(normalized_type)
+    conjunctive = bool(brands and type_tokens)
+
     scored: list[tuple[int, int, Product]] = []
     for index, product in enumerate(products):
-        search_text = product_search_text(product)
-        score = inventory_product_score(product, search_text, normalized_type, requested_types, query_tokens)
-        if score <= 0:
+        strong_text = product_strong_text(product)
+        name = normalize_lookup_text(product.get("name") or product.get("title") or "")
+
+        brand_ok = _brand_matches_on_strong(product, brands, strong_text) if brands else False
+        type_ok = _type_matches_on_strong(type_tokens, strong_text, name) if type_tokens else False
+
+        if conjunctive:
+            if not (brand_ok and type_ok):
+                continue
+        elif brands:
+            if not brand_ok:
+                continue
+        elif type_tokens:
+            if not type_ok:
+                continue
+        elif not any(phrase_in_text(token, strong_text) for token in query_tokens):
+            # No recognized facet at all: require a plain token match on a strong
+            # field so bare nouns ("cap") still work, but description-only cannot.
             continue
-        scored.append((score + stock_score(product), index, product))
+
+        search_text = product_search_text(product)
+        score = inventory_product_score(product, search_text, normalized_type, ranking_aliases, query_tokens)
+        scored.append((max(score, 1) + stock_score(product), index, product))
+
     scored.sort(key=lambda item: (-item[0], item[1]))
     return [product for _score, _index, product in scored]
 

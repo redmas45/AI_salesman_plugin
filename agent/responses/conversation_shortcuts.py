@@ -62,8 +62,9 @@ def clarification_response(
     synthesize_audio: Callable[[str, bool], tuple[str, float | None]],
     ai_log: Callable[[str, Any], None],
     elapsed_ms: Callable[[float], float],
+    message: str | None = None,
 ) -> dict[str, Any]:
-    response_text = "I did not catch what you want clearly. What should I help you find or do on this website?"
+    response_text = message or "I did not catch what you want clearly. What should I help you find or do on this website?"
     ai_log("assistant", response_text)
     ai_log("actions", [])
 

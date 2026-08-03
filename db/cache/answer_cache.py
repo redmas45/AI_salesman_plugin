@@ -19,11 +19,49 @@ MAX_CACHE_ANSWER_CHARS = 3000
 MAX_CACHE_ACTIONS = 5
 MAX_CACHE_SESSION_CHARS = 160
 
+_SEMANTIC_FILLER_WORDS = frozenset(
+    {
+        "a", "about", "am", "an", "and", "any", "are", "at", "below", "can", "could", "do",
+        "find", "for", "get", "give", "have", "help", "i", "in", "interested",
+        "is", "it", "just", "like", "looking", "me", "my", "of", "option",
+        "options", "please", "product", "products", "recommend", "rs", "rupees",
+        "show", "some", "suggest", "than", "the", "to", "under", "up", "want",
+        "what", "which", "with", "would", "you", "inr", "budget", "price", "spend",
+    }
+)
+
+
+def _price_signature(text: str) -> str:
+    """Compact, deterministic price-constraint fingerprint for the cache key.
+
+    Reuses the single price parser (``parse_budget``) so two turns with identical
+    wording but different budgets ("phones under 20000" vs "under 50000") never
+    share a cached answer. Imported lazily to avoid a db->agent import cycle.
+    """
+    from agent.retrieval.query_constraints import parse_budget
+
+    budget = parse_budget(text)
+    parts = []
+    if budget.get("min_price") is not None:
+        parts.append(f"min{int(budget['min_price'])}")
+    if budget.get("max_price") is not None:
+        parts.append(f"max{int(budget['max_price'])}")
+    return " ".join(parts)
+
 
 def normalize_question(text: str) -> str:
-    """Normalize a customer question for exact cache matching."""
+    """Normalize a customer question for exact cache matching.
+
+    The normalized key includes a price-constraint signature so the hard price
+    constraint is part of cache identity (constraint-aware caching).
+    """
     normalized = re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
-    return re.sub(r"\s+", " ", normalized)[:MAX_CACHE_QUESTION_CHARS]
+    normalized = re.sub(r"\s+", " ", normalized)
+    signature = _price_signature(text)
+    if not signature:
+        return normalized[:MAX_CACHE_QUESTION_CHARS]
+    prefix = f"price {signature} "
+    return f"{prefix}{normalized[: MAX_CACHE_QUESTION_CHARS - len(prefix)]}".strip()
 
 
 def current_data_version(site_id: str) -> int:
@@ -82,7 +120,7 @@ def lookup_answer_cache(site_id: str, question: str, session_id: str = "") -> di
     if exact:
         return _record_cache_hit(site_id, exact, match_type="exact", score=1.0)
     semantic = _semantic_cache_match(site_id, safe_session_id, question, data_version)
-    if semantic:
+    if semantic and _semantic_constraints_match(question, semantic["row"]):
         return _record_cache_hit(
             site_id,
             semantic["row"],
@@ -90,6 +128,54 @@ def lookup_answer_cache(site_id: str, question: str, session_id: str = "") -> di
             score=float(semantic.get("score") or 0.0),
         )
     return None
+
+
+def _cached_price_signature(normalized_question: str) -> str:
+    tokens = str(normalized_question or "").split()
+    for index, token in enumerate(tokens):
+        if token != "price":
+            continue
+        signature = [part for part in tokens[index + 1 : index + 3] if re.fullmatch(r"(?:min|max)\d+", part)]
+        if signature:
+            return " ".join(signature)
+    return ""
+
+
+def _price_constraint_matches(question: str, cached_normalized_question: str) -> bool:
+    """A semantic hit is valid only when its price constraint equals the query's.
+
+    Prevents "phones under 20000" from reusing a cached "phones under 50000" answer
+    (and vice versa), and prevents a budget-scoped answer from serving an unbudgeted
+    query.
+    """
+    return _price_signature(question) == _cached_price_signature(cached_normalized_question)
+
+
+def _semantic_anchor_signature(text: str) -> tuple[str, ...]:
+    """Return stable non-filler anchors that semantic cache hits must preserve.
+
+    Price alone is not enough: Apple/Samsung, phone/laptop, recipient, occasion,
+    and requested attributes can all materially change the answer even when two
+    embeddings are very similar.
+    """
+    from agent.products.product_matching_lexical import canonical_type_token
+
+    anchors: set[str] = set()
+    for raw_token in re.findall(r"[a-z0-9]+", str(text or "").lower()):
+        if re.fullmatch(r"\d+k?", raw_token) or raw_token in _SEMANTIC_FILLER_WORDS:
+            continue
+        token = canonical_type_token(raw_token)
+        if token and token not in _SEMANTIC_FILLER_WORDS:
+            anchors.add(token)
+    return tuple(sorted(anchors))
+
+
+def _semantic_constraints_match(question: str, cached_row: dict[str, Any]) -> bool:
+    cached_normalized = str(cached_row.get("normalized_question") or "")
+    if not _price_constraint_matches(question, cached_normalized):
+        return False
+    cached_question = str(cached_row.get("question") or "")
+    return _semantic_anchor_signature(question) == _semantic_anchor_signature(cached_question)
 
 
 def store_answer_cache(

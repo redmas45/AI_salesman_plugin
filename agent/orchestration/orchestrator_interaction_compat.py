@@ -72,6 +72,36 @@ def exports(runtime: Any) -> dict[str, Any]:
             elapsed_ms=runtime._ms,
         )
 
+    def ecommerce_clarification_response(
+        transcript: str,
+        safe_transcript: str,
+        skip_tts: bool,
+        timings: dict[str, float],
+        start_time: float,
+    ) -> dict[str, Any] | None:
+        """Ask one clarification for an under-determined e-commerce request.
+
+        Uses the built-in product-type vocabulary (no catalog load) so a concrete
+        product noun suppresses the clarification, while malformed/undecided asks and
+        recipient-only gifts get a single grounded question instead of random products.
+        """
+        from agent.products.product_matching_lexical import BUILTIN_TYPE_NOUNS
+        from agent.retrieval.query_constraints import clarification_question, extract_ecommerce_constraints
+
+        constraints = extract_ecommerce_constraints(safe_transcript, catalog_types=tuple(BUILTIN_TYPE_NOUNS))
+        if not constraints.should_ask_clarification():
+            return None
+        return runtime.conversation_shortcuts.clarification_response(
+            transcript,
+            skip_tts,
+            timings,
+            start_time,
+            synthesize_audio=runtime._synthesize_audio_b64,
+            ai_log=runtime._ai_log,
+            elapsed_ms=runtime._ms,
+            message=clarification_question(constraints),
+        )
+
     def navigation_intent_response(
         site_id: str,
         transcript: str,
@@ -205,6 +235,7 @@ def exports(runtime: Any) -> dict[str, Any]:
         "_is_simple_greeting": runtime.conversation_shortcuts.is_simple_greeting,
         "_needs_transcript_clarification": needs_transcript_clarification,
         "_clarification_response": clarification_response,
+        "_ecommerce_clarification_response": ecommerce_clarification_response,
         "_navigation_intent_response": navigation_intent_response,
         "_navigation_response_label": runtime.navigation_intent.navigation_response_label,
         "_sort_intent_response": sort_intent_response,

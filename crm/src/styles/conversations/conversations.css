@@ -117,6 +117,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 10px;
   border-top: 1px solid var(--line);
   background: color-mix(in srgb, var(--soft) 72%, var(--panel));

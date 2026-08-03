@@ -12,6 +12,7 @@ from typing import Any, Generator, Optional
 import config
 
 from agent.orchestration.orchestrator_streaming import stream_final_result
+from agent.runtime_helpers.grounding_validator import enforce_grounded_constraints
 
 
 def run_pipeline(
@@ -93,6 +94,13 @@ def run_pipeline(
         return runtime._inventory_type_count_response(
             site_id, transcript, inventory_type, skip_tts, timings, t0
         )
+
+    if ecommerce_runtime:
+        clarification = runtime._ecommerce_clarification_response(
+            transcript, safe_transcript, skip_tts, timings, t0
+        )
+        if clarification:
+            return clarification
 
     cached_response = runtime._cached_answer_response(
         site_id,
@@ -199,6 +207,10 @@ def run_pipeline(
         page_context=page_context,
     )
     timings["guardrail_output_ms"] = runtime._ms(t)
+
+    # Final deterministic guarantee: no actioned product may violate the hard
+    # price constraint, even if an upstream filter was bypassed (slice 8).
+    validated = enforce_grounded_constraints(validated, retrieved_products, price_constraints)
 
     final_actions = runtime._add_variant_ids_to_cart_actions(site_id, validated.get("ui_actions", []))
     final_actions = runtime._enrich_action_params_from_context(
@@ -368,6 +380,14 @@ def run_stream_pipeline(
         yield from stream_final_result(result)
         return
 
+    if ecommerce_runtime:
+        clarification = runtime._ecommerce_clarification_response(
+            transcript, safe_transcript, skip_tts, timings, t0
+        )
+        if clarification:
+            yield from stream_final_result(clarification)
+            return
+
     cached_response = runtime._cached_answer_response(
         site_id,
         transcript,
@@ -450,6 +470,10 @@ def run_stream_pipeline(
     )
     timings["guardrail_output_ms"] = runtime._ms(t)
 
+    # Final deterministic guarantee: no actioned product may violate the hard
+    # price constraint, even if an upstream filter was bypassed (slice 8).
+    validated = enforce_grounded_constraints(validated, retrieved_products, price_constraints)
+
     final_actions = runtime._add_variant_ids_to_cart_actions(site_id, validated.get("ui_actions", []))
     final_actions = runtime._enrich_action_params_from_context(
         site_id,
@@ -485,6 +509,10 @@ def run_stream_pipeline(
     )
     runtime._ai_log("assistant", validated["response_text"])
     runtime._ai_log("actions", final_actions)
+
+    # Time-to-first-text: when the customer first sees a textual answer (slice 13).
+    timings["first_text_ms"] = runtime._ms(t0)
+    timings["response_chars"] = len(str(validated.get("response_text") or ""))
 
     # Yield actions so UI can update immediately
     yield {"event": "actions", "data": {"ui_actions": final_actions}}
