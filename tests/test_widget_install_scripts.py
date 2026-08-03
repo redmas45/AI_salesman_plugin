@@ -5,10 +5,12 @@ from pathlib import Path
 
 import pytest
 from fastapi import BackgroundTasks
+from starlette.requests import Request
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from api.routes import clients as client_routes
+from api.crm_admin import crm_router
 from api.routes.client_widgets import client_scripts
 from agent import client_initialization
 from agent.actions.registry import list_action_names
@@ -77,6 +79,27 @@ def test_universal_install_script_does_not_require_manual_site_id() -> None:
 def test_public_widget_base_url_upgrades_public_http_hosts() -> None:
     assert client_routes._public_script_base_url("http://demo1.ergobite.com") == "https://demo1.ergobite.com"
     assert client_routes._public_script_base_url("http://127.0.0.1:5176") == "http://127.0.0.1:5176"
+
+
+@pytest.mark.asyncio
+async def test_crm_installer_uses_forwarded_public_host() -> None:
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/v1/admin/installer",
+            "headers": [
+                (b"host", b"127.0.0.1:8585"),
+                (b"x-forwarded-host", b"demo1.ergobite.com"),
+                (b"x-forwarded-proto", b"https"),
+            ],
+        }
+    )
+
+    payload = await crm_router.crm_universal_installer(request)
+
+    assert payload["script_url"] == "https://demo1.ergobite.com/install.js"
+    assert payload["script_tag"] == '<script defer src="https://demo1.ergobite.com/install.js"></script>'
 
 
 def test_available_installs_still_load_scripts_for_discovery(monkeypatch) -> None:
@@ -248,5 +271,4 @@ def test_adapter_runtime_refreshes_config_after_registration() -> None:
     assert "field.value" not in page_context
     assert "page_context" in widget_api
     assert "currentPageContext()" in widget_api
-
 

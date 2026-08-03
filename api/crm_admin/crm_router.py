@@ -121,9 +121,9 @@ async def crm_vertical_detail(vertical_key: str) -> dict[str, Any]:
 
 
 @router.get("/installer")
-async def crm_universal_installer() -> dict[str, str]:
+async def crm_universal_installer(request: Request) -> dict[str, str]:
     """Return the universal installer script used for automatic client onboarding."""
-    api_base_url = _public_widget_base_url()
+    api_base_url = _public_widget_base_url(request)
     return {
         "script_tag": universal_install_script_tag(api_base_url=api_base_url),
         "script_url": f"{api_base_url}/install.js",
