@@ -34,9 +34,11 @@ async def _boot(playwright, *, shop_handler=None, diagnostics_handler=None):
 
 
 async def _record_and_submit(page) -> None:
-    """Double-click to record, then a single click to stop and submit."""
+    """Stop the greeting, then single-click to record and submit."""
     orb = page.locator("#mayabot-btn")
-    await orb.dblclick()
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(100)
+    await orb.click()
     await page.wait_for_timeout(250)
     await orb.click()
     await page.wait_for_timeout(900)
@@ -210,7 +212,9 @@ async def test_extra_click_during_submission_does_not_submit_twice() -> None:
     async with playwright_api.async_playwright() as playwright:
         browser, page = await _boot(playwright, shop_handler=slow_ok)
         orb = page.locator("#mayabot-btn")
-        await orb.dblclick()
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(100)
+        await orb.click()
         await page.wait_for_timeout(250)
         # Stop + submit, then immediately click again (the tail of a double click).
         await orb.click()
@@ -231,7 +235,9 @@ async def test_escape_while_recording_cancels_without_submitting() -> None:
 
     async with playwright_api.async_playwright() as playwright:
         browser, page = await _boot(playwright, shop_handler=ok)
-        await page.locator("#mayabot-btn").dblclick()
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(100)
+        await page.locator("#mayabot-btn").click()
         await page.wait_for_timeout(250)
         assert await _status(page) == "Listening..."
         await page.keyboard.press("Escape")
@@ -253,9 +259,12 @@ async def test_orb_state_copy_updates_for_each_state() -> None:
         orb = page.locator("#mayabot-btn")
 
         idle_label = (await orb.get_attribute("aria-label") or "").lower()
-        assert "double" in idle_label
+        assert "click" in idle_label
+        assert "double" not in idle_label
 
-        await orb.dblclick()
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(100)
+        await orb.click()
         await page.wait_for_timeout(250)
         recording_label = (await orb.get_attribute("aria-label") or "").lower()
         assert "escape" in recording_label or "cancel" in recording_label

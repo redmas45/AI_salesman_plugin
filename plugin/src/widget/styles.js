@@ -52,8 +52,8 @@ export function injectStyles() {
 
     #mayabot-btn {
       position: relative;
-      /* The orb is double-tapped to talk, so suppress double-tap zoom, the
-         synthetic tap delay, text selection, and the grey tap highlight. */
+      /* Keep touch activation immediate and prevent browser zoom/highlight from
+         competing with the orb's single-click voice control. */
       touch-action: manipulation;
       -webkit-tap-highlight-color: transparent;
       user-select: none;

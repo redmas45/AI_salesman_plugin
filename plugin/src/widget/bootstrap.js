@@ -14,9 +14,6 @@ import {
   STATUS,
 } from "../core/constants";
 
-// How long a first click waits to see whether it is really a double click.
-const DOUBLE_CLICK_WINDOW_MS = 280;
-
 window.__mayabot_identifier = "voice-orb";
 let activeRecorder = null;
 let activeWidgetCleanup = null;
@@ -122,39 +119,12 @@ function boot() {
   const recorder = setupRecorder(handleStop, handleStatusChange);
   activeRecorder = recorder;
 
-  // ---------------------------------------------------------------------------
-  // Orb gesture state machine (the single owner of orb intent).
-  //
-  //   speaking  + click        -> stop all playback, never record
-  //   speaking  + double click -> stop, then start recording exactly once
-  //   idle      + click        -> nothing (a stray click must not open the mic)
-  //   idle      + double click -> start recording exactly once
-  //   recording + click        -> stop and submit
-  //   Enter/Space              -> direct toggle, so keyboard users need no timing
-  //
-  // Recording is only ever started from the second click of a pair, so the two
-  // click events a double click produces cannot toggle recording twice.
-  // ---------------------------------------------------------------------------
-  let pendingClickTimer = null;
-  let clickCount = 0;
-
-  function clearPendingClick() {
-    if (pendingClickTimer) window.clearTimeout(pendingClickTimer);
-    pendingClickTimer = null;
-    clickCount = 0;
-  }
-
   function stopSpeakingIfActive() {
     if (!isSpeaking()) return false;
     stopPlayback();
     emitRuntimeEvent({ event_type: "voice_playback_stopped", stage: "orb_gesture", status: "cancelled" });
     handleStatusChange(STATUS.READY);
     return true;
-  }
-
-  function startRecordingOnce() {
-    if (isRecording) return;
-    recorder.toggle();
   }
 
   function handleKeyboardActivation() {
@@ -167,15 +137,15 @@ function boot() {
       return;
     }
     if (stopSpeakingIfActive()) return;
-    startRecordingOnce();
+    recorder.toggle();
   }
 
   // The orb means different things in each state, so its accessible name and
   // tooltip must say what THIS click will do rather than a generic instruction.
   const ORB_STATE_COPY = {
     idle: {
-      label: "Maya voice assistant. Double-click to talk. Press Enter or Space to talk.",
-      title: "Double-click to talk",
+      label: "Maya voice assistant. Click, press Enter, or press Space to talk.",
+      title: "Click to talk",
     },
     recording: {
       label: "Maya is listening. Click once to send, or press Escape to cancel.",
@@ -206,41 +176,21 @@ function boot() {
   applyOrbStateCopy("idle");
 
   elements.btn.addEventListener("click", (event) => {
-    // Enter/Space on a button synthesises a click with detail 0. Keyboard users
-    // get a direct toggle rather than having to double-press.
-    if (event.detail === 0) {
-      handleKeyboardActivation();
-      return;
-    }
     if (processingTurn) {
       stopSpeakingIfActive();
       return;
     }
-
-    if (isRecording) {
-      clearPendingClick();
-      recorder.toggle();
-      return;
-    }
-
-    clickCount += 1;
-    if (clickCount === 1) {
-      // Stop immediately so speech never continues while the user waits to see
-      // whether this becomes a double click.
-      stopSpeakingIfActive();
-      pendingClickTimer = window.setTimeout(clearPendingClick, DOUBLE_CLICK_WINDOW_MS);
-      return;
-    }
-    clearPendingClick();
-    startRecordingOnce();
+    if (stopSpeakingIfActive()) return;
+    // Browsers emit a second click with detail=2 for a double-click. The first
+    // click already started recording, so ignore the duplicate instead of
+    // immediately stopping it and replaying the open/close animation.
+    if (event.detail > 1) return;
+    handleKeyboardActivation();
   });
 
   const handleEscape = (event) => {
     if (event.key !== "Escape") return;
     if (isRecording) {
-      // Escape while recording discards the take. It must never submit, so the
-      // recorder is cancelled rather than stopped.
-      clearPendingClick();
       recorder.cancel();
       emitRuntimeEvent({ event_type: "voice_recording_cancelled", stage: "keyboard_escape", status: "cancelled" });
       handleStatusChange(STATUS.READY);
@@ -261,9 +211,6 @@ function boot() {
   activeWidgetCleanup = () => {
     document.removeEventListener("keydown", handleEscape);
     document.removeEventListener("pointerdown", handlePlaybackReplay, { capture: true });
-    // Every timer this boot created must die with it, or a disable/enable cycle
-    // leaves callbacks firing against removed nodes.
-    clearPendingClick();
     if (clearTimer) window.clearTimeout(clearTimer);
     clearTimer = null;
     if (autoGreetTimer) window.clearTimeout(autoGreetTimer);

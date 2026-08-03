@@ -1,9 +1,4 @@
-"""Browser regressions for the orb gesture state machine.
-
-A single click must never open the microphone: it either stops Maya or does
-nothing. Recording starts only on a deliberate double click, and the two click
-events a double click emits must start it exactly once.
-"""
+"""Browser regressions for the orb's single-click interaction contract."""
 
 from __future__ import annotations
 
@@ -13,9 +8,6 @@ from pathlib import Path
 import pytest
 
 WIDGET_BUNDLE = Path("plugin/mayabot.js")
-DOUBLE_CLICK_DELAY_MS = 60
-
-
 async def _boot(playwright_api, playwright):
     widget_js = WIDGET_BUNDLE.read_text(encoding="utf-8")
     browser = await playwright.chromium.launch(headless=True)
@@ -28,46 +20,48 @@ async def _boot(playwright_api, playwright):
     return browser, page
 
 
-async def _double_click(page) -> None:
-    # A real double click. Two separate locator.click() calls are ~360ms apart in
-    # Playwright, which is outside the widget's double-click window by design.
-    await page.locator("#mayabot-btn").dblclick()
+async def _stop_greeting(page) -> None:
+    await page.keyboard.press("Escape")
+    await page.wait_for_timeout(100)
 
 
 @pytest.mark.asyncio
-async def test_single_click_while_idle_does_not_open_the_microphone() -> None:
+async def test_single_click_while_idle_starts_recording_once() -> None:
     playwright_api = pytest.importorskip("playwright.async_api")
     async with playwright_api.async_playwright() as playwright:
         browser, page = await _boot(playwright_api, playwright)
-        await page.evaluate("window.speechSynthesis.cancel()")
+        await _stop_greeting(page)
         await page.locator("#mayabot-btn").click()
-        await page.wait_for_timeout(400)
-        assert await page.evaluate("window.__mediaRequestCount") == 0
+        await page.wait_for_timeout(300)
+        assert await page.evaluate("window.__mediaRequestCount") == 1
+        assert await page.locator("#mayabot-status").inner_text() == "Listening..."
         await browser.close()
 
 
 @pytest.mark.asyncio
-async def test_double_click_while_idle_requests_the_microphone_once() -> None:
+async def test_accidental_double_click_does_not_immediately_stop_recording() -> None:
     playwright_api = pytest.importorskip("playwright.async_api")
     async with playwright_api.async_playwright() as playwright:
         browser, page = await _boot(playwright_api, playwright)
-        await page.evaluate("window.speechSynthesis.cancel()")
-        await _double_click(page)
+        await _stop_greeting(page)
+        await page.locator("#mayabot-btn").dblclick()
         await page.wait_for_timeout(400)
         assert await page.evaluate("window.__mediaRequestCount") == 1
+        assert await page.locator("#mayabot-status").inner_text() == "Listening..."
         await browser.close()
 
 
 @pytest.mark.asyncio
-async def test_double_click_while_speaking_stops_audio_then_records_once() -> None:
+async def test_single_click_while_speaking_stops_without_recording() -> None:
     playwright_api = pytest.importorskip("playwright.async_api")
     async with playwright_api.async_playwright() as playwright:
         # The greeting is still pending playback, so Maya counts as speaking.
         browser, page = await _boot(playwright_api, playwright)
-        await _double_click(page)
-        await page.wait_for_timeout(400)
+        await page.locator("#mayabot-btn").click()
+        await page.wait_for_timeout(300)
         assert await page.evaluate("window.__speechCancelCount") >= 1
-        assert await page.evaluate("window.__mediaRequestCount") == 1
+        assert await page.evaluate("window.__mediaRequestCount") == 0
+        assert await page.locator("#mayabot-status").inner_text() == "Ready"
         await browser.close()
 
 
@@ -76,8 +70,8 @@ async def test_single_click_while_recording_stops_and_submits_once() -> None:
     playwright_api = pytest.importorskip("playwright.async_api")
     async with playwright_api.async_playwright() as playwright:
         browser, page = await _boot(playwright_api, playwright)
-        await page.evaluate("window.speechSynthesis.cancel()")
-        await _double_click(page)
+        await _stop_greeting(page)
+        await page.locator("#mayabot-btn").click()
         await page.wait_for_timeout(300)
         assert await page.locator("#mayabot-status").inner_text() == "Listening..."
 
