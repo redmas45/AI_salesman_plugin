@@ -13,6 +13,7 @@ import config
 from agent.providers.azure_openai import create_chat_completion
 from db.analytics.products import top_product_mentions
 from db.core.schema import _connect, init_admin_schema
+from db.runtime.runtime_diagnostics import list_runtime_events
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ RANGE_DAYS = {
 def conversation_log(range_key: str = ANALYTICS_DEFAULT_RANGE, site_id: str = "") -> dict[str, Any]:
     """Return date-grouped conversation sessions and turns for CRM review."""
     rows = _usage_rows(range_key, site_id, limit=500)
+    runtime_events = _safe_runtime_events(range_key, site_id)
     action_events_by_site = _action_events_by_site({str(row.get("site_id") or "") for row in rows})
     sessions: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
@@ -54,12 +56,15 @@ def conversation_log(range_key: str = ANALYTICS_DEFAULT_RANGE, site_id: str = ""
                 "turn_count": 0,
                 "tokens_used": 0,
                 "turns": [],
+                "runtime_events": [],
             },
         )
         session["turn_count"] += 1
         session["tokens_used"] += _row_tokens(row)
         session["last_seen_at"] = row["created_at"]
         session["turns"].append(_conversation_turn(row, _matching_action_events(row, action_events_by_site)))
+
+    _attach_runtime_events(sessions, runtime_events)
 
     date_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for session in sessions.values():
@@ -75,6 +80,43 @@ def conversation_log(range_key: str = ANALYTICS_DEFAULT_RANGE, site_id: str = ""
         for date, items in sorted(date_groups.items(), reverse=True)
     ]
     return {"range": _clean_range_key(range_key), "site_id": site_id or "all", "groups": groups}
+
+
+def _attach_runtime_events(
+    sessions: dict[tuple[str, str], dict[str, Any]],
+    runtime_events: list[dict[str, Any]],
+) -> None:
+    """Attach diagnostics and retain failed sessions that never wrote a usage turn."""
+    for event in reversed(runtime_events):
+        site_id = str(event.get("site_id") or "")
+        session_id = str(event.get("session_id") or "")
+        if not site_id or not session_id:
+            continue
+        occurred_at = str(event.get("occurred_at") or "")
+        session = sessions.setdefault(
+            (site_id, session_id),
+            {
+                "site_id": site_id,
+                "session_id": session_id,
+                "started_at": occurred_at,
+                "last_seen_at": occurred_at,
+                "turn_count": 0,
+                "tokens_used": 0,
+                "turns": [],
+                "runtime_events": [],
+            },
+        )
+        session["runtime_events"].append(event)
+        session["started_at"] = min(filter(None, [session["started_at"], occurred_at]), default="")
+        session["last_seen_at"] = max(filter(None, [session["last_seen_at"], occurred_at]), default="")
+
+
+def _safe_runtime_events(range_key: str, site_id: str) -> list[dict[str, Any]]:
+    try:
+        return list_runtime_events(range_key, site_id, limit=2000)
+    except Exception as exc:
+        logger.warning("Runtime diagnostics lookup failed: %s", type(exc).__name__)
+        return []
 
 
 def analytics_snapshot(range_key: str = ANALYTICS_DEFAULT_RANGE, site_id: str = "") -> dict[str, Any]:

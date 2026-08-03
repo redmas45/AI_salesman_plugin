@@ -4,6 +4,7 @@ import { setupRecorder } from "../audio/recorder";
 import { processAudio, isSpeaking, stopPlayback } from "../runtime/api";
 import { config } from "../core/config";
 import { createConversationMemory } from "../session/conversationMemory";
+import { emitRuntimeEvent } from "../runtime/diagnostics";
 import { replayPendingSpeech, speakText } from "../audio/speech";
 import { startWidgetAvailabilityLoop } from "../session/widgetAvailability";
 import {
@@ -44,6 +45,7 @@ function boot() {
   function handleStatusChange(statusStr, detail = "") {
     // The recorder is the source of truth for whether the mic is open.
     isRecording = statusStr === STATUS.RECORDING;
+    applyOrbStateCopy(orbStateFor(statusStr));
     elements.status.className = "";
     if (statusStr === STATUS.RECORDING) {
       if (clearTimer) {
@@ -145,6 +147,7 @@ function boot() {
   function stopSpeakingIfActive() {
     if (!isSpeaking()) return false;
     stopPlayback();
+    emitRuntimeEvent({ event_type: "voice_playback_stopped", stage: "orb_gesture", status: "cancelled" });
     handleStatusChange(STATUS.READY);
     return true;
   }
@@ -167,11 +170,40 @@ function boot() {
     startRecordingOnce();
   }
 
-  elements.btn.setAttribute(
-    "aria-label",
-    "Maya voice assistant. Double-click to talk; click to stop. Press Enter or Space to talk.",
-  );
-  elements.btn.setAttribute("title", "Double-click to talk; click to stop");
+  // The orb means different things in each state, so its accessible name and
+  // tooltip must say what THIS click will do rather than a generic instruction.
+  const ORB_STATE_COPY = {
+    idle: {
+      label: "Maya voice assistant. Double-click to talk. Press Enter or Space to talk.",
+      title: "Double-click to talk",
+    },
+    recording: {
+      label: "Maya is listening. Click once to send, or press Escape to cancel.",
+      title: "Click once to send - Escape to cancel",
+    },
+    processing: {
+      label: "Maya is working on your request. Please wait.",
+      title: "Request in progress",
+    },
+    speaking: {
+      label: "Maya is speaking. Click to stop, or press Escape to stop.",
+      title: "Click to stop Maya",
+    },
+  };
+
+  function orbStateFor(statusStr) {
+    if (statusStr === STATUS.RECORDING) return "recording";
+    if (statusStr === STATUS.PROCESSING) return "processing";
+    return isSpeaking() ? "speaking" : "idle";
+  }
+
+  function applyOrbStateCopy(state) {
+    const copy = ORB_STATE_COPY[state] || ORB_STATE_COPY.idle;
+    elements.btn.setAttribute("aria-label", copy.label);
+    elements.btn.setAttribute("title", copy.title);
+  }
+
+  applyOrbStateCopy("idle");
 
   elements.btn.addEventListener("click", (event) => {
     // Enter/Space on a button synthesises a click with detail 0. Keyboard users
@@ -204,7 +236,17 @@ function boot() {
   });
 
   const handleEscape = (event) => {
-    if (event.key === "Escape") stopSpeakingIfActive();
+    if (event.key !== "Escape") return;
+    if (isRecording) {
+      // Escape while recording discards the take. It must never submit, so the
+      // recorder is cancelled rather than stopped.
+      clearPendingClick();
+      recorder.cancel();
+      emitRuntimeEvent({ event_type: "voice_recording_cancelled", stage: "keyboard_escape", status: "cancelled" });
+      handleStatusChange(STATUS.READY);
+      return;
+    }
+    stopSpeakingIfActive();
   };
   document.addEventListener("keydown", handleEscape);
 

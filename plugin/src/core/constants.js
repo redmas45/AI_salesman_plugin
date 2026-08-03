@@ -36,3 +36,6 @@ export const EVENTS = Object.freeze({
 });
 
 export const WS_CONNECT_TIMEOUT_MS = 2500;
+// A submitted WebSocket turn must end in done/error/close, or be failed here, so
+// the widget can never stay stuck in "processing" after the server goes quiet.
+export const WS_TURN_TIMEOUT_MS = 45000;

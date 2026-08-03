@@ -120,6 +120,31 @@ CREATE INDEX IF NOT EXISTS idx_hub_audit_events_site_created
 CREATE INDEX IF NOT EXISTS idx_hub_audit_events_type_created
     ON hub_audit_events(event_type, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS hub_runtime_events (
+    id BIGSERIAL PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    session_id TEXT NOT NULL DEFAULT '',
+    request_id TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL,
+    component TEXT NOT NULL,
+    stage TEXT NOT NULL DEFAULT '',
+    event_type TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'info',
+    status TEXT NOT NULL DEFAULT 'ok',
+    message_code TEXT NOT NULL DEFAULT '',
+    duration_ms REAL NOT NULL DEFAULT 0,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_hub_runtime_events_site_session_time
+    ON hub_runtime_events(site_id, session_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hub_runtime_events_request_time
+    ON hub_runtime_events(site_id, request_id, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hub_runtime_events_severity_time
+    ON hub_runtime_events(severity, occurred_at DESC);
+
 CREATE TABLE IF NOT EXISTS hub_action_events (
     id BIGSERIAL PRIMARY KEY,
     site_id TEXT NOT NULL,

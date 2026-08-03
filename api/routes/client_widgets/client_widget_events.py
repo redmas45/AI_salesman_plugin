@@ -12,6 +12,7 @@ from api.routes.client_widgets.client_models import (
     WidgetActionValidationRequest,
     WidgetInteractionEventRequest,
     WidgetPolicyEventRequest,
+    WidgetRuntimeEventRequest,
 )
 
 
@@ -25,6 +26,8 @@ class ClientEventStore(Protocol):
     def save_client_action_event(self, site_id: str, event: dict[str, Any]) -> Any: ...
 
     def save_client_interaction_event(self, site_id: str, event: dict[str, Any]) -> Any: ...
+
+    def record_runtime_event(self, site_id: str, event: dict[str, Any]) -> Any: ...
 
 
 SiteIdSanitizer = Callable[[str], str]
@@ -145,6 +148,53 @@ def process_interaction_event(
     }
     client_store.save_client_interaction_event(safe_site, event)
     return {"site_id": safe_site, "status": "ok"}
+
+
+def process_runtime_event(
+    req: WidgetRuntimeEventRequest,
+    *,
+    client_store: ClientEventStore,
+    safe_site_id: SiteIdSanitizer,
+    safe_script_base_url: OriginSanitizer,
+    safe_client_detail: ClientDetailLoader,
+) -> dict[str, Any]:
+    """Persist only allowlisted transport metadata from the bound client origin."""
+    safe_site = safe_site_id(req.site_id)
+    allowed_event_origin(req.origin, safe_site, "Runtime event", safe_script_base_url, safe_client_detail)
+    event = {
+        "source": "frontend",
+        "occurred_at": req.occurred_at,
+        "session_id": req.session_id,
+        "request_id": req.request_id,
+        "component": req.component,
+        "stage": req.stage,
+        "event_type": req.event_type,
+        "severity": req.severity,
+        "status": req.status,
+        "message_code": req.message_code,
+        "duration_ms": req.duration_ms,
+        "metadata": _safe_runtime_metadata(req.metadata),
+    }
+    client_store.record_runtime_event(safe_site, event)
+    return {"site_id": safe_site, "status": "ok"}
+
+
+def _safe_runtime_metadata(raw_metadata: Any) -> dict[str, Any]:
+    """Keep telemetry useful while refusing nested or user-authored content."""
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+    safe: dict[str, Any] = {}
+    sensitive_terms = ("audio", "transcript", "response", "error", "exception", "token", "secret")
+    for raw_key, raw_value in list(metadata.items())[:16]:
+        key = str(raw_key or "").strip().lower()[:60]
+        if not key or any(term in key for term in sensitive_terms):
+            continue
+        if isinstance(raw_value, bool) or raw_value is None:
+            safe[key] = raw_value
+        elif isinstance(raw_value, (int, float)):
+            safe[key] = raw_value
+        elif isinstance(raw_value, str):
+            safe[key] = raw_value.strip()[:120]
+    return safe
 
 
 def allowed_event_origin(

@@ -131,3 +131,21 @@ class WidgetInteractionEventRequest(BaseModel):
     tag: str = Field(default="", max_length=40)
     href: str = Field(default="", max_length=600)
     form: dict[str, Any] = Field(default_factory=dict)
+
+
+class WidgetRuntimeEventRequest(BaseModel):
+    """Bounded diagnostic metadata; never accepts transcript, audio, or exception text."""
+
+    site_id: str = Field(default=config.DEFAULT_SITE_ID, min_length=1, max_length=80)
+    origin: str = Field(..., min_length=1, max_length=240)
+    occurred_at: str = Field(default="", max_length=80)
+    session_id: str = Field(default="", max_length=120)
+    request_id: str = Field(default="", max_length=80)
+    component: str = Field(default="voice", max_length=60)
+    stage: str = Field(default="", max_length=80)
+    event_type: str = Field(..., min_length=1, max_length=80)
+    severity: str = Field(default="info", max_length=20)
+    status: str = Field(default="ok", max_length=20)
+    message_code: str = Field(default="", max_length=80)
+    duration_ms: float = Field(default=0.0, ge=0, le=300000)
+    metadata: dict[str, Any] = Field(default_factory=dict)

@@ -8,9 +8,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Iterator, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 import config
 from agent.orchestration import orchestrator_facade as orchestrator
@@ -87,6 +88,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "x-crm-admin-token"],
+    expose_headers=["X-Request-ID", "X-Response-Time-Ms"],
 )
 
 app.add_middleware(SecurityHeadersMiddleware)
@@ -96,17 +98,36 @@ app.add_middleware(RequestTracingMiddleware)
 
 @app.middleware("http")
 async def public_widget_cors_middleware(request: Request, call_next):
-    """Allow installed widgets on any website to reach public widget endpoints."""
+    """Allow installed widgets on any website to reach public widget endpoints.
+
+    An unhandled exception used to propagate past this middleware, so the browser
+    received a 500 with no ``Access-Control-Allow-Origin`` header. The widget then
+    saw a rejected ``fetch`` that was indistinguishable from the network being
+    down, which is why real server faults were reported as connection problems.
+    Widget errors are therefore converted here into a CORS-safe JSON response that
+    carries the status and the request id, and never the exception text.
+    """
     origin = request.headers.get("origin")
-    if origin and cors_policy.is_public_widget_cors_path(request.url.path):
-        headers = cors_policy.public_widget_cors_headers(request)
-        if request.method == "OPTIONS":
-            return Response(status_code=204, headers=headers)
+    if not (origin and cors_policy.is_public_widget_cors_path(request.url.path)):
+        return await call_next(request)
+
+    headers = cors_policy.public_widget_cors_headers(request)
+    if request.method == "OPTIONS":
+        return Response(status_code=204, headers=headers)
+
+    try:
         response = await call_next(request)
-        for key, value in headers.items():
-            response.headers[key] = value
-        return response
-    return await call_next(request)
+    except Exception:
+        request_id = getattr(request.state, "request_id", "") or ""
+        logger.exception("WIDGET | unhandled error on %s (request_id=%s)", request.url.path, request_id)
+        response = JSONResponse(
+            status_code=500,
+            content={"detail": "The assistant service failed to complete this request.", "code": "internal_error", "request_id": request_id},
+        )
+
+    for key, value in headers.items():
+        response.headers[key] = value
+    return response
 
 
 app.include_router(crm_api.router)
@@ -285,6 +306,7 @@ def _coerce_websocket_payload(raw_data: str) -> dict[str, Any]:
 @app.post("/v1/shop", response_model=ShopResponse, tags=["AI Runtime"])
 async def shop(
     request: Request,
+    background_tasks: BackgroundTasks,
     site_id: str = Form(config.DEFAULT_SITE_ID, description="Site ID for multi-tenancy"),
     audio: Optional[UploadFile] = File(
         None, description="Audio file (WAV, MP3, WebM, OGG)"
@@ -323,17 +345,57 @@ async def shop(
 
     started_at = turn_timer()
     session_summary = get_session_summary(site_id, session_id)
-    result = orchestrator.run(
-        site_id=site_id,
-        audio_bytes=payload.audio_bytes,
-        text_input=text,
-        audio_filename=payload.audio_filename,
-        skip_tts=skip_tts,
-        conversation_history=payload.conversation_history,
-        page_context=payload.page_context,
-        session_summary=session_summary,
-        session_id=session_id,
+    request_id = getattr(request.state, "request_id", "") or ""
+    background_tasks.add_task(
+        admin_db.record_runtime_event_safely,
+        site_id,
+        {
+            "source": "backend",
+            "session_id": session_id,
+            "request_id": request_id,
+            "component": "voice_pipeline",
+            "stage": "orchestration",
+            "event_type": "voice_turn_started",
+            "status": "started",
+            "metadata": {"transport": "legacy-http", "has_audio": bool(payload.audio_bytes)},
+        },
     )
+    # orchestrator.run is fully synchronous (blocking STT, LLM, TTS and psycopg
+    # calls). Awaiting it inline on the event loop froze the whole worker for the
+    # length of a turn, so concurrent widget requests queued until the reverse
+    # proxy timed them out - which reaches the browser as an opaque failure.
+    try:
+        result = await run_in_threadpool(
+            orchestrator.run,
+            site_id=site_id,
+            audio_bytes=payload.audio_bytes,
+            text_input=text,
+            audio_filename=payload.audio_filename,
+            skip_tts=skip_tts,
+            conversation_history=payload.conversation_history,
+            page_context=payload.page_context,
+            session_summary=session_summary,
+            session_id=session_id,
+        )
+    except Exception as exc:
+        await run_in_threadpool(
+            admin_db.record_runtime_event_safely,
+            site_id,
+            {
+                "source": "backend",
+                "session_id": session_id,
+                "request_id": request_id,
+                "component": "voice_pipeline",
+                "stage": "orchestration",
+                "event_type": "voice_turn_failed",
+                "severity": "error",
+                "status": "failed",
+                "message_code": "orchestration_failed",
+                "duration_ms": (turn_timer() - started_at) * 1000,
+                "metadata": {"transport": "legacy-http", "exception_type": type(exc).__name__},
+            },
+        )
+        raise
     result["ui_actions"] = annotate_ui_actions(result.get("ui_actions"), turn_id=new_action_turn_id())
     print_turn_summary(
         transport="legacy-http",
@@ -350,6 +412,27 @@ async def shop(
         transport="legacy-http",
         result=result,
         history=payload.conversation_history,
+    )
+    background_tasks.add_task(
+        admin_db.record_runtime_event_safely,
+        site_id,
+        {
+            "source": "backend",
+            "session_id": session_id,
+            "request_id": request_id,
+            "component": "voice_pipeline",
+            "stage": "orchestration",
+            "event_type": "voice_turn_completed",
+            "status": "ok",
+            "duration_ms": (turn_timer() - started_at) * 1000,
+            "metadata": {
+                "transport": "legacy-http",
+                "action_count": len(result.get("ui_actions") or []),
+                "stt_ms": (result.get("latency_ms") or {}).get("stt_ms", 0),
+                "llm_ms": (result.get("latency_ms") or {}).get("llm_ms", 0),
+                "tts_ms": (result.get("latency_ms") or {}).get("tts_ms", 0),
+            },
+        },
     )
 
     return ShopResponse(**result)

@@ -6,6 +6,7 @@ import logging
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
+from starlette.concurrency import run_in_threadpool
 
 import config
 from agent.action_helpers.action_readiness import action_readiness_for
@@ -26,6 +27,7 @@ from api.routes.client_widgets.client_models import (
     WidgetInteractionEventRequest,
     WidgetPolicyEventRequest,
     WidgetRegisterRequest,
+    WidgetRuntimeEventRequest,
 )
 from db.admin_domain import admin_facade as admin_db
 
@@ -237,6 +239,16 @@ def _process_interaction_event(req: WidgetInteractionEventRequest) -> dict[str, 
     )
 
 
+def _process_runtime_event(req: WidgetRuntimeEventRequest) -> dict[str, Any]:
+    return client_widget_events.process_runtime_event(
+        req,
+        client_store=admin_db,
+        safe_site_id=_safe_site_id,
+        safe_script_base_url=_safe_script_base_url,
+        safe_client_detail=_safe_client_detail,
+    )
+
+
 def same_origin_public_url(url: str, origin: str) -> str:
     return client_widget_events.same_origin_public_url(url, origin)
 
@@ -338,6 +350,13 @@ async def widget_interaction_event(request: Request, req: WidgetInteractionEvent
     """Accept privacy-safe browser interaction metadata for adapter learning."""
     client_security.require_claimed_browser_origin(request, req.origin, _safe_script_base_url)
     return _process_interaction_event(req)
+
+
+@router.post("/v1/widget/runtime-event")
+async def widget_runtime_event(request: Request, req: WidgetRuntimeEventRequest) -> dict[str, Any]:
+    """Accept privacy-safe frontend transport diagnostics from the configured origin."""
+    client_security.require_claimed_browser_origin(request, req.origin, _safe_script_base_url)
+    return await run_in_threadpool(_process_runtime_event, req)
 
 
 @router.get("/v1/widget/status")

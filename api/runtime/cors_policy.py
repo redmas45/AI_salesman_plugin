@@ -77,6 +77,7 @@ def public_widget_cors_headers(request: Request) -> dict[str, str]:
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": requested_headers,
+        "Access-Control-Expose-Headers": "X-Request-ID, X-Response-Time-Ms",
         "Access-Control-Max-Age": "600",
         "Vary": "Origin",
     }

@@ -246,3 +246,58 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.runtime-diagnostics {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.runtime-diagnostics-head,
+.runtime-diagnostic-event > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.runtime-diagnostics-head {
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.runtime-diagnostics-head strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.runtime-diagnostic-event {
+  display: grid;
+  gap: 6px;
+  border-left: 3px solid var(--line);
+  background: var(--soft);
+  padding: 9px 10px;
+}
+
+.runtime-diagnostic-event.warning {
+  border-left-color: var(--amber);
+}
+
+.runtime-diagnostic-event.error {
+  border-left-color: var(--red);
+}
+
+.runtime-diagnostic-event strong {
+  color: var(--ink);
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.runtime-diagnostic-event span,
+.runtime-diagnostic-event code {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

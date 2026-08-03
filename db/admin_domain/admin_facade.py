@@ -52,6 +52,11 @@ from db.runtime.quota import (
     estimate_tokens,
     quota_status,
 )
+from db.runtime.runtime_diagnostics import (
+    list_runtime_events,
+    record_runtime_event,
+    record_runtime_event_safely,
+)
 
 # Re-export from analytics metrics
 from db.analytics.metrics import (

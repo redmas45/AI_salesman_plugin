@@ -8,6 +8,7 @@ import { StatusPill } from '../../components/ui/Badge';
 import { RangeControl } from '../../components/shared/RangeControl';
 import { PaginationControl } from '../../components/shared/controls/PaginationControl';
 import { number, shortTime } from '../../utils/format';
+import { RuntimeDiagnosticActions, RuntimeDiagnosticsTimeline } from './RuntimeDiagnostics';
 
 const CONVERSATION_PAGE_SIZE = 6;
 
@@ -51,6 +52,7 @@ export function ConversationsView({
         session.session_id,
         session.date,
         ...session.turns.flatMap((turn) => [turn.intent, turn.transcript, turn.response_text]),
+        ...(session.runtime_events ?? []).flatMap((event) => [event.source, event.component, event.stage, event.event_type, event.message_code, event.request_id]),
       ]
         .join(' ')
         .toLowerCase();
@@ -287,6 +289,7 @@ function formatConversationForCopy(session: ConversationSession): string {
   return `${header}\n\n${body}`;
 }
 
+
 function CopyConversationButton({ session }: { session: ConversationSession }) {
   const { state, copy } = useClipboard();
   const label = state === 'copied' ? 'Copied' : state === 'error' ? 'Copy failed' : 'Copy conversation';
@@ -346,6 +349,7 @@ function CrmConversationCard({
           Open client activity
         </Button>
         <CopyConversationButton session={session} />
+        <RuntimeDiagnosticActions session={session} />
         <span>
           Latest intent: <strong>{latestTurn?.intent || 'unknown'}</strong>
         </span>
@@ -385,6 +389,7 @@ function CrmConversationCard({
             {open ? 'Show less' : `Show ${session.turns.length - 1} more turns`}
           </Button>
         ) : null}
+        {open && session.runtime_events?.length ? <RuntimeDiagnosticsTimeline events={session.runtime_events} /> : null}
       </div>
     </article>
   );
@@ -443,7 +448,8 @@ function actionEventDestination(event: ActionExecutionEvent) {
 }
 
 function sessionNeedsReview(session: ConversationsResponse['groups'][number]['sessions'][number]) {
-  return session.turns.some((turn) => turnIsError(turn) || turnIsSlow(turn));
+  return session.turns.some((turn) => turnIsError(turn) || turnIsSlow(turn))
+    || (session.runtime_events ?? []).some((event) => event.severity === 'error' || event.status === 'failed');
 }
 
 function turnIsError(turn: ConversationsResponse['groups'][number]['sessions'][number]['turns'][number]) {

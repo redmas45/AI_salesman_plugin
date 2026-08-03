@@ -99,6 +99,22 @@ export interface ConversationTurn {
   action_events?: ActionExecutionEvent[];
 }
 
+export interface RuntimeDiagnosticEvent {
+  site_id: string;
+  session_id: string;
+  request_id: string;
+  source: 'frontend' | 'backend' | string;
+  component: string;
+  stage: string;
+  event_type: string;
+  severity: 'debug' | 'info' | 'warning' | 'error' | string;
+  status: string;
+  message_code: string;
+  duration_ms: number;
+  metadata: Record<string, unknown>;
+  occurred_at: string;
+}
+
 export interface ConversationSession {
   site_id: string;
   session_id: string;
@@ -107,6 +123,7 @@ export interface ConversationSession {
   turn_count: number;
   tokens_used: number;
   turns: ConversationTurn[];
+  runtime_events?: RuntimeDiagnosticEvent[];
 }
 
 export interface ConversationGroup {
