@@ -13,6 +13,7 @@ import config
 
 from agent.orchestration.orchestrator_streaming import stream_final_result
 from agent.orchestration.turn_plan import TurnOperation
+from agent.responses.spoken_text import concise_spoken_text
 from agent.runtime_helpers.grounding_validator import enforce_grounded_constraints
 
 ACTION_NAVIGATE_TO = "NAVIGATE_TO"
@@ -337,7 +338,12 @@ def run_pipeline(
     )
     runtime.print(f"   UI Actions: {validated.get('ui_actions', [])}")
 
-    audio_b64, tts_ms = runtime._synthesize_audio_b64(validated["response_text"], skip_tts)
+    # Speak a concise lead-in, not the whole rich answer: TTS time scales with
+    # length, and the full detail is already on screen. The displayed text is
+    # unchanged, so gpt-5-mini's rich answer is kept - only the spoken audio is
+    # shortened, which is the single largest per-turn latency saving.
+    spoken_text = concise_spoken_text(validated["response_text"], final_actions)
+    audio_b64, tts_ms = runtime._synthesize_audio_b64(spoken_text, skip_tts)
     if tts_ms is not None:
         timings["tts_ms"] = tts_ms
 
@@ -355,6 +361,7 @@ def run_pipeline(
     return {
         "transcript": transcript,
         "response_text": validated["response_text"],
+        "spoken_text": spoken_text,
         "intent": validated.get("intent", "unknown"),
         "confidence": validated.get("confidence", 0.0),
         "answer_scope": validated.get("answer_scope", ""),
@@ -650,7 +657,9 @@ def run_stream_pipeline(
     yield {"event": "actions", "data": {"ui_actions": final_actions}}
     yield {"event": "response", "data": {"response_text": validated["response_text"], "answer_scope": validated.get("answer_scope", "")}}
 
-    audio_b64, tts_ms = runtime._synthesize_audio_b64(validated["response_text"], skip_tts)
+    # Speak a concise lead-in, not the full rich answer (see the sync path).
+    spoken_text = concise_spoken_text(validated["response_text"], final_actions)
+    audio_b64, tts_ms = runtime._synthesize_audio_b64(spoken_text, skip_tts)
     if tts_ms is not None:
         timings["tts_ms"] = tts_ms
     timings["total_ms"] = runtime._ms(t0)
@@ -660,6 +669,7 @@ def run_stream_pipeline(
         "event": "audio",
         "data": {
             "response_text": validated["response_text"],
+            "spoken_text": spoken_text,
             "audio_b64": audio_b64,
             "latency_ms": timings,
             "retrieval": retrieval_evidence,

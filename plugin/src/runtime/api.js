@@ -6,6 +6,7 @@ import {
   VoiceTransportError,
   classifyThrownError,
   errorForResponse,
+  isCancellation,
 } from "./transportErrors";
 import {
   API_PATHS,
@@ -162,19 +163,27 @@ export function isSpeaking() {
   return sharedAudioQueue.isSpeaking();
 }
 
-/** Close the socket and abort any in-flight HTTP turn (session reset). */
-export function resetTransport() {
-  wsTransport.reset();
-  httpTransport.reset();
+/**
+ * Close the socket and abort any in-flight HTTP turn.
+ *
+ * `reason` distinguishes a user stop from a logout/session reset: a user stop
+ * must surface as cancellation, never as a connection error, so the aborted turn
+ * is tagged rather than being classified from its AbortError.
+ */
+export function resetTransport(reason = "reset") {
+  wsTransport.reset(reason);
+  httpTransport.reset(reason);
 }
 
 class HttpTransport {
   constructor() {
     this.inFlight = null;
+    this.cancelled = false;
   }
 
   /** Abort an in-flight turn so a reset cannot be answered after the fact. */
-  reset() {
+  reset(reason = "reset") {
+    this.cancelled = reason === "user_cancel";
     try {
       this.inFlight?.abort();
     } catch (_err) {
@@ -206,6 +215,7 @@ class HttpTransport {
     let res;
     const controller = typeof AbortController === "function" ? new AbortController() : null;
     this.inFlight = controller;
+    this.cancelled = false;
     try {
       res = await fetch(`${config.apiUrl}${API_PATHS.SHOP}`, {
         method: HTTP_METHODS.POST,
@@ -213,6 +223,10 @@ class HttpTransport {
         signal: controller?.signal,
       });
     } catch (err) {
+      // A turn the customer stopped is cancellation, not a dropped connection.
+      if (this.cancelled || err?.name === "AbortError") {
+        throw new VoiceTransportError(TRANSPORT_CATEGORY.CANCELLED, { stage: "user_cancel" });
+      }
       // A rejected fetch never reached the server: DNS, TLS, blocked CORS
       // preflight, or a dropped connection.
       throw classifyThrownError(err);
@@ -240,16 +254,21 @@ class HttpTransport {
       callbacks.onActionResults?.(actionResults);
     }
 
-    const spokenText = confirmedResponseText(data.response_text || "", actions, actionResults);
-    if (spokenText) callbacks.onAssistantMessage?.(spokenText, actions);
+    // The full rich answer is displayed; a concise `spoken_text` is what is read
+    // aloud (much faster TTS). Both are gated on the same confirmation, so a
+    // failed action still replaces speech with the recovery message.
+    const displayText = confirmedResponseText(data.response_text || "", actions, actionResults);
+    if (displayText) callbacks.onAssistantMessage?.(displayText, actions);
     callbacks.onStatusChange?.(STATUS.READY);
 
+    const confirmed = displayText === (data.response_text || "");
+    const speechText = confirmed ? (data.spoken_text || data.response_text || "") : displayText;
     // Audio is only released once the text it narrates has been confirmed, so the
     // customer never hears a claim the screen contradicts.
-    if (data.audio_b64 && spokenText === (data.response_text || "")) {
-      playAudioBase64(data.audio_b64, spokenText);
-    } else if (spokenText) {
-      speakTextFallback(spokenText);
+    if (data.audio_b64 && confirmed) {
+      playAudioBase64(data.audio_b64, speechText);
+    } else if (speechText) {
+      speakTextFallback(speechText);
     }
 
     callbacks.onComplete?.(data);
@@ -526,13 +545,15 @@ class VoiceWebSocketTransport {
         callbacks.onActionResults?.(actionResults);
       }
 
-      const spokenText = confirmedResponseText(finalText, actions, actionResults);
-      callbacks.onAssistantMessage?.(spokenText, actions, { streamed: true });
+      const displayText = confirmedResponseText(finalText, actions, actionResults);
+      callbacks.onAssistantMessage?.(displayText, actions, { streamed: true });
       callbacks.onStatusChange?.(STATUS.READY);
-      if (this.receivedAudio && spokenText === finalText) {
+      const confirmed = displayText === finalText;
+      const speechText = confirmed ? (msg.spoken_text || finalText) : displayText;
+      if (this.receivedAudio && confirmed) {
         for (const chunk of this.pendingAudioChunks) this.audioQueue.push(chunk);
-      } else if (spokenText) {
-        speakTextFallback(spokenText);
+      } else if (speechText) {
+        speakTextFallback(speechText);
       }
       callbacks.onComplete?.(msg);
       emitRuntimeEvent({
@@ -580,9 +601,11 @@ class VoiceWebSocketTransport {
    * Drop the socket and every scrap of turn state.
    *
    * A reset must leave nothing that could deliver the previous customer's answer
-   * into the next customer's session, so buffered text and audio go too.
+   * into the next customer's session, so buffered text and audio go too. Dropping
+   * the callbacks first means the socket close below cannot fail the turn as a
+   * network error - a user stop settles quietly.
    */
-  reset() {
+  reset(_reason = "reset") {
     this.callbacks = null;
     this.turnText = "";
     this.receivedAudio = false;
@@ -613,8 +636,21 @@ export async function processAudio(blob, elements, callbacks, conversationHistor
 
     await httpTransport.sendAudio(blob, callbacks, conversationHistory);
   } catch (err) {
-    console.error(err);
     const diagnostic = err instanceof VoiceTransportError ? err : classifyThrownError(err);
+    // A turn the customer stopped is not a failure: report it as cancellation and
+    // return to Ready, never to a connection/timeout error banner.
+    if (isCancellation(diagnostic)) {
+      emitRuntimeEvent({
+        event_type: "voice_turn_cancelled",
+        stage: diagnostic.stage || "transport",
+        status: "cancelled",
+        metadata: { transport: config.useWebSocket ? "websocket_or_http" : "http" },
+      });
+      callbacks.onStatusChange?.(STATUS.READY);
+      callbacks.onComplete?.({ cancelled: true });
+      return;
+    }
+    console.error(err);
     emitRuntimeEvent({
       event_type: "voice_turn_failed",
       stage: diagnostic.stage || "transport",

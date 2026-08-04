@@ -45,18 +45,18 @@ function boot() {
     isRecording = statusStr === STATUS.RECORDING;
     applyOrbStateCopy(orbStateFor(statusStr));
     elements.status.className = "";
+    // The orb visual class is owned solely by applyOrbStateCopy above, so the
+    // status line here never toggles it independently (no state race).
     if (statusStr === STATUS.RECORDING) {
       if (clearTimer) {
         window.clearTimeout(clearTimer);
         clearTimer = null;
       }
       elements.msgs.innerHTML = "";
-      elements.btn.classList.add("recording");
       elements.chat.classList.add("visible");
       elements.status.innerText = "Listening...";
       elements.status.classList.add("listening");
     } else if (statusStr === STATUS.PROCESSING) {
-      elements.btn.classList.remove("recording");
       elements.chat.classList.add("visible");
       elements.status.innerText = "Analyzing...";
       elements.status.classList.add("processing");
@@ -66,7 +66,6 @@ function boot() {
     } else if (statusStr === STATUS.ERROR) {
       elements.status.innerText = detail || "Try again";
       elements.status.classList.add("error");
-      elements.btn.classList.remove("recording");
     }
   }
 
@@ -74,21 +73,29 @@ function boot() {
   let activeStreamNode = null;
   let activeStreamText = "";
   let processingTurn = false;
+  // One monotonic token owns the active turn. A callback (or a delayed response)
+  // that belongs to a superseded or cancelled turn carries a stale token and is
+  // ignored, so an older request can never overwrite the current state.
+  let turnToken = 0;
 
   // Stop Callback
   async function handleStop(blob) {
     if (processingTurn) return;
     processingTurn = true;
+    const myToken = ++turnToken;
+    const isCurrent = () => myToken === turnToken;
     elements.btn.disabled = true;
     activeStreamNode = null;
     activeStreamText = "";
     try {
       await processAudio(blob, elements, {
         onUserMessage: (text) => {
+          if (!isCurrent()) return;
           addMessage(elements, text, "user");
           conversationMemory.rememberUserMessage(text);
         },
         onAssistantChunk: (_chunk, fullText) => {
+          if (!isCurrent()) return;
           activeStreamText = fullText;
           if (!activeStreamNode) {
             activeStreamNode = addMessage(elements, "", "ai");
@@ -96,6 +103,7 @@ function boot() {
           updateMessage(elements, activeStreamNode, activeStreamText);
         },
         onAssistantMessage: (text, uiActions, meta = {}) => {
+          if (!isCurrent()) return;
           if (meta.streamed && activeStreamNode) {
             updateMessage(elements, activeStreamNode, text);
           } else {
@@ -105,39 +113,58 @@ function boot() {
           activeStreamNode = null;
           activeStreamText = "";
         },
-        onActionResults: conversationMemory.rememberActionResults,
-        onStatusChange: handleStatusChange,
-        onComplete: () => scheduleVisibleReset()
-      }, conversationMemory.history);
+        onActionResults: (results) => {
+          if (isCurrent()) conversationMemory.rememberActionResults(results);
+        },
+        onStatusChange: (statusStr, detail) => {
+          if (isCurrent()) handleStatusChange(statusStr, detail);
+        },
+        onComplete: () => {
+          if (isCurrent()) scheduleVisibleReset();
+        },
+        // Send the bounded, summarized history so the payload (and the prompt the
+        // model reads) stays flat as the conversation grows: latest exchanges
+        // verbatim, older turns condensed into one summary.
+      }, conversationMemory.historyForRequest());
     } finally {
-      processingTurn = false;
-      elements.btn.disabled = false;
+      if (isCurrent()) {
+        processingTurn = false;
+        elements.btn.disabled = false;
+      }
       activeStreamNode = null;
       activeStreamText = "";
     }
   }
 
+  // The customer stopped the current turn. Invalidate its callbacks, abort the
+  // in-flight request as a cancellation (never a connection error), stop any
+  // playback, and return to Ready. The page is never navigated or reloaded.
+  function cancelActiveTurn() {
+    turnToken += 1;
+    resetTransport("user_cancel");
+    stopPlayback();
+    processingTurn = false;
+    elements.btn.disabled = false;
+    activeStreamNode = null;
+    activeStreamText = "";
+    emitRuntimeEvent({ event_type: "voice_turn_cancelled", stage: "orb_gesture", status: "cancelled" });
+    handleStatusChange(STATUS.READY);
+  }
+
   const recorder = setupRecorder(handleStop, handleStatusChange);
   activeRecorder = recorder;
 
-  function stopSpeakingIfActive() {
-    if (!isSpeaking()) return false;
-    stopPlayback();
-    emitRuntimeEvent({ event_type: "voice_playback_stopped", stage: "orb_gesture", status: "cancelled" });
-    handleStatusChange(STATUS.READY);
-    return true;
+  // A turn is "in flight" while its request is processing or its answer is
+  // speaking. A single gesture on the orb during that window stops it.
+  function turnInFlight() {
+    return processingTurn || isSpeaking();
   }
 
   function handleKeyboardActivation() {
-    if (processingTurn) {
-      stopSpeakingIfActive();
+    if (turnInFlight()) {
+      cancelActiveTurn();
       return;
     }
-    if (isRecording) {
-      recorder.toggle();
-      return;
-    }
-    if (stopSpeakingIfActive()) return;
     recorder.toggle();
   }
 
@@ -172,19 +199,18 @@ function boot() {
     const copy = ORB_STATE_COPY[state] || ORB_STATE_COPY.idle;
     elements.btn.setAttribute("aria-label", copy.label);
     elements.btn.setAttribute("title", copy.title);
+    elements.btn.setAttribute("data-orb-state", state);
+    // The visual class follows the same single state so idle, listening, and
+    // speaking are each distinct and never race one another.
+    elements.btn.classList.toggle("recording", state === "recording");
+    elements.btn.classList.toggle("speaking", state === "speaking");
   }
 
   applyOrbStateCopy("idle");
 
   elements.btn.addEventListener("click", (event) => {
-    if (processingTurn) {
-      stopSpeakingIfActive();
-      return;
-    }
-    if (stopSpeakingIfActive()) return;
-    // Browsers emit a second click with detail=2 for a double-click. The first
-    // click already started recording, so ignore the duplicate instead of
-    // immediately stopping it and replaying the open/close animation.
+    // Browsers emit a second click with detail=2 for a double-click. Ignore the
+    // duplicate so a double-click does not immediately undo what the first did.
     if (event.detail > 1) return;
     handleKeyboardActivation();
   });
@@ -197,7 +223,7 @@ function boot() {
       handleStatusChange(STATUS.READY);
       return;
     }
-    stopSpeakingIfActive();
+    if (turnInFlight()) cancelActiveTurn();
   };
   document.addEventListener("keydown", handleEscape);
 

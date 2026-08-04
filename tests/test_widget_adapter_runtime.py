@@ -93,7 +93,11 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
     assert "elements.btn.disabled = true" in widget_entry
     assert "elements.btn.disabled = false" in widget_entry
     assert "BROWSER_ACTION_RESULTS" in conversation_source
-    assert "onActionResults: conversationMemory.rememberActionResults" in widget_entry
+    # Action results are still routed into conversation memory, now behind the
+    # turn-token guard so a superseded turn's results cannot be recorded.
+    assert "conversationMemory.rememberActionResults(results)" in widget_entry
+    assert "let turnToken = 0" in widget_entry
+    assert "function cancelActiveTurn()" in widget_entry
     assert "rendered_products=" in conversation_source
     assert "rendered_records=" in conversation_source
     assert "let isStarting = false" in recorder_source
@@ -122,7 +126,12 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
     # browser had not proven - the exact defect the confirmation gate exists to
     # stop. Behavioural proof lives in tests/test_browser_page_state.py and
     # tests/test_browser_voice_transport.py; this line only pins the seam.
-    assert "speakTextFallback(spokenText)" in api_source
+    # The full answer is displayed; a concise `spoken_text` is what is read aloud
+    # (fast TTS). The browser fallback speaks that concise text, gated on the same
+    # action confirmation. Behaviour is proven in tests/test_spoken_text.py and the
+    # browser voice-transport suite.
+    assert "speakTextFallback(speechText)" in api_source
+    assert "data.spoken_text" in api_source
     assert "speakTextFallback(data.response_text)" not in api_source
     assert "from \"../audio/speech\"" in api_source
     assert "new SpeechSynthesisUtterance" not in api_source

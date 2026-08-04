@@ -1,5 +1,6 @@
 import { fetchProductsForDisplay, resolveProductDetailUrl } from "../catalog/productResolver";
 import { executeWithAIHubAdapter, hasAIHubAdapter } from "../core/adapterBridge";
+import { resetSpeech, speakText } from "../audio/speech";
 import {
   ACTION_PARAMS,
   ACTIONS,
@@ -18,10 +19,23 @@ const PLACEHOLDER_IMAGE = [
   "%3C/svg%3E",
 ].join("");
 const MAX_EVIDENCE_IDS = 12;
+const MAX_SPEAK_PRODUCTS = 4;
+const MAX_SPEAK_FACTS = 6;
+const MAX_SPEAK_CHARS = 700;
 let currentProducts = [];
 let currentTitle = DEFAULT_RECOMMENDATION_TITLE;
 // Grounded comparison facts for the current overlay, indexed by product id.
 let currentFacts = new Map();
+// The speak-choice is offered once per comparison; reset when a new one opens.
+let comparisonSpeakResolved = false;
+
+function stopSpeaking() {
+  try {
+    resetSpeech();
+  } catch (_err) {
+    // Best-effort: stopping speech must never throw out of the overlay.
+  }
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -116,14 +130,13 @@ function ensureStyles() {
       background: #ffffff;
       padding: 12px;
     }
-    /* Facts scroll inside the card so Add/View stay reachable on short screens. */
+    /* Facts flow naturally: the grid is the single scroll area, so there is no
+       nested scroll trap. Add/View stay reachable by scrolling the grid. */
     .mayabot-product-facts {
       margin: 0;
       display: grid;
       gap: 6px;
-      overflow: auto;
-      max-height: 190px;
-      flex: 1 1 auto;
+      flex: 0 0 auto;
       min-height: 0;
       font-size: 12px;
       line-height: 1.35;
@@ -205,6 +218,33 @@ function ensureStyles() {
       color: #686660;
       font-size: 14px;
     }
+    /* Speak-choice prompt: asked once per comparison, above the grid so it is
+       reachable without scrolling and never overlaps the results. */
+    .mayabot-compare-speak {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      flex: 0 0 auto;
+      padding: 11px 16px;
+      border-bottom: 1px solid rgba(22, 22, 21, 0.1);
+      background: #fbfbf8;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    #mayabot-product-panel.ask-speak .mayabot-compare-speak { display: flex; }
+    .mayabot-compare-speak p { margin: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
+    .mayabot-compare-speak button {
+      min-height: 32px;
+      padding: 0 14px;
+      border: 1px solid rgba(22, 22, 21, 0.14);
+      border-radius: 8px;
+      background: #161615;
+      color: #ffffff;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .mayabot-compare-speak button.secondary { background: #ffffff; color: #161615; }
     @media (max-width: 720px) {
       #mayabot-product-panel {
         bottom: 86px;
@@ -243,18 +283,76 @@ function ensurePanel() {
   panel = document.createElement("div");
   panel.id = "mayabot-product-panel";
   panel.setAttribute("aria-live", "polite");
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("tabindex", "-1");
   panel.innerHTML = `
     <div class="mayabot-product-header">
       <h2 class="mayabot-product-title">${DEFAULT_RECOMMENDATION_TITLE}</h2>
       <button class="mayabot-product-close" type="button" aria-label="Close recommendations">&times;</button>
     </div>
+    <div class="mayabot-compare-speak" role="group" aria-label="Speak comparison">
+      <p>Would you like me to speak all the comparison points?</p>
+      <button type="button" class="mayabot-compare-yes">Yes</button>
+      <button type="button" class="mayabot-compare-no secondary">No</button>
+    </div>
     <div class="mayabot-product-grid"></div>
   `;
-  panel.querySelector(".mayabot-product-close").addEventListener("click", () => {
-    panel.classList.remove("active");
+  panel.querySelector(".mayabot-product-close").addEventListener("click", closeOverlay);
+  panel.querySelector(".mayabot-compare-yes").addEventListener("click", () => resolveSpeakChoice(true));
+  panel.querySelector(".mayabot-compare-no").addEventListener("click", () => resolveSpeakChoice(false));
+  // One Escape handler for the placard: reachable, non-trapping keyboard close.
+  panel.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeOverlay();
   });
   document.body.appendChild(panel);
   return panel;
+}
+
+function closeOverlay() {
+  const panel = document.getElementById("mayabot-product-panel");
+  if (!panel) return;
+  panel.classList.remove("active", "ask-speak");
+  stopSpeaking();
+}
+
+// The speak-choice is offered exactly once per comparison set; a re-render (for
+// example a sort) never re-asks the same question.
+function resolveSpeakChoice(shouldSpeak) {
+  const panel = document.getElementById("mayabot-product-panel");
+  if (panel) panel.classList.remove("ask-speak");
+  comparisonSpeakResolved = true;
+  if (shouldSpeak) {
+    const speech = comparisonSpeech(currentProducts);
+    if (speech) speakText(speech);
+  }
+}
+
+function maybeAskSpeakComparison(products, isComparison) {
+  const panel = document.getElementById("mayabot-product-panel");
+  if (!panel) return;
+  const eligible = isComparison && Array.isArray(products) && products.length >= 2;
+  if (!eligible || comparisonSpeakResolved) {
+    panel.classList.remove("ask-speak");
+    return;
+  }
+  panel.classList.add("ask-speak");
+  // Move focus to the affirmative choice so the prompt is keyboard-operable.
+  window.setTimeout(() => panel.querySelector(".mayabot-compare-yes")?.focus(), 0);
+}
+
+/** A bounded spoken summary built only from the grounded facts already shown. */
+function comparisonSpeech(products) {
+  const parts = [];
+  for (const product of (products || []).slice(0, MAX_SPEAK_PRODUCTS)) {
+    const facts = currentFacts.get(String(product.id)) || [];
+    const spoken = facts
+      .slice(0, MAX_SPEAK_FACTS)
+      .map((fact) => `${fact.label}: ${fact.value}`)
+      .join(", ");
+    const name = product.name || product.title || "This product";
+    parts.push(spoken ? `${name}. ${spoken}.` : `${name}.`);
+  }
+  return parts.join(" ").slice(0, MAX_SPEAK_CHARS);
 }
 
 async function requestAddToCart(productId) {
@@ -458,6 +556,10 @@ export async function showProductOverlay(productIds, title = DEFAULT_RECOMMENDAT
   const requestedIds = cleanIds(productIds);
   const searchQuery = String(options.searchQuery || "").trim();
   currentFacts = factsByProductId(options.comparisonFacts);
+  // A comparison carries grounded per-product facts; opening a new one resets the
+  // one-time speak choice so it is asked again for this set (and only this set).
+  const isComparison = currentFacts.size > 0;
+  comparisonSpeakResolved = false;
   if (!requestedIds.length && !searchQuery) {
     renderProducts([], title);
     return overlayResult([], [], "missing_product_ids");
@@ -466,6 +568,7 @@ export async function showProductOverlay(productIds, title = DEFAULT_RECOMMENDAT
   try {
     const { products, source, reason } = await fetchProductsForDisplay(requestedIds, searchQuery);
     renderProducts(products, title);
+    maybeAskSpeakComparison(products, isComparison);
     return overlayResult(requestedIds, products, reason, { source, searchQuery });
   } catch (err) {
     console.warn("[AI Hub Widget] Product overlay failed:", err);

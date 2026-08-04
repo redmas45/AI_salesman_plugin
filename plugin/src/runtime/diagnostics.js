@@ -5,15 +5,19 @@ const MAX_METADATA_ENTRIES = 16;
 
 export function emitRuntimeEvent(event = {}) {
   const payload = JSON.stringify({
+    // Client + session + turn + request give every event a full, joinable trace.
+    client_id: config.siteId,
     site_id: config.siteId,
     origin: window.location.origin,
     occurred_at: new Date().toISOString(),
     session_id: config.sessionId,
+    turn_id: clean(event.turn_id, 80),
     request_id: clean(event.request_id, 80),
     component: clean(event.component || "voice", 60),
     stage: clean(event.stage, 80),
     event_type: clean(event.event_type || "runtime_event", 80),
     severity: clean(event.severity || "info", 20),
+    // success | failed | cancelled | ok — a user stop is distinct from a failure.
     status: clean(event.status || "ok", 20),
     message_code: clean(event.message_code, 80),
     duration_ms: finiteNumber(event.duration_ms),

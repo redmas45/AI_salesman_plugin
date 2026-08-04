@@ -58,6 +58,11 @@ LLM_MAX_TOKENS: int = min(
     int(os.getenv("LLM_MAX_TOKENS", "320")),
     LLM_MAX_TOKENS_HARD_CAP,
 )
+# Hard token budget for the conversation context window sent to the LLM (session
+# summary + recent verbatim turns). This keeps the prompt - and therefore the
+# per-turn latency - flat as the conversation grows, independent of transcript
+# length. The system prompt and retrieved products are budgeted separately.
+CONTEXT_TOKEN_BUDGET: int = int(os.getenv("CONTEXT_TOKEN_BUDGET", "1500"))
 
 HOST: str = os.getenv("HOST", "0.0.0.0")
 PORT: int = int(os.getenv("PORT", "8001"))

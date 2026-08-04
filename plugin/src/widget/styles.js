@@ -61,10 +61,12 @@ export function injectStyles() {
       width: 64px;
       height: 64px;
       border-radius: 50%;
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      background: var(--mayabot-primary);
-      box-shadow: 0 12px 32px -8px var(--mayabot-primary), 0 4px 12px rgba(0,0,0,0.15);
-      color: #ffffff;
+      /* Idle: a red microphone on a white orb, no ripple. The listening and
+         speaking states below change the treatment so each state is distinct. */
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      background: #ffffff;
+      box-shadow: 0 12px 32px -8px rgba(0,0,0,0.25), 0 4px 12px rgba(0,0,0,0.12);
+      color: #ef4444;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -86,7 +88,8 @@ export function injectStyles() {
       inset: -6px;
       border-radius: inherit;
       border: 2px solid var(--mayabot-primary);
-      opacity: 0.4;
+      /* No ripple at idle. The ring only animates while listening. */
+      opacity: 0;
       pointer-events: none;
       transition: inset 0.3s ease, opacity 0.3s ease;
     }
@@ -101,9 +104,28 @@ export function injectStyles() {
       opacity: 0.15;
     }
 
+    /* Listening: active colour treatment with a visible ripple. */
     #mayabot-btn.recording {
-      background: #ef4444;
-      box-shadow: 0 0 0 6px rgba(239, 68, 68, 0.2), 0 8px 24px rgba(0,0,0,0.18);
+      background: var(--mayabot-primary);
+      color: #ffffff;
+      box-shadow: 0 0 0 6px rgba(37, 99, 235, 0.18), 0 8px 24px rgba(0,0,0,0.18);
+    }
+
+    #mayabot-btn.recording .mayabot-btn-ring {
+      opacity: 0.5;
+      animation: mayabotRipple 1.4s ease-out infinite;
+    }
+
+    /* Speaking: distinct from idle and listening, and clearly stoppable. */
+    #mayabot-btn.speaking {
+      background: var(--mayabot-primary);
+      color: #ffffff;
+      box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.14), 0 8px 24px rgba(0,0,0,0.18);
+    }
+
+    @keyframes mayabotRipple {
+      0% { inset: -6px; opacity: 0.5; }
+      100% { inset: -16px; opacity: 0; }
     }
 
     #mayabot-chat {

@@ -10,8 +10,17 @@ import { canExecuteProductAction, executeProductAction } from "./productActions"
 import { canExecuteRuntimeAction, executeRuntimeAction, STOP_ACTION_FALLBACK } from "./runtimeAction";
 import { executeBrowserEventAction } from "./eventActions";
 import { observePage, verifyPostcondition } from "./postconditions";
+import { canExecuteHostContractAction, executeHostContractAction } from "./hostContractActions";
 
 const ACTION_EXECUTORS = Object.freeze([
+  {
+    // First: when the host publishes the vertical-neutral contract, search and
+    // add-to-cart drive the real website and are verified against its DOM. Only
+    // claims the action when the matching contract is present; else falls through.
+    name: "host_contract",
+    canExecute: canExecuteHostContractAction,
+    execute: executeHostContractAction,
+  },
   {
     name: "runtime_adapter",
     canExecute: canExecuteRuntimeAction,
@@ -97,11 +106,16 @@ async function executeActionWithTelemetry(action) {
   }
 
   // observe -> verify. A successful return is a claim; the postcondition is the
-  // evidence. Anything the executor already failed stays failed.
+  // evidence. Anything the executor already failed stays failed. An executor that
+  // performed its own DOM verification against the host contract (host_contract)
+  // reports `self_verified`, so the generic postcondition does not re-check with a
+  // different family and wrongly overturn a confirmed host action.
   const postcondition =
-    result.status === "succeeded"
-      ? await verifyPostcondition(action, beforeState)
-      : { family: "none", verified: false, reason: result.reason || "execution_failed" };
+    result.status === "succeeded" && result.self_verified
+      ? { family: result.stage || "host_contract", verified: true, reason: result.reason || "" }
+      : result.status === "succeeded"
+        ? await verifyPostcondition(action, beforeState)
+        : { family: "none", verified: false, reason: result.reason || "execution_failed" };
 
   const finalUrl = window.location.href;
   const evidence = {
@@ -166,6 +180,9 @@ function normalizeExecutorResult(result, executorName) {
     status,
     stage: String(result.stage || executorName).trim() || executorName,
     reason: String(result.reason || "").trim(),
+    // An executor that already verified the host DOM says so, so the generic
+    // postcondition does not re-check the same action with a different family.
+    self_verified: Boolean(result.self_verified),
     evidence: result.evidence && typeof result.evidence === "object" ? result.evidence : {},
   };
 }

@@ -9,7 +9,20 @@ import config
 
 MAX_RECENT_MESSAGES = 4
 MAX_SUMMARY_CHARS = 1200
-MAX_HISTORY_CONTENT_CHARS = 700
+# Rough token estimate: ~4 characters per token. Used only to keep the assembled
+# context under a hard budget; the provider does the authoritative tokenization.
+CHARS_PER_TOKEN = 4
+# A single turn longer than this is compacted before it is sent, so one verbose
+# message cannot inflate the prompt on every subsequent turn.
+PER_MESSAGE_TOKEN_CAP = 200
+MAX_HISTORY_CONTENT_CHARS = PER_MESSAGE_TOKEN_CAP * CHARS_PER_TOKEN  # 800 chars
+_SUMMARY_PREFIX = "Session memory summary"
+
+
+def estimate_tokens(messages: list[dict[str, str]]) -> int:
+    """A cheap, deterministic token estimate for a message list."""
+    chars = sum(len(str(msg.get("content") or "")) for msg in messages or [])
+    return (chars + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
 
 # Follow-up / correction markers that continue the current topic (never a reset).
 _FOLLOWUP_RE = re.compile(
@@ -24,24 +37,63 @@ def build_context_messages(
     *,
     session_summary: str = "",
     max_recent_messages: int = MAX_RECENT_MESSAGES,
+    token_budget: int | None = None,
 ) -> list[dict[str, str]]:
-    """Return a compact message window for the LLM prompt."""
-    messages: list[dict[str, str]] = []
-    summary = str(session_summary or "").strip()[:MAX_SUMMARY_CHARS]
-    if summary:
-        messages.append(
-            {
-                "role": "assistant",
-                "content": (
-                    "Session memory summary for continuity. Use it as context, but obey the latest user "
-                    f"message and retrieved website data first:\n{summary}"
-                ),
-            }
-        )
+    """Return a compact message window for the LLM prompt.
 
+    The window is the rolling session summary plus the most recent verbatim turns.
+    It is then trimmed to a hard token budget so the assembled context - and the
+    per-turn latency - stay flat as the conversation grows, regardless of how long
+    the transcript becomes.
+    """
     clean_history = _sanitize_history(conversation_history or [])
-    messages.extend(clean_history[-max(0, int(max_recent_messages or 0)) :])
-    return messages
+    window = max(0, int(max_recent_messages or 0))
+    recent = clean_history[-window:] if window else []
+    older = clean_history[: len(clean_history) - len(recent)]
+    summary_message = _summary_message(session_summary)
+
+    # Lazy summary. A short conversation has no older turns, so nothing is
+    # summarized and the context costs no more than replaying those turns - early
+    # turns never pay the summary's fixed overhead. The summary is introduced only
+    # once condensing the older turns actually costs FEWER tokens than replaying
+    # them (which happens once the conversation is long enough to matter), after
+    # which the context stays flat regardless of how much longer it runs.
+    if older and summary_message and estimate_tokens([summary_message]) < estimate_tokens(older):
+        messages = [summary_message, *recent]
+    else:
+        messages = [*older, *recent]
+    return _enforce_token_budget(messages, token_budget)
+
+
+def _summary_message(session_summary: str) -> dict[str, str] | None:
+    summary = str(session_summary or "").strip()[:MAX_SUMMARY_CHARS]
+    if not summary:
+        return None
+    return {
+        "role": "assistant",
+        "content": (
+            f"{_SUMMARY_PREFIX} for continuity. Use it as context, but obey the latest user "
+            f"message and retrieved website data first:\n{summary}"
+        ),
+    }
+
+
+def _enforce_token_budget(messages: list[dict[str, str]], token_budget: int | None) -> list[dict[str, str]]:
+    """Keep the assembled context under the budget: drop the oldest recent turns
+    first, then, only if a lone summary still overflows, truncate the summary."""
+    budget = int(config.CONTEXT_TOKEN_BUDGET if token_budget is None else token_budget)
+    if budget <= 0 or estimate_tokens(messages) <= budget:
+        return messages
+    # Index 0 is the summary (when present); drop the oldest of the recent turns.
+    has_summary = bool(messages) and _SUMMARY_PREFIX in messages[0]["content"]
+    floor = 1 if has_summary else 0
+    trimmed = list(messages)
+    while len(trimmed) > floor and estimate_tokens(trimmed) > budget:
+        trimmed.pop(floor)  # remove the oldest recent turn, keep the summary
+    if estimate_tokens(trimmed) > budget and has_summary:
+        keep_chars = max(0, budget * CHARS_PER_TOKEN)
+        trimmed[0] = {**trimmed[0], "content": trimmed[0]["content"][:keep_chars]}
+    return trimmed
 
 
 def summarize_turns(

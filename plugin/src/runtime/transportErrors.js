@@ -13,6 +13,9 @@
  */
 
 export const TRANSPORT_CATEGORY = Object.freeze({
+  // The customer stopped the turn themselves. This is not a failure and must
+  // never be shown as a connection/timeout problem.
+  CANCELLED: "cancelled",
   NETWORK: "network",
   TIMEOUT: "timeout",
   ACCESS_DENIED: "access_denied",
@@ -28,6 +31,7 @@ export const TRANSPORT_CATEGORY = Object.freeze({
 
 // Short enough for the widget status line, and free of server-supplied text.
 const CATEGORY_MESSAGES = Object.freeze({
+  [TRANSPORT_CATEGORY.CANCELLED]: "Stopped",
   [TRANSPORT_CATEGORY.NETWORK]: "Connection issue",
   [TRANSPORT_CATEGORY.TIMEOUT]: "Timed out",
   [TRANSPORT_CATEGORY.ACCESS_DENIED]: "Access denied",
@@ -72,6 +76,11 @@ export class VoiceTransportError extends Error {
 
 export function customerMessageForCategory(category) {
   return CATEGORY_MESSAGES[category] || CATEGORY_MESSAGES[TRANSPORT_CATEGORY.UNKNOWN];
+}
+
+/** True when the turn ended because the customer stopped it, not because it failed. */
+export function isCancellation(error) {
+  return error instanceof VoiceTransportError && error.category === TRANSPORT_CATEGORY.CANCELLED;
 }
 
 /** Map an HTTP status onto a category. Status is authoritative here. */
