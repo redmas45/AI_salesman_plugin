@@ -5,6 +5,7 @@ from typing import Any, Callable
 from api.contracts.models import ACTION_SHOW_PRODUCTS, PRODUCT_IDS_PARAM
 
 RecoverableErrors = tuple[type[BaseException], ...]
+INVENTORY_SCAN_CAP = 5000
 
 
 # Browse/search phrasings ("I'm looking for X", "I want to buy X"). These are a
@@ -158,12 +159,14 @@ def inventory_type_count_response(
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
     try:
-        products = load_products(site_id, 1000)
+        loaded_products = load_products(site_id, INVENTORY_SCAN_CAP + 1)
     except recoverable_errors as exc:
         logger.error("Inventory type lookup failed: %s", exc)
-        products = []
+        loaded_products = []
     timings["inventory_lookup_ms"] = elapsed_ms(started_at)
 
+    scan_truncated = len(loaded_products) > INVENTORY_SCAN_CAP
+    products = loaded_products[:INVENTORY_SCAN_CAP]
     matches = matching_products(products, item_type)
     # A browse phrasing ("looking for X") is a product search; a "how many / do
     # you have" phrasing is an inventory count. A term that is itself a brand is
@@ -176,13 +179,14 @@ def inventory_type_count_response(
 
     if matches:
         count = len(matches)
+        count_text = f"at least {count}" if scan_truncated else str(count)
         names = [str(product.get("name") or product.get("title") or "").strip() for product in matches[:3]]
         shown_names = ", ".join(name for name in names if name)
         if use_product_wording:
             product_noun = "product" if count == 1 else "products"
-            response_text = f"I found {count} matching {product_noun}"
+            response_text = f"I found {count_text} matching {product_noun}"
         else:
-            response_text = f"I found {count} {pluralize(item_type, count)} in stock"
+            response_text = f"I found {count_text} {pluralize(item_type, count)} in stock"
         if shown_names:
             response_text += f": {shown_names}"
         response_text += "."
@@ -195,6 +199,12 @@ def inventory_type_count_response(
                 },
             }
         ]
+    elif scan_truncated:
+        response_text = (
+            f"I didn't find {item_type}s in the first {INVENTORY_SCAN_CAP} available records, "
+            "but the catalog is larger, so I can't claim there are none. "
+            "Try a brand or category and I can narrow it down."
+        )
     else:
         missing_text = (
             f"I don't have any {item_type} products right now."

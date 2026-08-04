@@ -407,7 +407,6 @@ function renderProducts(products, title) {
   if (!count) {
     grid.innerHTML = `<p class="mayabot-product-empty">No matching products are currently available.</p>`;
     panel.classList.add("active");
-    collapseVoiceBubble();
     return;
   }
 
@@ -441,7 +440,9 @@ function renderProducts(products, title) {
   });
 
   panel.classList.add("active");
-  collapseVoiceBubble();
+  // Keep Maya's recovery message visible when lookup rendered nothing. Clearing
+  // the bubble on failure made the corrected action result look like silence.
+  if (products.length > 0) collapseVoiceBubble();
 }
 
 function collapseVoiceBubble() {

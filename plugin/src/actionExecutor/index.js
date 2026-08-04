@@ -9,6 +9,7 @@ import { normalizeAction } from "./normalize";
 import { canExecuteProductAction, executeProductAction } from "./productActions";
 import { canExecuteRuntimeAction, executeRuntimeAction, STOP_ACTION_FALLBACK } from "./runtimeAction";
 import { executeBrowserEventAction } from "./eventActions";
+import { observePage, verifyPostcondition } from "./postconditions";
 
 const ACTION_EXECUTORS = Object.freeze([
   {
@@ -67,6 +68,8 @@ async function executeActionWithTelemetry(action) {
   if (!action.action) return;
   const startedAt = Date.now();
   const requestedUrl = window.location.href;
+  // Observed BEFORE execution so "did anything actually change" is answerable.
+  const beforeState = observePage();
   await reportActionExecution(config.apiUrl, config.siteId, action, {
     status: "requested",
     stage: "widget_dispatch",
@@ -93,8 +96,20 @@ async function executeActionWithTelemetry(action) {
     };
   }
 
+  // observe -> verify. A successful return is a claim; the postcondition is the
+  // evidence. Anything the executor already failed stays failed.
+  const postcondition =
+    result.status === "succeeded"
+      ? await verifyPostcondition(action, beforeState)
+      : { family: "none", verified: false, reason: result.reason || "execution_failed" };
+
   const finalUrl = window.location.href;
-  const evidence = actionEvidence(action, requestedUrl, finalUrl, result);
+  const evidence = {
+    ...actionEvidence(action, requestedUrl, finalUrl, result),
+    postcondition_family: postcondition.family,
+    postcondition_verified: postcondition.verified,
+    postcondition_reason: postcondition.reason,
+  };
   await reportActionExecution(config.apiUrl, config.siteId, action, {
     status: result.status,
     stage: result.stage,
@@ -112,6 +127,8 @@ async function executeActionWithTelemetry(action) {
     status: result.status,
     stage: result.stage,
     reason: result.reason,
+    verified: postcondition.verified,
+    postcondition: postcondition.family,
     requested_url: requestedUrl,
     final_url: finalUrl,
     evidence,

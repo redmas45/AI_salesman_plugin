@@ -1,6 +1,7 @@
 import { CLICKABLE_SELECTOR, FIELD_SELECTOR } from "../dom/controlSelectors";
 import { queryElementsDeep } from "../dom/deepDom";
 import { submitElementFor } from "../dom/submitResolver";
+import { readPageState } from "./visibleEntities";
 
 const MAX_CONTEXT_ITEMS = 12;
 const MAX_CONTEXT_FIELDS = 8;
@@ -30,11 +31,19 @@ function selectorFor(element) {
 }
 
 export function readPageContext(runtimeConfig = {}) {
+  // The screen snapshot (what is visible, filtered and sorted) travels with the
+  // page context so a page-relative question is answered from the page, and an
+  // action claim can be checked against observed state rather than trusted.
+  const pageState = readPageState();
   return {
     title: document.title || "",
     url: window.location.href,
     path: window.location.pathname,
     productId: readProductId(),
+    route: pageState.route,
+    filters: pageState.filters,
+    sort: pageState.sort,
+    visible_entities: pageState.visible_entities,
     controls: {
       buttons: contextButtons(),
       links: contextLinks(),

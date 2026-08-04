@@ -20,6 +20,10 @@ export function createConversationMemory() {
 
   return {
     history,
+    /** Forget everything: conversation turns, action outcomes, and referents. */
+    clear() {
+      history.length = 0;
+    },
     rememberUserMessage(text) {
       rememberConversation("user", text);
     },

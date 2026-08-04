@@ -300,8 +300,9 @@ def _upsert_product(conn: Any, product_id: int, product: dict[str, Any], categor
             product.get("color"),
             product.get("size_options") or "[]",
             json.dumps(product.get("tags") or []),
-            float(product.get("rating", 0.0)),
-            int(product.get("review_count", 0)),
+            # NULL means "not rated". Defaulting to 0 would claim a real score.
+            (float(product["rating"]) if product.get("rating") is not None else None),
+            (int(product["review_count"]) if product.get("review_count") is not None else None),
             int(product.get("stock", 0)),
             product.get("image_url"),
             int(product.get("is_active", 1)),

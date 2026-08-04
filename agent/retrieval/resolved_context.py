@@ -44,6 +44,15 @@ _BUDGET_WAIVER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A correction: the customer is restating a value the assistant got wrong.
+# "But I said 50,000" carries no budget cue word, so the bare number only makes
+# sense as a correction of the constraint already under discussion.
+_CORRECTION_RE = re.compile(
+    r"^\s*but\b|\bi\s+said\b|\bi\s+meant\b|\bi\s+already\s+said\b|^\s*no,\s|\bactually\b",
+    re.IGNORECASE,
+)
+_BARE_NUMBER_RE = re.compile(r"\b(\d[\d,]*(?:\.\d+)?)\s*(k)?\b", re.IGNORECASE)
+
 # A frustrated continuity marker: the user is asserting they already answered.
 _CONTINUITY_RE = re.compile(
     r"\bi\s+(?:told|said)\s+(?:you|u)\b|\bi\s+already\s+(?:told|said|mentioned)\b"
@@ -70,6 +79,34 @@ _OFF_TOPIC_RE = re.compile(
     re.IGNORECASE,
 )
 
+# An explicit switch of subject. Type-level conflict is not enough on its own:
+# "actually show me Home Kitchen" names a CATEGORY, which the constraint model
+# does not carry, so the previous brand used to survive and silently emptied the
+# results. A switch cue that also names a new subject resets the stale scope.
+_TOPIC_SWITCH_RE = re.compile(
+    r"^\s*(?:actually|instead|forget\s+(?:that|it|those)|never\s+mind|nevermind"
+    r"|let'?s\s+(?:look\s+at|see|try)|how\s+about|what\s+about|switch\s+to|change\s+to)\b",
+    re.IGNORECASE,
+)
+# Words that carry no subject of their own, so a turn made only of these plus a
+# number is a correction ("actually 20000"), not a change of topic.
+_SWITCH_FILLER_WORDS = frozenset({
+    "a", "an", "the", "some", "any", "please", "show", "see", "look", "at", "for",
+    "me", "us", "i", "you", "do", "have", "want", "need", "find", "get", "give",
+    "something", "anything", "it", "them", "to", "of", "and", "or", "is", "are",
+    "under", "over", "below", "above", "budget", "price", "rs", "inr", "rupees",
+})
+
+
+def _switches_subject(text: str) -> bool:
+    """True when an explicit switch cue is followed by a genuinely new subject."""
+    if not _TOPIC_SWITCH_RE.search(text or ""):
+        return False
+    remainder = _TOPIC_SWITCH_RE.sub(" ", text or "", count=1)
+    words = [word for word in re.findall(r"[a-z']+", remainder.lower()) if word not in _SWITCH_FILLER_WORDS]
+    return bool(words)
+
+
 _COUNT_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "both": 2,
@@ -82,6 +119,17 @@ _REQUESTED_COUNT_RE = re.compile(
 )
 
 _SUMMARY_USER_LINE_RE = re.compile(r"^\s*user\s*:\s*(.+)$", re.IGNORECASE)
+
+
+def _corrected_ceiling(text: str) -> float | None:
+    """A bare number restated in a correction replaces the previous ceiling."""
+    match = _BARE_NUMBER_RE.search(text or "")
+    if not match:
+        return None
+    value = float(match.group(1).replace(",", ""))
+    if match.group(2):
+        value *= 1000
+    return value or None
 
 
 def _detect_self_recipient(text: str) -> str | None:
@@ -217,7 +265,8 @@ def resolve_turn_context(
     is_greeting = is_simple_greeting(text)
     is_off_topic = bool(_OFF_TOPIC_RE.search(text))
     # A continuity complaint is a follow-up even without a leading "no"/"actually".
-    is_followup = current.is_followup or bool(_CONTINUITY_RE.search(text))
+    is_correction = bool(_CORRECTION_RE.search(text))
+    is_followup = current.is_followup or is_correction or bool(_CONTINUITY_RE.search(text))
     requested_count = _requested_count(text)
 
     # A greeting starts a clean slate: it must not drag product context forward.
@@ -252,7 +301,7 @@ def resolve_turn_context(
         current.product_types
         and inherited_types
         and not set(current.product_types) & set(inherited_types)
-    )
+    ) or _switches_subject(text)
     if is_topic_change:
         inherited_types = ()
         inherited_brands = ()
@@ -281,7 +330,11 @@ def resolve_turn_context(
         # Explicitly unbounded: drop any inherited ceiling rather than inheriting it.
         max_price = None
     else:
-        max_price = resolve(current.max_price, inherited_max, "max_price")
+        # "But I said 50,000" carries no budget cue word, so the bare number is
+        # only meaningful as a correction of the ceiling already under discussion.
+        # Without this the assistant keeps quoting the figure it got wrong.
+        corrected = _corrected_ceiling(text) if (is_correction and inherited_max) else None
+        max_price = corrected or resolve(current.max_price, inherited_max, "max_price")
     min_price = resolve(current.min_price, inherited_min, "min_price")
 
     # A broad apparel need with no garment named still deserves one focused question.

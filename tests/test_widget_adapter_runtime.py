@@ -117,7 +117,13 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
     assert "final_url: finalUrl" in executor_source
     assert "callbacks.onActionResults" in api_source
     assert "const sharedAudioQueue = new AudioQueue()" in api_source
-    assert "speakTextFallback(data.response_text)" in api_source
+    # The fallback speaks the CONFIRMED text, never the raw model response. It
+    # used to be `speakTextFallback(data.response_text)`, which spoke a claim the
+    # browser had not proven - the exact defect the confirmation gate exists to
+    # stop. Behavioural proof lives in tests/test_browser_page_state.py and
+    # tests/test_browser_voice_transport.py; this line only pins the seam.
+    assert "speakTextFallback(spokenText)" in api_source
+    assert "speakTextFallback(data.response_text)" not in api_source
     assert "from \"../audio/speech\"" in api_source
     assert "new SpeechSynthesisUtterance" not in api_source
     assert "FEMALE_VOICE_HINTS.some" in speech_source

@@ -15,6 +15,35 @@ from agent.ingestion_helpers.ingestion_normalization import (
 )
 
 
+MIN_RATING = 0.0
+MAX_RATING = 5.0
+
+
+def optional_rating(row: dict[str, Any]) -> float | None:
+    """Return a usable 0-5 score, or ``None`` when the source has not rated it.
+
+    A missing, blank, zero, or out-of-range value all mean "no score to show".
+    Coercing any of them to ``0.0`` would publish the worst possible rating for a
+    product nobody has reviewed.
+    """
+    raw = first(row.get("rating"), row.get("score"), default=None)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    value = to_float(raw)
+    if value <= MIN_RATING or value > MAX_RATING:
+        return None
+    return value
+
+
+def optional_review_count(row: dict[str, Any]) -> int | None:
+    """Return a non-negative review count, or ``None`` when the source omits it."""
+    raw = first(row.get("review_count"), row.get("reviewCount"), default=None)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    value = int(to_float(raw))
+    return value if value >= 0 else None
+
+
 def image_url_from_value(value: Any) -> str | None:
     if isinstance(value, str):
         text = clean_text(value)
@@ -104,8 +133,10 @@ def normalize_product_row(
     tags = to_tags(first(row.get("tags"), row.get("labels"), default=[]))
     price = to_float(first(row.get("price"), row.get("amount"), row.get("cost"), default=0.0))
     original_price = to_float(first(row.get("original_price"), row.get("list_price"), default=price or 0.0))
-    rating = to_float(first(row.get("rating"), row.get("score"), default=0.0))
-    review_count = int(to_float(first(row.get("review_count"), row.get("reviewCount"), default=0)))
+    # "Unrated" and "rated zero" are different claims about a product, so a
+    # missing score stays NULL instead of collapsing into a real 0/5.
+    rating = optional_rating(row)
+    review_count = optional_review_count(row)
     stock = int(to_float(first(row.get("stock"), row.get("quantity"), default=100)))
     image = first(row.get("image"), row.get("image_url"), row.get("thumbnail"), default=None)
     is_active = int(first(row.get("is_active"), 1))

@@ -82,8 +82,14 @@ def availability_text(product: Product) -> str:
 
 
 def rating_text(product: Product) -> str:
+    """Published score only.
+
+    A missing score and a zero score both mean "nobody has rated this yet".
+    Rendering the zero would advertise the worst possible rating for a product
+    that simply has no reviews, so neither produces a rating claim.
+    """
     rating = numeric_value(product.get("rating"))
-    if rating is None:
+    if rating is None or rating <= 0:
         return ""
     reviews = numeric_value(product.get("review_count"))
     if reviews is None or reviews <= 0:

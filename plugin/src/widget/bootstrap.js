@@ -1,9 +1,10 @@
 import { injectStyles } from "./styles";
 import { initWidget, addMessage, updateMessage } from "./ui";
 import { setupRecorder } from "../audio/recorder";
-import { processAudio, isSpeaking, stopPlayback } from "../runtime/api";
+import { processAudio, isSpeaking, resetTransport, stopPlayback } from "../runtime/api";
 import { config } from "../core/config";
 import { createConversationMemory } from "../session/conversationMemory";
+import { createSessionReset, installSessionResetContract } from "../session/sessionReset";
 import { emitRuntimeEvent } from "../runtime/diagnostics";
 import { replayPendingSpeech, speakText } from "../audio/speech";
 import { startWidgetAvailabilityLoop } from "../session/widgetAvailability";
@@ -208,9 +209,27 @@ function boot() {
   };
   document.addEventListener("pointerdown", handlePlaybackReplay, { capture: true });
 
+  // Logout contract: the host calls this when IT decides the session is over.
+  // Nothing is inferred from clicks or links on the host page.
+  const removeSessionResetContract = installSessionResetContract(
+    createSessionReset({
+      cancelRecording: () => recorder.cancel(),
+      stopPlayback,
+      resetTransport,
+      conversationMemory,
+      clearOverlays: () => {
+        elements.msgs.innerHTML = "";
+        elements.chat.classList.remove("visible");
+        document.getElementById("mayabot-product-panel")?.remove();
+      },
+      rotateSessionId: () => config.rotateSessionId(),
+    }),
+  );
+
   activeWidgetCleanup = () => {
     document.removeEventListener("keydown", handleEscape);
     document.removeEventListener("pointerdown", handlePlaybackReplay, { capture: true });
+    removeSessionResetContract();
     if (clearTimer) window.clearTimeout(clearTimer);
     clearTimer = null;
     if (autoGreetTimer) window.clearTimeout(autoGreetTimer);

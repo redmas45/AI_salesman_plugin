@@ -9,7 +9,12 @@ MAX_TEXT_LENGTH = 180
 MAX_LIST_ITEMS = 12
 MAX_FIELDS = 8
 MAX_JSON_CHARS = 1200
+MAX_VISIBLE_ENTITIES = 12
+MAX_ENTITY_FACTS = 6
 SENSITIVE_FIELD_TYPES = frozenset({"password", "file", "hidden"})
+# Facts a page may publish about a visible record. Anything else the widget sends
+# is dropped rather than forwarded into a prompt.
+ALLOWED_ENTITY_FACTS = frozenset({"price", "rating", "availability", "currency", "discount"})
 
 
 def parse_page_context(raw_context: str | None) -> dict[str, Any]:
@@ -35,6 +40,12 @@ def sanitize_page_context(raw_context: Any) -> dict[str, Any]:
         "url": _safe_url(raw_context.get("url")),
         "path": _text(raw_context.get("path")),
         "product_id": _text(raw_context.get("productId") or raw_context.get("product_id")),
+        # What the customer can actually see, so "these results" is answered from
+        # the screen and an action claim can be verified against observed state.
+        "route": _route(raw_context.get("route")),
+        "filters": _string_map(raw_context.get("filters")),
+        "sort": _text(raw_context.get("sort")),
+        "visible_entities": _visible_entity_rows(raw_context.get("visible_entities")),
         "vertical": _text(capabilities.get("vertical") or raw_context.get("vertical")),
         "platform": _text(capabilities.get("platform") or raw_context.get("platform")),
         "capabilities": _text_list(capabilities.get("actions") or raw_context.get("capabilities")),
@@ -62,6 +73,7 @@ def format_page_context(raw_context: Any) -> str:
         f"Path: {context['path'] or 'unknown'}",
         f"Vertical: {context['vertical'] or 'unknown'} | Platform: {context['platform'] or 'unknown'}",
     ]
+    lines.extend(_visible_entity_lines(context))
     if context["routes"]:
         lines.append("Routes: " + ", ".join(f"{key} -> {value}" for key, value in context["routes"].items()))
     if context["actions"]:
@@ -80,6 +92,25 @@ def format_page_context(raw_context: Any) -> str:
         "Do not invent selectors; prefer generated adapter actions when available."
     )
     return "\n".join(lines)[:MAX_JSON_CHARS]
+
+
+def _visible_entity_lines(context: dict[str, Any]) -> list[str]:
+    """State the screen so a page-relative question is answered from it."""
+    entities = context.get("visible_entities") or []
+    lines: list[str] = []
+    if context.get("filters"):
+        lines.append("Active filters: " + ", ".join(f"{key}={value}" for key, value in context["filters"].items()))
+    if context.get("sort"):
+        lines.append(f"Sorted by: {context['sort']}")
+    if not entities:
+        return lines
+    lines.append(f"Currently visible on screen ({len(entities)}):")
+    for entity in entities[:MAX_LIST_ITEMS]:
+        facts = ", ".join(f"{key} {value}" for key, value in (entity.get("facts") or {}).items())
+        label = entity.get("label") or entity.get("id")
+        lines.append(f"- [{entity.get('entity_type')} {entity.get('id')}] {label}{f' ({facts})' if facts else ''}")
+    lines.append("Answer questions about what is on screen from this list only.")
+    return lines
 
 
 def _handoff_flow_lines(flows: list[dict[str, str]]) -> list[str]:
@@ -190,6 +221,41 @@ def _handoff_flow_rows(value: Any) -> list[dict[str, str]]:
         if row["key"] or row["action"]:
             rows.append(row)
     return rows
+
+
+def _route(value: Any) -> dict[str, str]:
+    route = _dict(value)
+    return {"path": _text(route.get("path")), "search": _text(route.get("search"))}
+
+
+def _visible_entity_rows(value: Any) -> list[dict[str, Any]]:
+    """Bounded, vertical-independent view of the records currently on screen."""
+    if not isinstance(value, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in value[:MAX_VISIBLE_ENTITIES]:
+        entity = _dict(item)
+        entity_id = _text(entity.get("id"))
+        if not entity_id:
+            continue
+        rows.append({
+            "id": entity_id,
+            "entity_type": _text(entity.get("entity_type")) or "entity",
+            "label": _text(entity.get("label")),
+            "route": _safe_url(entity.get("route")),
+            "facts": _entity_facts(entity.get("facts")),
+        })
+    return rows
+
+
+def _entity_facts(value: Any) -> dict[str, str]:
+    facts = _dict(value)
+    allowed = {
+        _text(key): _text(fact)
+        for key, fact in list(facts.items())[:MAX_ENTITY_FACTS]
+        if str(key).strip().lower() in ALLOWED_ENTITY_FACTS and _text(fact)
+    }
+    return allowed
 
 
 def _string_map(value: Any) -> dict[str, str]:

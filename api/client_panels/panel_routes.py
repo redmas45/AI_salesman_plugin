@@ -6,6 +6,8 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
+import secrets
 import time
 from typing import Any
 
@@ -14,11 +16,15 @@ from pydantic import BaseModel, Field
 
 import config
 from db.admin_domain import admin_facade as admin_db
+from db.client_domain.panel.panel_sessions import panel_session_is_revoked, revoke_panel_session
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/client-panel", tags=["Client Panel"])
 
 TOKEN_TTL_SECONDS = 60 * 60 * 12
 MIN_TOKEN_SECRET_LENGTH = 16
+SESSION_ID_BYTES = 16
 NON_BLOCKING_READINESS_GAPS = frozenset({"variants"})
 
 
@@ -61,6 +67,23 @@ async def client_panel_login(req: ClientPanelLoginRequest) -> ClientPanelTokenRe
     except PermissionError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     return ClientPanelTokenResponse(token=_encode_token(client), client=_public_client(client))
+
+
+@router.post("/logout")
+async def client_panel_logout(authorization: str = Header(default="")) -> dict[str, Any]:
+    """End this session on the server so the presented token stops working.
+
+    Only the session that made the request is revoked; the owner's other devices
+    and every other client are untouched. Requires a currently valid token, so a
+    stranger cannot sign someone else out.
+    """
+    site_id = _site_id_from_header(authorization)
+    payload = _token_payload(_bearer_token(authorization))
+    session_id = str(payload.get("sid") or "")
+    if not session_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Client panel login required.")
+    revoke_panel_session(site_id, session_id, expires_at=int(payload.get("exp") or 0) or None)
+    return {"status": "signed_out"}
 
 
 @router.get("/me")
@@ -106,10 +129,36 @@ def _encode_token(client: dict[str, Any]) -> str:
     payload = {
         "site_id": client["site_id"],
         "auth_version": _client_auth_version(client),
+        # A per-login identifier so a single device can be signed out without
+        # disturbing the owner's other sessions.
+        "sid": secrets.token_urlsafe(SESSION_ID_BYTES),
         "exp": int(time.time()) + TOKEN_TTL_SECONDS,
     }
     body = _b64(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     return f"{body}.{_sign(body)}"
+
+
+def _encode_legacy_token_for_test(client: dict[str, Any]) -> str:
+    """A pre-upgrade token with no session id. Used only by tests."""
+    payload = {
+        "site_id": client["site_id"],
+        "auth_version": _client_auth_version(client),
+        "exp": int(time.time()) + TOKEN_TTL_SECONDS,
+    }
+    body = _b64(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    return f"{body}.{_sign(body)}"
+
+
+def _token_payload(token: str) -> dict[str, Any]:
+    """Decode the token body WITHOUT authorising it. Signature is still required."""
+    parts = str(token or "").split(".", 1)
+    if len(parts) != 2 or not hmac.compare_digest(_sign(parts[0]), parts[1]):
+        return {}
+    try:
+        payload = json.loads(_unb64(parts[0]))
+    except (ValueError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _decode_token(token: str) -> dict[str, Any] | None:
@@ -134,6 +183,20 @@ def _decode_token(token: str) -> dict[str, Any] | None:
     expected_version = _client_auth_version(client)
     supplied_version = str(payload.get("auth_version") or "")
     if not expected_version or not hmac.compare_digest(supplied_version, expected_version):
+        return None
+
+    # A token with no session id predates revocation support and can never be
+    # signed out, so it is not honoured.
+    session_id = str(payload.get("sid") or "")
+    if not session_id:
+        return None
+    try:
+        if panel_session_is_revoked(str(payload["site_id"]), session_id):
+            return None
+    except Exception:
+        # Fail closed: if revocation state is unreadable, treat the session as
+        # revoked rather than silently granting access to a signed-out token.
+        logger.warning("Client panel revocation check failed; denying the session.", exc_info=True)
         return None
     return payload
 

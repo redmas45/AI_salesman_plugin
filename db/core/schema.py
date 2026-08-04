@@ -101,6 +101,19 @@ CREATE TABLE IF NOT EXISTS hub_provider_events (
 CREATE INDEX IF NOT EXISTS idx_hub_provider_events_created
     ON hub_provider_events(created_at DESC);
 
+-- Signed-out client-panel sessions. A token whose session id appears here is
+-- rejected even though its signature and expiry are still valid.
+CREATE TABLE IF NOT EXISTS hub_client_panel_revoked_sessions (
+    site_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    expires_at BIGINT,
+    revoked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (site_id, session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_hub_panel_revoked_expiry
+    ON hub_client_panel_revoked_sessions(expires_at);
+
 CREATE TABLE IF NOT EXISTS hub_audit_events (
     id BIGSERIAL PRIMARY KEY,
     site_id TEXT NOT NULL DEFAULT '',

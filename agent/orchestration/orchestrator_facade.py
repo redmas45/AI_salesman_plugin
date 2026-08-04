@@ -80,6 +80,7 @@ from db.core.database import (
     update_user_preferences,
     get_db,
 )
+from db.ecommerce.catalog_queries import count_catalog_records, get_catalog_records
 from db.client_domain.client_facade import get_client_detail, get_client_vertical_key
 from db.cache.answer_cache import lookup_answer_cache, store_answer_cache
 
@@ -264,8 +265,11 @@ def _retrieve_context(
     site_id: str,
     safe_transcript: str,
     conversation_history: list | None,
+    price_constraints: dict[str, Any] | None = None,
 ) -> RetrievalContext:
-    return _turn_runtime().retrieve_context(site_id, safe_transcript, conversation_history)
+    return _turn_runtime().retrieve_context(
+        site_id, safe_transcript, conversation_history, price_constraints
+    )
 
 
 def _retrieve_generic_context(

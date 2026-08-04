@@ -51,6 +51,17 @@ function resolveSessionId(siteId) {
   }
 }
 
+function rotateSessionId(siteId) {
+  // A new identity, so nothing the previous customer said can be continued.
+  const nextValue = createSessionId(siteId);
+  try {
+    window.sessionStorage.setItem(`${SESSION_STORAGE_PREFIX}${siteId}`, nextValue);
+  } catch (_err) {
+    // Without storage the id is per-page anyway, which is already isolated.
+  }
+  return nextValue;
+}
+
 function createSessionId(siteId) {
   const randomPart = window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `${siteId}-${randomPart}`.slice(0, 120);
@@ -63,6 +74,9 @@ export const config = {
   siteId,
   get sessionId() {
     return resolveSessionId(siteId);
+  },
+  rotateSessionId() {
+    return rotateSessionId(siteId);
   },
   apiUrl: resolveApiUrl(srcUrl),
   useWebSocket: clean(currentScript?.getAttribute("data-use-websocket")).toLowerCase() === "true",

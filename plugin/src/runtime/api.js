@@ -17,6 +17,7 @@ import {
   WS_TURN_TIMEOUT_MS,
 } from "../core/constants";
 import { emitRuntimeEvent } from "./diagnostics";
+import { readPageState } from "../adapter/runtime/visibleEntities";
 
 const MAX_WS_RETRIES = 3;
 const RUNTIME_GLOBAL = "AIHubAdapterRuntime";
@@ -161,7 +162,27 @@ export function isSpeaking() {
   return sharedAudioQueue.isSpeaking();
 }
 
+/** Close the socket and abort any in-flight HTTP turn (session reset). */
+export function resetTransport() {
+  wsTransport.reset();
+  httpTransport.reset();
+}
+
 class HttpTransport {
+  constructor() {
+    this.inFlight = null;
+  }
+
+  /** Abort an in-flight turn so a reset cannot be answered after the fact. */
+  reset() {
+    try {
+      this.inFlight?.abort();
+    } catch (_err) {
+      // An already-settled controller throws nothing useful.
+    }
+    this.inFlight = null;
+  }
+
   async sendAudio(blob, callbacks, conversationHistory = []) {
     const startedAt = runtimeNow();
     emitRuntimeEvent({
@@ -183,10 +204,13 @@ class HttpTransport {
     }
 
     let res;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    this.inFlight = controller;
     try {
       res = await fetch(`${config.apiUrl}${API_PATHS.SHOP}`, {
         method: HTTP_METHODS.POST,
         body: formData,
+        signal: controller?.signal,
       });
     } catch (err) {
       // A rejected fetch never reached the server: DNS, TLS, blocked CORS
@@ -202,19 +226,32 @@ class HttpTransport {
 
     const data = await res.json();
     if (data.transcript) callbacks.onUserMessage?.(data.transcript);
-    if (data.response_text) callbacks.onAssistantMessage?.(data.response_text, data.ui_actions || []);
-    callbacks.onStatusChange?.(STATUS.READY);
 
-    if (data.audio_b64) {
-      playAudioBase64(data.audio_b64, data.response_text || "");
-    } else if (data.response_text) {
-      speakTextFallback(data.response_text);
-    }
-
-    if (data.ui_actions && data.ui_actions.length > 0) {
-      const actionResults = await executeActions(data.ui_actions);
+    // execute -> observe -> verify -> confirm.
+    //
+    // Maya used to speak first and act afterwards, so she could announce that a
+    // page was opened, sorted or shown before the browser had done any of it -
+    // and still claim success when the action then failed. The actions run and
+    // settle first; only their observed outcome decides what is said.
+    const actions = Array.isArray(data.ui_actions) ? data.ui_actions : [];
+    let actionResults = [];
+    if (actions.length > 0) {
+      actionResults = await executeActions(actions);
       callbacks.onActionResults?.(actionResults);
     }
+
+    const spokenText = confirmedResponseText(data.response_text || "", actions, actionResults);
+    if (spokenText) callbacks.onAssistantMessage?.(spokenText, actions);
+    callbacks.onStatusChange?.(STATUS.READY);
+
+    // Audio is only released once the text it narrates has been confirmed, so the
+    // customer never hears a claim the screen contradicts.
+    if (data.audio_b64 && spokenText === (data.response_text || "")) {
+      playAudioBase64(data.audio_b64, spokenText);
+    } else if (spokenText) {
+      speakTextFallback(spokenText);
+    }
+
     callbacks.onComplete?.(data);
     emitRuntimeEvent({
       event_type: "voice_turn_completed",
@@ -238,6 +275,7 @@ class VoiceWebSocketTransport {
     this.callbacks = null;
     this.turnText = "";
     this.receivedAudio = false;
+    this.pendingAudioChunks = [];
   }
 
   async ensureConnected(conversationHistory = []) {
@@ -350,6 +388,7 @@ class VoiceWebSocketTransport {
     this.callbacks = callbacks;
     this.turnText = "";
     this.receivedAudio = false;
+    this.pendingAudioChunks = [];
     this.sendConfig(conversationHistory);
     const b64 = await blobToBase64(blob);
 
@@ -406,6 +445,7 @@ class VoiceWebSocketTransport {
     if (!this.activeTurn) return;
     const callbacks = this.callbacks;
     this.callbacks = null;
+    this.pendingAudioChunks = [];
     if (callbacks) {
       const error = new VoiceTransportError(category, { stage: "websocket" });
       callbacks.onStatusChange?.(STATUS.ERROR, error.customerMessage);
@@ -463,12 +503,14 @@ class VoiceWebSocketTransport {
     }
     if (msg.type === WS_MESSAGES.TEXT_CHUNK) {
       this.turnText += msg.text || "";
-      callbacks.onAssistantChunk?.(msg.text || "", this.turnText);
+      // Buffer action-dependent wording until the browser proves the requested
+      // actions. Rendering a streamed success claim early recreates the same
+      // truth problem as speaking it early.
       return true;
     }
     if (msg.type === WS_MESSAGES.AUDIO_CHUNK) {
       this.receivedAudio = Boolean(msg.audio_b64) || this.receivedAudio;
-      this.audioQueue.push(msg.audio_b64);
+      if (msg.audio_b64) this.pendingAudioChunks.push(msg.audio_b64);
       return true;
     }
     return false;
@@ -476,17 +518,21 @@ class VoiceWebSocketTransport {
 
   async handleDoneMessage(msg, callbacks) {
     const finalText = msg.response_text || this.turnText;
-    callbacks.onAssistantMessage?.(finalText, msg.ui_actions || [], { streamed: true });
-    callbacks.onStatusChange?.(STATUS.READY);
-    if (!this.receivedAudio && finalText) {
-      speakTextFallback(finalText);
-    } else if (this.receivedAudio && finalText) {
-      this.audioQueue.speakInsteadOfBlocked(finalText);
-    }
     try {
-      if (msg.ui_actions && msg.ui_actions.length > 0) {
-        const actionResults = await executeActions(msg.ui_actions);
+      const actions = Array.isArray(msg.ui_actions) ? msg.ui_actions : [];
+      let actionResults = [];
+      if (actions.length > 0) {
+        actionResults = await executeActions(actions);
         callbacks.onActionResults?.(actionResults);
+      }
+
+      const spokenText = confirmedResponseText(finalText, actions, actionResults);
+      callbacks.onAssistantMessage?.(spokenText, actions, { streamed: true });
+      callbacks.onStatusChange?.(STATUS.READY);
+      if (this.receivedAudio && spokenText === finalText) {
+        for (const chunk of this.pendingAudioChunks) this.audioQueue.push(chunk);
+      } else if (spokenText) {
+        speakTextFallback(spokenText);
       }
       callbacks.onComplete?.(msg);
       emitRuntimeEvent({
@@ -499,6 +545,7 @@ class VoiceWebSocketTransport {
     } catch (err) {
       this.handleTransportError(err);
     } finally {
+      this.pendingAudioChunks = [];
       this.callbacks = null;
       this.settleTurn();
     }
@@ -527,6 +574,30 @@ class VoiceWebSocketTransport {
     if (callbacks) {
       this.completeWithError(callbacks, String(err));
     }
+  }
+
+  /**
+   * Drop the socket and every scrap of turn state.
+   *
+   * A reset must leave nothing that could deliver the previous customer's answer
+   * into the next customer's session, so buffered text and audio go too.
+   */
+  reset() {
+    this.callbacks = null;
+    this.turnText = "";
+    this.receivedAudio = false;
+    this.pendingAudioChunks = [];
+    this.settleTurn();
+    try {
+      this.ws?.close();
+    } catch (_err) {
+      // Closing an already-closed socket is not an error worth surfacing.
+    }
+    this.ws = null;
+    this.connected = false;
+    this.connecting = null;
+    this.failed = false;
+    this.retries = 0;
   }
 }
 
@@ -582,6 +653,40 @@ function audioFilenameForBlob(blob) {
   return AUDIO.WEBM_FILENAME;
 }
 
+// Phrases that assert a browser action already happened. If the action did not
+// actually succeed, saying these is simply untrue.
+const ACTION_CLAIM_RE =
+  /\b(opened|opening|taking you|took you|navigat|sorted|sorting|filtered|filtering|showing|shown|displayed|added to (?:your )?cart|here (?:it |they )?(?:is|are))\b/i;
+
+const ACTION_RECOVERY_TEXT =
+  "I could not complete that on the page. The site may not have responded - please try again, or do it manually.";
+
+/**
+ * Return the text that is actually true after the actions settled.
+ *
+ * When a turn made no claim about the page, or every action succeeded, the
+ * original wording stands. When an action that the wording depends on failed,
+ * the claim is replaced by a specific recovery message rather than a success
+ * sentence the screen contradicts.
+ */
+export function confirmedResponseText(responseText, actions, actionResults) {
+  const text = String(responseText || "");
+  if (!text || !Array.isArray(actions) || actions.length === 0) return text;
+  if (!ACTION_CLAIM_RE.test(text)) return text;
+
+  const results = Array.isArray(actionResults) ? actionResults : [];
+  if (results.length !== actions.length) return ACTION_RECOVERY_TEXT;
+
+  // Both conditions are required. `status` is what the executor reported;
+  // `verified` is what the page was observed to actually look like afterwards.
+  // A sort the site ignored, or an overlay that rendered no rows, returns
+  // succeeded but fails its postcondition - and must not be narrated as done.
+  const everyConfirmed = results.every(
+    (result) => result?.status === "succeeded" && result?.verified !== false,
+  );
+  return everyConfirmed ? text : ACTION_RECOVERY_TEXT;
+}
+
 /** Read a JSON body without letting a malformed payload mask the real status. */
 async function safeJson(response) {
   try {
@@ -621,5 +726,22 @@ function currentPageContext() {
   } catch (err) {
     console.warn("[AI Hub Widget] Page context collection failed:", err);
   }
-  return null;
+  // The adapter bundle is optional, but what the customer can see is not. Without
+  // it, a page question had no screen to be answered from and an action claim had
+  // nothing to be checked against, so the base install reads the state itself.
+  return localPageContext();
+}
+
+function localPageContext() {
+  try {
+    return {
+      title: document.title || "",
+      url: window.location.href,
+      path: window.location.pathname,
+      ...readPageState(),
+    };
+  } catch (err) {
+    console.warn("[AI Hub Widget] Local page state collection failed:", err);
+    return null;
+  }
 }

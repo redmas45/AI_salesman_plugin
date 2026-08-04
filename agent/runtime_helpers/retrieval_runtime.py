@@ -440,6 +440,7 @@ def retrieve_context(
     exact_products_from_query: Callable[[str, str], list[dict]],
     recoverable_errors: tuple[type[BaseException], ...],
     logger: logging.Logger,
+    price_constraints: dict[str, Any] | None = None,
 ) -> RetrievalContext:
     profile = safe_user_profile(site_id)
     rag_query = augment_query_with_history(safe_transcript, conversation_history)
@@ -450,9 +451,13 @@ def retrieve_context(
         return retrieve_generic_context(site_id, rag_query, profile)
 
     try:
-        # Historical context helps retrieval, but an older budget must never
-        # override an explicit limit in the current turn.
-        price_constraints = extract_price_constraints(safe_transcript)
+        # The resolved plan is the authority on price. Re-parsing the raw turn
+        # here produced a second, contradicting interpretation: "but I said
+        # 50,000" carries no cue word, so the re-parse found no ceiling at all
+        # and the search returned records the customer had just ruled out.
+        # Falling back to the re-parse keeps callers that have no plan working.
+        if price_constraints is None:
+            price_constraints = extract_price_constraints(safe_transcript)
         retrieved_products = retrieve_products(
             rag_query,
             site_id=site_id,

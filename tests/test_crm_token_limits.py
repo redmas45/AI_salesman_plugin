@@ -251,6 +251,10 @@ def test_client_panel_dashboard_exposes_integration_summary(monkeypatch):
     monkeypatch.setattr(client_panel.admin_db, "analytics_snapshot", lambda range, site_id: {"metrics": {}, "summary": "", "top_products": [], "top_intents": [], "series": []})
     monkeypatch.setattr(client_panel.admin_db, "conversation_log", lambda range, site_id: {"groups": []})
 
+    # The revocation store is DB-backed and fails closed; this test covers
+    # field exposure, so treat every session as active.
+    monkeypatch.setattr(client_panel, "panel_session_is_revoked", lambda site_id, session_id: False)
+
     api = TestClient(app)
     login = api.post("/v1/client-panel/login", json={"site_id": "ai_kart", "password": "admin12345678"})
     assert INTERNAL_CLIENT_PANEL_FIELDS.isdisjoint(login.json()["client"])

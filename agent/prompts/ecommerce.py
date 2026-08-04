@@ -166,10 +166,28 @@ def _product_line(product: dict[str, Any]) -> str:
         f"Tags: {_option_text(product.get('tags')) or 'None'}",
         f"Price: Rs {int(product['price']):,}{_discount_text(product)}",
         f"Stock: {product.get('stock', 0)}",
-        f"Rating: {product.get('rating', 0)}* ({product.get('review_count', 0)} reviews)",
         f"Description: {_clean_description(product.get('description'))[:200]}...",
     ]
+    rating = _rating_context(product)
+    if rating:
+        parts.insert(-1, rating)
     return " | ".join(parts)
+
+
+def _rating_context(product: dict[str, Any]) -> str:
+    try:
+        rating = float(product.get("rating"))
+    except (TypeError, ValueError):
+        return ""
+    if rating <= 0 or rating > 5:
+        return ""
+    try:
+        review_count = int(product.get("review_count"))
+    except (TypeError, ValueError):
+        return f"Rating: {rating:g}/5"
+    if review_count <= 0:
+        return f"Rating: {rating:g}/5"
+    return f"Rating: {rating:g}/5 ({review_count} reviews)"
 
 
 def _discount_text(product: dict[str, Any]) -> str:

@@ -267,8 +267,8 @@ def _product_attributes(product: dict[str, Any], category: str, brand: str) -> d
         "color": _text(product.get("color")),
         "size_options": _json_or_text(product.get("size_options")),
         "tags": _json_or_text(product.get("tags")),
-        "rating": float(product.get("rating") or 0),
-        "review_count": int(product.get("review_count") or 0),
+        "rating": _optional_float(product.get("rating")),
+        "review_count": _optional_positive_int(product.get("review_count")),
     }
 
 
@@ -387,6 +387,14 @@ def _json_or_text(value: Any) -> Any:
 def _optional_float(value: Any) -> float | None:
     try:
         result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    try:
+        result = int(value)
     except (TypeError, ValueError):
         return None
     return result if result > 0 else None

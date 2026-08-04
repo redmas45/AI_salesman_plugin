@@ -98,6 +98,81 @@ def exports(runtime: Any) -> dict[str, Any]:
             catalog_types=tuple(BUILTIN_TYPE_NOUNS),
         )
 
+    def build_turn_plan(
+        site_id: str,
+        safe_transcript: str,
+        *,
+        session_id: str = "",
+        conversation_history: list | None = None,
+        session_summary: str = "",
+        page_context: dict[str, Any] | None = None,
+        ecommerce_runtime: bool = True,
+    ) -> Any:
+        """Resolve the one authoritative plan for this turn, before any shortcut.
+
+        Uses the built-in product-type nouns plus the TTL-cached tenant brand
+        list, so no catalog load happens on a turn and nothing here is specific
+        to any one retailer.
+        """
+        from agent.orchestration.turn_plan import build_turn_plan as _build
+        from agent.products.product_matching_lexical import BUILTIN_TYPE_NOUNS
+        from agent.retrieval.catalog_vocabulary import catalog_brand_vocabulary
+
+        return _build(
+            safe_transcript,
+            site_id=site_id,
+            session_id=session_id,
+            turn_id=runtime.new_action_turn_id() if hasattr(runtime, "new_action_turn_id") else "",
+            vertical="ecommerce" if ecommerce_runtime else "generic",
+            history=list(conversation_history or []),
+            session_summary=session_summary or "",
+            page_state=page_context,
+            catalog_brands=catalog_brand_vocabulary(site_id) if ecommerce_runtime else (),
+            catalog_types=tuple(BUILTIN_TYPE_NOUNS) if ecommerce_runtime else (),
+        )
+
+    def load_catalog_scan(site_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        """Deterministic, ordered catalog scan for counts and aggregates.
+
+        ``get_all_products`` samples by category with ``RANDOM()``, which is right
+        for "show me something" and wrong for any question whose answer is a fact
+        about the whole catalog. One row beyond the cap is requested so a bounded
+        scan is detectable rather than being reported as an exact total.
+        """
+        from agent.catalog.catalog_operations import CATALOG_SCAN_CAP
+
+        scan_limit = int(limit or CATALOG_SCAN_CAP) + 1
+        try:
+            return list(runtime.get_catalog_records(site_id, limit=scan_limit))
+        except runtime.PIPELINE_RECOVERABLE_ERRORS as exc:
+            runtime.logger.warning("PIPELINE | deterministic catalog scan failed for %s: %s", site_id, exc)
+            return list(runtime.get_all_products(site_id, limit=scan_limit))
+
+    def catalog_aggregate_response(
+        site_id: str,
+        transcript: str,
+        plan: Any,
+        skip_tts: bool,
+        timings: dict[str, float],
+        start_time: float,
+    ) -> dict[str, Any] | None:
+        from agent.responses import catalog_answers
+
+        return catalog_answers.catalog_aggregate_response(
+            site_id,
+            transcript,
+            plan,
+            skip_tts,
+            timings,
+            start_time,
+            load_records=load_catalog_scan,
+            synthesize_b64=runtime.tts.synthesize_b64,
+            ai_log=runtime._ai_log,
+            elapsed_ms=runtime._ms,
+            recoverable_errors=runtime.PIPELINE_RECOVERABLE_ERRORS,
+            logger=runtime.logger,
+        )
+
     def ecommerce_clarification_response(
         transcript: str,
         safe_transcript: str,
@@ -108,20 +183,31 @@ def exports(runtime: Any) -> dict[str, Any]:
         site_id: str = "",
         conversation_history: list | None = None,
         session_summary: str = "",
+        plan: Any = None,
     ) -> dict[str, Any] | None:
         """Ask one clarification only when the RESOLVED turn is still insufficient.
 
         Resolution folds in recent conversation context, so a category, brand,
         recipient, or budget the customer already supplied is never re-asked.
+
+        When the caller supplies the turn's plan, that decision is taken from it
+        rather than resolved a second time - two independent resolutions of the
+        same turn is exactly the contradiction the plan exists to prevent.
         """
-        resolved = resolved_turn_context(
-            site_id,
-            safe_transcript,
-            conversation_history=conversation_history,
-            session_summary=session_summary,
-        )
-        if not resolved.should_ask_clarification():
-            return None
+        if plan is not None:
+            if not plan.needs_clarification:
+                return None
+            question = plan.clarification_question
+        else:
+            resolved = resolved_turn_context(
+                site_id,
+                safe_transcript,
+                conversation_history=conversation_history,
+                session_summary=session_summary,
+            )
+            if not resolved.should_ask_clarification():
+                return None
+            question = resolved.clarification_question()
         return runtime.conversation_shortcuts.clarification_response(
             transcript,
             skip_tts,
@@ -130,7 +216,7 @@ def exports(runtime: Any) -> dict[str, Any]:
             synthesize_audio=runtime._synthesize_audio_b64,
             ai_log=runtime._ai_log,
             elapsed_ms=runtime._ms,
-            message=resolved.clarification_question(),
+            message=question,
         )
 
     def navigation_intent_response(
@@ -268,6 +354,9 @@ def exports(runtime: Any) -> dict[str, Any]:
         "_clarification_response": clarification_response,
         "_ecommerce_clarification_response": ecommerce_clarification_response,
         "_resolved_turn_context": resolved_turn_context,
+        "_build_turn_plan": build_turn_plan,
+        "_load_catalog_scan": load_catalog_scan,
+        "_catalog_aggregate_response": catalog_aggregate_response,
         "_navigation_intent_response": navigation_intent_response,
         "_navigation_response_label": runtime.navigation_intent.navigation_response_label,
         "_sort_intent_response": sort_intent_response,

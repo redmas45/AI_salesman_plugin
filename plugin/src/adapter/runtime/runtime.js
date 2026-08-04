@@ -9,6 +9,8 @@ import { installInteractionTracker } from "./interactionTracker";
 import { readPageContext } from "./pageContext";
 import { installPageObserver } from "./pageLifecycle";
 import { storePendingAction, takePendingAction } from "../actions/pendingAction";
+import { isReplayable, storePendingPostcondition } from "../../actionExecutor/pendingPostcondition";
+import { resumePendingPostcondition } from "../../actionExecutor/postconditions";
 import { detectPlatform, executePlatformAction } from "../discovery/platforms";
 import { actionPolicyBlock, reportPolicyBlock } from "./policy";
 import { resolveProductActionPath } from "../actions/productNavigation";
@@ -21,11 +23,11 @@ const RUNTIME_GLOBAL = "AIHubAdapterRuntime";
 const ADAPTER_GLOBAL = "AIHubAdapter";
 const DOM_READY_TIMEOUT_MS = 2500;
 const PRODUCT_NAVIGATION_TELEMETRY_GRACE_MS = 300;
-const PRODUCT_PAGE_ACTIONS = new Set([
-  ACTIONS.ADD_TO_CART,
-  ACTIONS.REMOVE_FROM_CART,
-  ACTIONS.UPDATE_CART_QUANTITY,
-]);
+// Actions that need the record's own page before they can run. Only additive,
+// reversible ones are carried across the navigation: a removal or a quantity
+// change replayed from storage could destroy a cart the customer did not ask
+// about on the destination page, so those are re-decided there instead.
+const PRODUCT_PAGE_ACTIONS = new Set([ACTIONS.ADD_TO_CART]);
 
 function normalizeAction(action) {
   const params = action?.params || action?.parameters || {};
@@ -257,13 +259,16 @@ export class AIHubAdapterRuntime {
   }
 
   async prepareProductPageAction(action) {
-    if (!PRODUCT_PAGE_ACTIONS.has(action.action)) return false;
+    if (!PRODUCT_PAGE_ACTIONS.has(action.action) || !isReplayable(action.action)) return false;
     const productId = String(action.parameters?.[ACTION_PARAMS.PRODUCT_ID] || "").trim();
     if (!productId || currentProductId() === productId) return false;
 
     const targetPath = await resolveProductActionPath(productId);
     if (!targetPath || targetPath === currentPagePath()) return false;
     if (!storePendingAction(this.siteId, action)) return false;
+    // The postcondition outlives this JavaScript context, so the destination
+    // page can prove the requested state was actually reached.
+    storePendingPostcondition(this.siteId, action, targetPath);
 
     window.setTimeout(() => {
       window.location.href = targetPath;
@@ -273,9 +278,26 @@ export class AIHubAdapterRuntime {
 
   async executePendingAction() {
     const action = takePendingAction(this.siteId);
-    if (!action) return;
+    if (!action) {
+      // Nothing to resume, but a recorded postcondition may still be waiting;
+      // consuming it here keeps storage clean and reports the observed verdict.
+      this.recordResumedPostcondition();
+      return;
+    }
     await waitForDocumentReady();
     await this.executeAction(action);
+    this.recordResumedPostcondition();
+  }
+
+  recordResumedPostcondition() {
+    const outcome = resumePendingPostcondition(this.siteId);
+    if (!outcome) return;
+    this.lastActionResult = {
+      handled: true,
+      status: outcome.verified ? "succeeded" : "unconfirmed",
+      stage: "cross_navigation_postcondition",
+      reason: outcome.reason,
+    };
   }
 }
 

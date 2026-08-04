@@ -296,6 +296,56 @@ async def test_websocket_close_fails_and_settles_active_turn_once() -> None:
         await browser.close()
 
 
+@pytest.mark.asyncio
+async def test_websocket_failed_action_is_confirmed_before_rendering_or_speech() -> None:
+    playwright_api = pytest.importorskip("playwright.async_api")
+    async with playwright_api.async_playwright() as playwright:
+        browser, page = await _boot_websocket(playwright, terminal="action_failed")
+        page.set_default_timeout(15000)
+
+        async def lookup_fails(route) -> None:
+            await route.abort("failed")
+
+        async def action_event_ok(route) -> None:
+            await route.fulfill(status=204, body="")
+
+        await page.route(
+            re.compile(r"https://(?:hub|shop)\.example\.test/.*(?:products|catalog).*"),
+            lookup_fails,
+        )
+        await page.route(
+            re.compile(r"https://hub\.example\.test/v1/widget/action-event.*"),
+            action_event_ok,
+        )
+        await _record_and_submit(page)
+        await page.get_by_text("I could not complete", exact=False).wait_for()
+        rendered = (await page.locator("#mayabot-widget").inner_text()).lower()
+        assert "showing 2 products" not in rendered
+        assert "could not complete" in rendered
+        await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_unacknowledged_browser_event_cannot_confirm_action_success() -> None:
+    playwright_api = pytest.importorskip("playwright.async_api")
+    async with playwright_api.async_playwright() as playwright:
+        browser, page = await _boot_websocket(playwright, terminal="unacknowledged_action")
+        page.set_default_timeout(15000)
+
+        async def action_event_ok(route) -> None:
+            await route.fulfill(status=204, body="")
+
+        await page.route(
+            re.compile(r"https://hub\.example\.test/v1/widget/action-event.*"),
+            action_event_ok,
+        )
+        await _record_and_submit(page)
+        await page.get_by_text("I could not complete", exact=False).wait_for()
+        rendered = (await page.locator("#mayabot-widget").inner_text()).lower()
+        assert "opened the requested page" not in rendered
+        await browser.close()
+
+
 async def _boot_websocket(playwright, *, terminal: str):
     widget_js = WIDGET_BUNDLE.read_text(encoding="utf-8")
     browser = await playwright.chromium.launch(headless=True)
@@ -370,6 +420,18 @@ def _mock_websocket_script(terminal: str) -> str:
         window.setTimeout(() => {{
           if ({terminal!r} === "done") {{
             this.onmessage?.({{ data: JSON.stringify({{ type: "done", response_text: "Done", ui_actions: [] }}) }});
+          }} else if ({terminal!r} === "action_failed") {{
+            this.onmessage?.({{ data: JSON.stringify({{
+              type: "done",
+              response_text: "Here they are, showing 2 products.",
+              ui_actions: [{{ action: "SHOW_PRODUCTS", params: {{ product_ids: [] }} }}],
+            }}) }});
+          }} else if ({terminal!r} === "unacknowledged_action") {{
+            this.onmessage?.({{ data: JSON.stringify({{
+              type: "done",
+              response_text: "I opened the requested page.",
+              ui_actions: [{{ action: "UNSUPPORTED_SITE_ACTION", params: {{}} }}],
+            }}) }});
           }} else {{
             this.readyState = 3;
             this.onclose?.();
@@ -388,7 +450,7 @@ def _mock_script() -> str:
     return """
     const nativeSetTimeout = window.setTimeout.bind(window);
     window.setTimeout = (callback, delay, ...args) =>
-      nativeSetTimeout(callback, delay === 300 ? 3000 : delay, ...args);
+      nativeSetTimeout(callback, delay === 300 ? 3000 : delay === 2400 ? 24000 : delay, ...args);
     window.__availableVoices = [];
     window.__speechSpeakCount = 0;
     window.__speechCancelCount = 0;
@@ -430,3 +492,76 @@ def _mock_script() -> str:
       static isTypeSupported() { return true; }
     };
     """
+
+
+# --- Action truth: never claim success before the browser proves it ----------
+
+
+@pytest.mark.asyncio
+async def test_actions_execute_before_maya_claims_success() -> None:
+    """The success sentence must not reach the customer before the action ran.
+
+    Maya used to speak first and act afterwards, so she could announce an opened
+    or sorted page before the browser had done any of it.
+    """
+    playwright_api = pytest.importorskip("playwright.async_api")
+    order: list[str] = []
+
+    async def ok(route) -> None:
+        await route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=(
+                '{"transcript":"show me phones","response_text":"Here they are, showing 2 products.",'
+                '"ui_actions":[{"action":"SHOW_PRODUCTS","params":{"product_ids":["p1","p2"]}}]}'
+            ),
+        )
+
+    async def by_ids(route) -> None:
+        order.append("action")
+        await route.fulfill(status=200, content_type="application/json", body='{"products":[]}')
+
+    async with playwright_api.async_playwright() as playwright:
+        browser, page = await _boot(playwright, shop_handler=ok)
+        await page.route(re.compile(r"https://hub\.example\.test/v1/products/by-ids.*"), by_ids)
+        await _record_and_submit(page)
+        await page.wait_for_timeout(600)
+
+        rendered = await page.locator("#mayabot-widget").inner_text()
+        if "showing 2 products" in rendered.lower():
+            order.append("spoke")
+        assert "action" in order, "the display action must be executed"
+        assert order.index("action") == 0, f"action must settle before Maya speaks: {order}"
+        await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_action_is_not_reported_as_success() -> None:
+    """When the action fails, the claim is replaced by a recovery message.
+
+    A display action is used rather than a navigation, so the widget stays
+    mounted and its rendered text can be inspected.
+    """
+    playwright_api = pytest.importorskip("playwright.async_api")
+
+    async def ok(route) -> None:
+        await route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=(
+                '{"transcript":"show me phones","response_text":"Here they are, showing 2 products.",'
+                '"ui_actions":[{"action":"SHOW_PRODUCTS","params":{"product_ids":["p1","p2"]}}]}'
+            ),
+        )
+
+    async def lookup_fails(route) -> None:
+        await route.abort("failed")
+
+    async with playwright_api.async_playwright() as playwright:
+        browser, page = await _boot(playwright, shop_handler=ok)
+        await page.route(re.compile(r"https://hub\.example\.test/v1/products/by-ids.*"), lookup_fails)
+        await _record_and_submit(page)
+        await page.wait_for_timeout(800)
+        rendered = (await page.locator("#mayabot-widget").inner_text()).lower()
+        assert "showing 2 products" not in rendered, "an unproven action must not be claimed as done"
+        await browser.close()

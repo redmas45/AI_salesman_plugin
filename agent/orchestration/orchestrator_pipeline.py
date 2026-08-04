@@ -12,7 +12,48 @@ from typing import Any, Generator, Optional
 import config
 
 from agent.orchestration.orchestrator_streaming import stream_final_result
+from agent.orchestration.turn_plan import TurnOperation
 from agent.runtime_helpers.grounding_validator import enforce_grounded_constraints
+
+ACTION_NAVIGATE_TO = "NAVIGATE_TO"
+NAVIGATION_INTENT = "navigate"
+
+
+PAGE_RELATIVE_INTENTS = frozenset({"product_detail", "product_compare"})
+
+
+def strip_unrequested_navigation(
+    actions: Any,
+    intent: Any,
+    navigation_requested: bool = False,
+) -> list[dict[str, Any]]:
+    """Drop NAVIGATE_TO from turns that did not ask to go anywhere.
+
+    Moving the customer to a different page is only ever correct when the turn's
+    intent is navigation. A search, comparison, or page-relative answer that also
+    navigates destroys the context the answer was about.
+
+    This rule used to run only when ``PYTEST_CURRENT_TEST`` was set, so the suite
+    proved an invariant the deployed pipeline never enforced. It is unconditional
+    now: production and test take the identical path.
+    """
+    if not isinstance(actions, list):
+        return []
+    resolved_intent = str(intent or "")
+    # A mixed turn ("show the cheapest women's item and take me there") is
+    # classified by its primary intent, but the customer still asked to be moved.
+    # Explicit navigation survives; only accidental navigation is dropped. A
+    # page-relative answer is never navigated away from, whatever was asked.
+    keep_navigation = resolved_intent == NAVIGATION_INTENT or (
+        navigation_requested and resolved_intent not in PAGE_RELATIVE_INTENTS
+    )
+    if keep_navigation:
+        return [action for action in actions if isinstance(action, dict)]
+    return [
+        action
+        for action in actions
+        if isinstance(action, dict) and str(action.get("action") or "").upper() != ACTION_NAVIGATE_TO
+    ]
 
 
 def run_pipeline(
@@ -62,51 +103,56 @@ def run_pipeline(
         return runtime._clarification_response(transcript, skip_tts, timings, t0)
 
     ecommerce_runtime = runtime._is_ecommerce_site(site_id)
-    sort_response = runtime._sort_intent_response(
-        site_id,
-        transcript,
-        safe_transcript,
-        ecommerce_runtime,
-        skip_tts,
-        timings,
-        t0,
-    )
-    if sort_response:
-        return sort_response
 
-    navigation_response = runtime._navigation_intent_response(
+    # ONE authoritative plan, resolved before any shortcut may answer. Shortcuts
+    # consume plan.operation instead of re-parsing the customer, which is what
+    # stopped the inventory browse from stealing budgeted searches and gift
+    # recommendations.
+    plan = runtime._build_turn_plan(
         site_id,
-        transcript,
         safe_transcript,
-        skip_tts,
-        timings,
-        t0,
+        session_id=session_id,
+        conversation_history=conversation_history,
+        session_summary=session_summary,
         page_context=page_context,
+        ecommerce_runtime=ecommerce_runtime,
     )
-    if navigation_response:
-        return navigation_response
 
-    if ecommerce_runtime and runtime._is_inventory_stats_query(safe_transcript):
-        return runtime._inventory_stats_response(site_id, transcript, skip_tts, timings, t0)
-
-    inventory_type = runtime._extract_inventory_type_query(safe_transcript) if ecommerce_runtime else None
-    if inventory_type:
-        return runtime._inventory_type_count_response(
-            site_id, transcript, inventory_type, skip_tts, timings, t0
+    if plan.allows_shortcut(TurnOperation.SORT):
+        sort_response = runtime._sort_intent_response(
+            site_id, transcript, safe_transcript, ecommerce_runtime, skip_tts, timings, t0
         )
+        if sort_response:
+            return sort_response
 
-    constraint_signature = ""
+    if plan.allows_shortcut(TurnOperation.NAVIGATE):
+        navigation_response = runtime._navigation_intent_response(
+            site_id, transcript, safe_transcript, skip_tts, timings, t0, page_context=page_context
+        )
+        if navigation_response:
+            return navigation_response
+
+    if ecommerce_runtime and plan.operation == TurnOperation.AGGREGATE:
+        aggregate_response = runtime._catalog_aggregate_response(
+            site_id, transcript, plan, skip_tts, timings, t0
+        )
+        if aggregate_response:
+            return aggregate_response
+
+    if ecommerce_runtime and plan.allows_shortcut(TurnOperation.INVENTORY_COUNT):
+        if runtime._is_inventory_stats_query(safe_transcript):
+            return runtime._inventory_stats_response(site_id, transcript, skip_tts, timings, t0)
+        inventory_type = runtime._extract_inventory_type_query(safe_transcript)
+        if inventory_type:
+            return runtime._inventory_type_count_response(
+                site_id, transcript, inventory_type, skip_tts, timings, t0
+            )
+
+    constraint_signature = plan.cache_key_component() if plan.cache_eligible else ""
     if ecommerce_runtime:
         # Resolve this turn against bounded recent context ONCE, then reuse it for
         # the clarification decision and for cache identity so the sync and
         # streaming pipelines behave identically.
-        resolved_context = runtime._resolved_turn_context(
-            site_id,
-            safe_transcript,
-            conversation_history=conversation_history,
-            session_summary=session_summary,
-        )
-        constraint_signature = resolved_context.cache_identity()
         clarification = runtime._ecommerce_clarification_response(
             transcript,
             safe_transcript,
@@ -116,32 +162,41 @@ def run_pipeline(
             site_id=site_id,
             conversation_history=conversation_history,
             session_summary=session_summary,
+            plan=plan,
         )
         if clarification:
             return clarification
 
-    cached_response = runtime._cached_answer_response(
-        site_id,
-        transcript,
-        safe_transcript,
-        skip_tts,
-        timings,
-        t0,
-        session_id=session_id,
-        constraint_signature=constraint_signature,
-    )
+    navigation_requested = plan.navigation_requested
+
+    cached_response = None
+    if plan.cache_eligible:
+        cached_response = runtime._cached_answer_response(
+            site_id,
+            transcript,
+            safe_transcript,
+            skip_tts,
+            timings,
+            t0,
+            session_id=session_id,
+            constraint_signature=constraint_signature,
+        )
     if cached_response:
-        import os
-        if "PYTEST_CURRENT_TEST" in os.environ and cached_response.get("intent") != "navigate":
-            cached_response["ui_actions"] = [
-                act for act in cached_response.get("ui_actions", [])
-                if isinstance(act, dict) and str(act.get("action") or "").upper() != runtime.ACTION_NAVIGATE_TO
-            ]
+        cached_response["ui_actions"] = strip_unrequested_navigation(
+            cached_response.get("ui_actions"),
+            cached_response.get("intent"),
+            navigation_requested=navigation_requested,
+        )
         return cached_response
 
     # Stage 3: RAG Retrieval
     t = time.perf_counter()
-    retrieval_context = runtime._retrieve_context(site_id, safe_transcript, conversation_history)
+    # Retrieval consumes the resolved plan's price constraints rather than
+    # re-parsing the turn, so a corrected or inherited ceiling cannot be lost
+    # between the plan and the search.
+    retrieval_context = runtime._retrieve_context(
+        site_id, safe_transcript, conversation_history, plan.price_constraints()
+    )
     profile = retrieval_context.profile
     price_constraints = retrieval_context.price_constraints
     retrieved_products = retrieval_context.products
@@ -172,12 +227,16 @@ def run_pipeline(
         start_time=t0,
     )
     if planned_response:
-        import os
-        if "PYTEST_CURRENT_TEST" in os.environ and planned_response.get("intent") != "navigate":
-            planned_response["ui_actions"] = [
-                act for act in planned_response.get("ui_actions", [])
-                if isinstance(act, dict) and str(act.get("action") or "").upper() != runtime.ACTION_NAVIGATE_TO
-            ]
+        planned_response["ui_actions"] = strip_unrequested_navigation(
+            planned_response.get("ui_actions"),
+            planned_response.get("intent"),
+            navigation_requested=navigation_requested,
+        )
+        # A planned flow used to return before the grounding validator ran, so its
+        # products were never re-checked against the turn's hard constraints.
+        planned_response = enforce_grounded_constraints(
+            planned_response, retrieved_products, price_constraints
+        )
         return planned_response
 
     runtime.logger.info(
@@ -240,12 +299,9 @@ def run_pipeline(
     )
     filter_report = runtime._apply_capability_filter_result(site_id, final_actions)
     final_actions = filter_report["actions"]
-    import os
-    if "PYTEST_CURRENT_TEST" in os.environ and validated.get("intent") != "navigate":
-        final_actions = [
-            act for act in final_actions
-            if isinstance(act, dict) and str(act.get("action") or "").upper() != runtime.ACTION_NAVIGATE_TO
-        ]
+    final_actions = strip_unrequested_navigation(
+        final_actions, validated.get("intent"), navigation_requested=navigation_requested
+    )
     validated["response_text"] = runtime._align_response_with_action_filter(validated["response_text"], filter_report)
     validated["response_text"] = runtime._align_response_with_enriched_action_params(validated["response_text"], final_actions)
     validated["response_text"] = runtime._neutralize_pending_action_claims(validated["response_text"], final_actions)
@@ -262,15 +318,18 @@ def run_pipeline(
         retrieved_products,
         price_constraints,
     )
-    runtime._maybe_store_answer_cache(
-        site_id,
-        safe_transcript,
-        validated,
-        retrieved_products,
-        retrieval_evidence,
-        session_id=session_id,
-        constraint_signature=constraint_signature,
-    )
+    if plan.cache_eligible:
+        runtime._maybe_store_answer_cache(
+            site_id,
+            safe_transcript,
+            validated,
+            retrieved_products,
+            retrieval_evidence,
+            session_id=session_id,
+            constraint_signature=constraint_signature,
+        )
+    else:
+        retrieval_evidence["cache_write"] = "skipped_turn_plan"
 
     runtime.print(f'🧠 LLM RESPONSE: "{validated["response_text"][:150]}"')
     runtime.print(
@@ -361,57 +420,61 @@ def run_stream_pipeline(
         return
 
     ecommerce_runtime = runtime._is_ecommerce_site(site_id)
-    sort_response = runtime._sort_intent_response(
-        site_id,
-        transcript,
-        safe_transcript,
-        ecommerce_runtime,
-        skip_tts,
-        timings,
-        t0,
-    )
-    if sort_response:
-        yield from stream_final_result(sort_response)
-        return
 
-    navigation_response = runtime._navigation_intent_response(
+    # Identical resolution to the sync pipeline: one plan, resolved before any
+    # shortcut, so both transports interpret the customer the same way.
+    plan = runtime._build_turn_plan(
         site_id,
-        transcript,
         safe_transcript,
-        skip_tts,
-        timings,
-        t0,
+        session_id=session_id,
+        conversation_history=conversation_history,
+        session_summary=session_summary,
         page_context=page_context,
+        ecommerce_runtime=ecommerce_runtime,
     )
-    if navigation_response:
-        yield from stream_final_result(navigation_response)
-        return
 
-    if ecommerce_runtime and runtime._is_inventory_stats_query(safe_transcript):
-        result = runtime._inventory_stats_response(site_id, transcript, skip_tts, timings, t0)
-        yield from stream_final_result(result)
-        return
-
-    inventory_type = runtime._extract_inventory_type_query(safe_transcript) if ecommerce_runtime else None
-    if inventory_type:
-        result = runtime._inventory_type_count_response(
-            site_id, transcript, inventory_type, skip_tts, timings, t0
+    if plan.allows_shortcut(TurnOperation.SORT):
+        sort_response = runtime._sort_intent_response(
+            site_id, transcript, safe_transcript, ecommerce_runtime, skip_tts, timings, t0
         )
-        yield from stream_final_result(result)
-        return
+        if sort_response:
+            yield from stream_final_result(sort_response)
+            return
 
-    constraint_signature = ""
+    if plan.allows_shortcut(TurnOperation.NAVIGATE):
+        navigation_response = runtime._navigation_intent_response(
+            site_id, transcript, safe_transcript, skip_tts, timings, t0, page_context=page_context
+        )
+        if navigation_response:
+            yield from stream_final_result(navigation_response)
+            return
+
+    if ecommerce_runtime and plan.operation == TurnOperation.AGGREGATE:
+        aggregate_response = runtime._catalog_aggregate_response(
+            site_id, transcript, plan, skip_tts, timings, t0
+        )
+        if aggregate_response:
+            yield from stream_final_result(aggregate_response)
+            return
+
+    if ecommerce_runtime and plan.allows_shortcut(TurnOperation.INVENTORY_COUNT):
+        if runtime._is_inventory_stats_query(safe_transcript):
+            result = runtime._inventory_stats_response(site_id, transcript, skip_tts, timings, t0)
+            yield from stream_final_result(result)
+            return
+        inventory_type = runtime._extract_inventory_type_query(safe_transcript)
+        if inventory_type:
+            result = runtime._inventory_type_count_response(
+                site_id, transcript, inventory_type, skip_tts, timings, t0
+            )
+            yield from stream_final_result(result)
+            return
+
+    constraint_signature = plan.cache_key_component() if plan.cache_eligible else ""
     if ecommerce_runtime:
         # Resolve this turn against bounded recent context ONCE, then reuse it for
         # the clarification decision and for cache identity so the sync and
         # streaming pipelines behave identically.
-        resolved_context = runtime._resolved_turn_context(
-            site_id,
-            safe_transcript,
-            conversation_history=conversation_history,
-            session_summary=session_summary,
-        )
-        constraint_signature = resolved_context.cache_identity()
         clarification = runtime._ecommerce_clarification_response(
             transcript,
             safe_transcript,
@@ -421,28 +484,43 @@ def run_stream_pipeline(
             site_id=site_id,
             conversation_history=conversation_history,
             session_summary=session_summary,
+            plan=plan,
         )
         if clarification:
             yield from stream_final_result(clarification)
             return
 
-    cached_response = runtime._cached_answer_response(
-        site_id,
-        transcript,
-        safe_transcript,
-        skip_tts,
-        timings,
-        t0,
-        session_id=session_id,
-        constraint_signature=constraint_signature,
-    )
+    navigation_requested = plan.navigation_requested
+
+    cached_response = None
+    if plan.cache_eligible:
+        cached_response = runtime._cached_answer_response(
+            site_id,
+            transcript,
+            safe_transcript,
+            skip_tts,
+            timings,
+            t0,
+            session_id=session_id,
+            constraint_signature=constraint_signature,
+        )
     if cached_response:
+        cached_response["ui_actions"] = strip_unrequested_navigation(
+            cached_response.get("ui_actions"),
+            cached_response.get("intent"),
+            navigation_requested=navigation_requested,
+        )
         yield from stream_final_result(cached_response)
         return
 
     # Stage 3: RAG
     t = time.perf_counter()
-    retrieval_context = runtime._retrieve_context(site_id, safe_transcript, conversation_history)
+    # Retrieval consumes the resolved plan's price constraints rather than
+    # re-parsing the turn, so a corrected or inherited ceiling cannot be lost
+    # between the plan and the search.
+    retrieval_context = runtime._retrieve_context(
+        site_id, safe_transcript, conversation_history, plan.price_constraints()
+    )
     profile = retrieval_context.profile
     price_constraints = retrieval_context.price_constraints
     retrieved_products = retrieval_context.products
@@ -475,6 +553,14 @@ def run_stream_pipeline(
         start_time=t0,
     )
     if planned_response:
+        planned_response["ui_actions"] = strip_unrequested_navigation(
+            planned_response.get("ui_actions"),
+            planned_response.get("intent"),
+            navigation_requested=navigation_requested,
+        )
+        planned_response = enforce_grounded_constraints(
+            planned_response, retrieved_products, price_constraints
+        )
         yield from stream_final_result(planned_response)
         return
 
@@ -522,6 +608,9 @@ def run_stream_pipeline(
     )
     filter_report = runtime._apply_capability_filter_result(site_id, final_actions)
     final_actions = filter_report["actions"]
+    final_actions = strip_unrequested_navigation(
+        final_actions, validated.get("intent"), navigation_requested=navigation_requested
+    )
     validated["response_text"] = runtime._align_response_with_action_filter(validated["response_text"], filter_report)
     validated["response_text"] = runtime._align_response_with_enriched_action_params(validated["response_text"], final_actions)
     validated["response_text"] = runtime._neutralize_pending_action_claims(validated["response_text"], final_actions)
@@ -538,15 +627,18 @@ def run_stream_pipeline(
         retrieved_products,
         price_constraints,
     )
-    runtime._maybe_store_answer_cache(
-        site_id,
-        safe_transcript,
-        validated,
-        retrieved_products,
-        retrieval_evidence,
-        session_id=session_id,
-        constraint_signature=constraint_signature,
-    )
+    if plan.cache_eligible:
+        runtime._maybe_store_answer_cache(
+            site_id,
+            safe_transcript,
+            validated,
+            retrieved_products,
+            retrieval_evidence,
+            session_id=session_id,
+            constraint_signature=constraint_signature,
+        )
+    else:
+        retrieval_evidence["cache_write"] = "skipped_turn_plan"
     runtime._ai_log("assistant", validated["response_text"])
     runtime._ai_log("actions", final_actions)
 
@@ -575,4 +667,3 @@ def run_stream_pipeline(
         },
     }
     yield {"event": "metrics", "data": {"latency_ms": timings, "retrieval": retrieval_evidence}}
-

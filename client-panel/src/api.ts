@@ -28,6 +28,25 @@ export async function login(siteId: string, password: string): Promise<ClientSum
   return response.client;
 }
 
+/**
+ * End the session on the server, then locally.
+ *
+ * Clearing browser storage alone left the token valid until it expired, so a
+ * copied token still worked after signing out. The local token is dropped even
+ * if the server call fails, so the user is never stuck signed in.
+ */
+export async function logout(): Promise<void> {
+  try {
+    if (storedToken()) {
+      await request<{ status: string }>('/v1/client-panel/logout', { method: 'POST' });
+    }
+  } catch {
+    // Best effort: the token is cleared locally regardless.
+  } finally {
+    clearToken();
+  }
+}
+
 export async function dashboard(range: string): Promise<DashboardResponse> {
   return request<DashboardResponse>(`/v1/client-panel/dashboard?range=${encodeURIComponent(range)}`);
 }

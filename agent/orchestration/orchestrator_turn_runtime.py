@@ -180,11 +180,13 @@ class OrchestratorTurnRuntime:
         site_id: str,
         safe_transcript: str,
         conversation_history: list | None,
+        price_constraints: dict[str, Any] | None = None,
     ) -> retrieval_runtime.RetrievalContext:
         return retrieval_runtime.retrieve_context(
             site_id,
             safe_transcript,
             conversation_history,
+            price_constraints=price_constraints,
             safe_user_profile=self.safe_user_profile_func,
             augment_query_with_history=self.augment_query_with_history_func,
             is_ecommerce_site=self.is_ecommerce_site,

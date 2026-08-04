@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
-import { clearToken, dashboard, login, storedToken } from './api';
+import { clearToken, dashboard, login, logout as endSession, storedToken } from './api';
 import { Dashboard } from './components/Dashboard';
 import { Header } from './components/Header';
 import { LoadingPanel } from './components/ui';
@@ -58,9 +58,12 @@ export function App() {
   }
 
   function logout(): void {
-    clearToken();
+    // Revoke server-side first so the token cannot be replayed, then clear the
+    // local view. The UI does not wait: sign-out must feel immediate.
+    void endSession();
     setData(null);
     setAuthenticated(false);
+    setError('');
   }
 
   if (!authenticated) {

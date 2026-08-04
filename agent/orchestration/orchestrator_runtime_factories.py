@@ -122,7 +122,9 @@ def navigation_runtime(runtime: ModuleType) -> OrchestratorNavigationRuntime:
 def inventory_runtime(runtime: ModuleType) -> OrchestratorInventoryRuntime:
     return OrchestratorInventoryRuntime(
         recoverable_errors=runtime.PIPELINE_RECOVERABLE_ERRORS,
-        load_products=lambda current_site_id, limit: runtime.get_all_products(current_site_id, limit=limit),
+        # Counts and inventory claims must measure the catalog, not a random
+        # sample of it, so this path reads the deterministic ordered scan.
+        load_products=lambda current_site_id, limit: runtime._load_catalog_scan(current_site_id, limit=limit),
         matching_inventory_products=runtime._matching_inventory_products,
         available_category_names=runtime._available_category_names,
         inventory_summary=runtime.tenant_inventory_summary,

@@ -82,6 +82,9 @@ def test_client_panel_token_is_invalid_after_password_rotation(monkeypatch) -> N
         "panel_auth_version": "version-one",
     }
     monkeypatch.setattr(panel_routes.admin_db, "get_client_detail", lambda site_id: dict(client))
+    # Session revocation is DB-backed and fails closed; this test is about
+    # password rotation, so the revocation store is stubbed as "not revoked".
+    monkeypatch.setattr(panel_routes, "panel_session_is_revoked", lambda site_id, session_id: False)
     token = panel_routes._encode_token(client)
 
     assert panel_routes._decode_token(token) is not None
