@@ -105,8 +105,8 @@ def test_assistant_smoke_cases_skip_credential_based_result_contract(monkeypatch
 
     assert all("FILTER_PRODUCTS" not in case["expected_actions"] for case in cases)
     assert [case["name"] for case in cases][:2] == [
-        "compare_apple_samsung_phone",
-        "sort_phones_low_to_high",
+        "compare_two_products",
+        "sort_products_low_to_high",
     ]
 
 
@@ -140,7 +140,12 @@ def test_assistant_smoke_stage_passes_when_expected_actions_return(monkeypatch) 
     assert stage["passed"] == 3
     assert stage["failed"] == 0
     assert stage["tests"][0]["matched_actions"] == ["SHOW_COMPARISON"]
-    assert stage["tests"][0]["matched_response_terms_all"] == ["apple", "samsung"]
+    # The default comparison case names no brands, so it requires no brand terms:
+    # this fallback runs for every ecommerce client, including stores that sell
+    # none of them. Required-term enforcement is covered by the shallow-comparison
+    # test, which supplies terms for the client under test.
+    assert stage["tests"][0]["expected_response_terms_all"] == []
+    assert stage["tests"][0]["matched_response_terms_all"] == []
     assert stage["tests"][0]["display_action_evidence"][0]["id_count"] == 2
     assert stage["tests"][0]["failure_kind"] == ""
     assert stage["tests"][0]["recommended_fix"] == ""
@@ -148,33 +153,48 @@ def test_assistant_smoke_stage_passes_when_expected_actions_return(monkeypatch) 
 
 
 def test_assistant_smoke_stage_fails_shallow_named_comparison(monkeypatch) -> None:
+    """A comparison that never names the records it compared is a failure.
+
+    The required-terms check is driven by a case built for THIS client, not by a
+    built-in list of brands: the default cases must stay brand-free so a store
+    that sells neither of two hardcoded brands is not failed for it.
+    """
     from agent import client_initialization
 
     def fake_turn(site_id: str, prompt: str) -> dict[str, object]:
-        if "accessory" in prompt.lower():
-            return {
-                "response_text": "A protective case is a useful accessory to buy with the phone.",
-                "intent": "smoke",
-                "ui_actions": [{"action": "SHOW_PRODUCTS", "params": {"product_ids": ["phone-1"]}}],
-            }
-        action = "SORT_PRODUCTS" if "low to high" in prompt else "SHOW_COMPARISON"
         return {
             "response_text": "Here is a useful source-backed comparison.",
             "intent": "smoke",
-            "ui_actions": [{"action": action, "params": {"product_ids": ["apple-phone-1", "samsung-phone-1"]} if action == "SHOW_COMPARISON" else {"sort_by": "price_asc"}}],
+            "ui_actions": [
+                {"action": "SHOW_COMPARISON", "params": {"product_ids": ["record-1", "record-2"]}}
+            ],
         }
 
     monkeypatch.setattr(client_initialization, "_run_assistant_turn", fake_turn)
+    from agent.client_setup.client_smoke_cases import smoke_case
+
+    monkeypatch.setattr(
+        client_initialization,
+        "_assistant_smoke_cases",
+        lambda site_id, vertical_key: [
+            smoke_case(
+                "compare_named_records",
+                "Compare the two records I asked about.",
+                ["SHOW_COMPARISON"],
+                required_terms=["stratus", "nimbus"],
+            )
+        ],
+    )
 
     stage = client_initialization._assistant_smoke_stage("ai_kart", "ecommerce")
 
     assert stage["status"] == "failed"
-    assert stage["tests"][0]["name"] == "compare_apple_samsung_phone"
+    assert stage["tests"][0]["name"] == "compare_named_records"
     assert stage["tests"][0]["failure_kind"] == "missing_response_terms"
     assert stage["tests"][0]["matched_actions"] == ["SHOW_COMPARISON"]
-    assert stage["tests"][0]["expected_response_terms_all"] == ["apple", "samsung"]
+    assert stage["tests"][0]["expected_response_terms_all"] == ["stratus", "nimbus"]
     assert stage["tests"][0]["matched_response_terms_all"] == []
-    assert "missing apple, samsung" in stage["tests"][0]["reason"]
+    assert "missing stratus, nimbus" in stage["tests"][0]["reason"]
 
 
 def test_assistant_smoke_stage_fails_display_action_without_ids(monkeypatch) -> None:
@@ -284,7 +304,7 @@ def test_assistant_smoke_stage_fails_missing_accessory_recommendation(monkeypatc
     assert stage["status"] == "failed"
     assert stage["passed"] == 2
     assert stage["failed"] == 1
-    assert stage["tests"][2]["name"] == "recommend_phone_accessory"
+    assert stage["tests"][2]["name"] == "recommend_product_accessory"
     assert stage["tests"][2]["matched_actions"] == ["SHOW_PRODUCTS"]
     assert stage["tests"][2]["matched_response_terms"] == []
     assert stage["tests"][2]["failure_kind"] == "missing_response_terms"
@@ -322,9 +342,9 @@ def test_assistant_smoke_cases_do_not_call_external_llm(monkeypatch) -> None:
     cases = client_initialization._assistant_smoke_cases("ai_kart", "ecommerce")
 
     assert [case["name"] for case in cases] == [
-        "compare_apple_samsung_phone",
-        "sort_phones_low_to_high",
-        "recommend_phone_accessory",
+        "compare_two_products",
+        "sort_products_low_to_high",
+        "recommend_product_accessory",
     ]
 
 

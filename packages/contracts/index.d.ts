@@ -83,6 +83,7 @@ export declare const ACTION_PARAMS: {
   readonly PAGE: "page";
   readonly PRODUCT_ID: "product_id";
   readonly PRODUCT_IDS: "product_ids";
+  readonly PRODUCT_NAME: "product_name";
   readonly QUANTITY: "quantity";
   readonly REASON: "reason";
   readonly SEARCH_QUERY: "search_query";

@@ -127,11 +127,12 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
     # stop. Behavioural proof lives in tests/test_browser_page_state.py and
     # tests/test_browser_voice_transport.py; this line only pins the seam.
     # The full answer is displayed; a concise `spoken_text` is what is read aloud
-    # (fast TTS). The browser fallback speaks that concise text, gated on the same
-    # action confirmation. Behaviour is proven in tests/test_spoken_text.py and the
-    # browser voice-transport suite.
-    assert "speakTextFallback(speechText)" in api_source
-    assert "data.spoken_text" in api_source
+    # (fast TTS) while the display still shows the full answer, and a confirmed
+    # `success_text` (or the recovery line) is spoken directly once the browser
+    # verifies the action. Behaviour is proven in tests/test_spoken_text.py,
+    # tests/test_browser_action_confirmation.py, and the browser voice-transport suite.
+    assert "data.spoken_text || responseText" in api_source
+    assert "data.success_text" in api_source
     assert "speakTextFallback(data.response_text)" not in api_source
     assert "from \"../audio/speech\"" in api_source
     assert "new SpeechSynthesisUtterance" not in api_source

@@ -396,11 +396,30 @@ def _missing_params_response_note(notice: dict[str, Any]) -> str:
     return "I need one more detail before I can do that."
 
 
+# Shopper-facing noun phrases for the actions we may report as unavailable. The
+# internal notice.message keeps the raw action name for logs and CRM; the customer
+# text must never expose an action token such as ADD_TO_CART.
+_SHOPPER_ACTION_PHRASES: dict[str, str] = {
+    "ADD_TO_CART": "Adding items to the cart",
+    "REMOVE_FROM_CART": "Removing items from the cart",
+    "UPDATE_CART_QUANTITY": "Changing cart quantities",
+    "CLEAR_CART": "Clearing the cart",
+    "CHECKOUT": "Checkout",
+}
+
+
+def _shopper_action_phrase(action_name: Any) -> str:
+    return _SHOPPER_ACTION_PHRASES.get(str(action_name or "").strip().upper(), "That action")
+
+
 def _blocked_response_note(notice: dict[str, Any]) -> str:
-    message = str(notice.get("message") or "").strip()
-    if message:
-        return message
-    return "That website action is not available right now, so I can guide you instead."
+    phrase = _shopper_action_phrase(notice.get("action"))
+    reason = _safe_notice_reason(notice)
+    if reason == FILTER_REASON_RUNTIME_BLOCKED:
+        return f"{phrase} isn't working on this website right now because the page did not respond, so I can guide you instead."
+    if reason == FILTER_REASON_BLOCKED:
+        return f"{phrase} needs a person to confirm on this website, so I can guide you instead."
+    return f"{phrase} isn't available on this website right now, so I can guide you instead."
 
 
 def _safe_notice_reason(notice: dict[str, Any]) -> str:

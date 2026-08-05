@@ -32,6 +32,11 @@ ACTION_UPDATE_PREFERENCES = "UPDATE_PREFERENCES"
 ACTION_RUN_DOM_SEQUENCE = "RUN_DOM_SEQUENCE"
 PRODUCT_IDS_PARAM = "product_ids"
 PRODUCT_ID_PARAM = "product_id"
+# The exact catalog name of the record an action targets. A host website owns its
+# own product ids, so the Hub's ingested id may not exist in the host's DOM. The
+# name is the one identity both sides always share, and it is what the browser
+# executor falls back to - as an exact, unique match only.
+PRODUCT_NAME_PARAM = "product_name"
 ENTITY_IDS_PARAM = "entity_ids"
 ENTITY_ID_PARAM = "entity_id"
 PAGE_PARAM = "page"
@@ -129,7 +134,12 @@ class CheckoutRequest(BaseModel):
 
 class ShopResponse(BaseModel):
     transcript: str = Field(..., description="What the customer said")
-    response_text: str = Field(..., description="Assistant's spoken response")
+    response_text: str = Field(..., description="Full answer displayed to the customer")
+    spoken_text: str = Field("", description="Concise lead-in read aloud while the full answer stays on screen")
+    success_text: str = Field(
+        "",
+        description="What Maya says once the widget verifies the action, replacing the tentative promise",
+    )
     intent: str = Field(..., description="Detected customer intent")
     confidence: float = Field(..., ge=0.0, le=1.0)
     answer_scope: str = Field("", description="Grounding/action scope used by Maya for this turn")

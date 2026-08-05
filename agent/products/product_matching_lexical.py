@@ -73,8 +73,9 @@ INVENTORY_TYPE_FILLER_TERMS = frozenset(
         "stock",
     }
 )
+# Generic category nouns only. Brand, product-line and OS names are learned
+# from the connected tenant catalog, never written into Hub code.
 PHONE_ALIASES = {"phone", "phones", "smartphone", "smartphones", "mobile", "mobiles"}
-SPECIFIC_PHONE_ALIASES = {"android", "ios", "iphone", "galaxy"}
 
 
 def brand_type_products_from_query(
@@ -219,20 +220,35 @@ def product_strong_text(product: Product) -> str:
 
 
 def catalog_type_vocabulary(products: list[Product]) -> set[str]:
-    """Recognized product-type tokens = built-in nouns + the catalog's taxonomy."""
+    """Recognized type tokens = built-in nouns + what THIS catalog actually sells.
+
+    The tenant's own taxonomy and product names are the source of truth for the
+    product lines a shopper can name. Learning "galaxy" or "iphone" - or a travel
+    site's "maldives", or an insurer's "endowment" - from the connected catalog is
+    what keeps one Hub correct for every vertical; writing those words into Hub
+    code would fit exactly one store and quietly mis-handle the next one.
+
+    Brand tokens are excluded so a brand is matched as a brand, not as a type.
+    """
     vocab: set[str] = set(BUILTIN_TYPE_NOUNS)
+    # Every brand in the catalog, so a brand word never counts as a product type -
+    # not even when a rival's product name mentions it ("Anker Apple-Compatible
+    # Charger" must not make "apple" a type and admit every Apple product).
+    catalog_brands = {
+        token
+        for product in products
+        for token in normalize_lookup_text(product.get("brand") or product.get("vendor") or "").split()
+    }
     for product in products:
         taxonomy = " ".join(
             str(product.get(field) or "")
             for field in ("category", "category_name", "category_slug", "subcategory")
         )
-        brand_tokens = set(
-            normalize_lookup_text(product.get("brand") or product.get("vendor") or "").split()
-        )
+        product_line = normalize_lookup_text(product.get("name") or product.get("title") or "")
         vocab.update(
             token
-            for token in normalize_lookup_text(taxonomy).split()
-            if len(token) >= 3 and token not in brand_tokens
+            for token in f"{normalize_lookup_text(taxonomy)} {product_line}".split()
+            if len(token) >= 3 and token not in catalog_brands
         )
     return vocab - GENERIC_MODIFIERS - GENERIC_TAXONOMY_TERMS
 
@@ -376,7 +392,7 @@ def lexical_product_score(search_text: str, query_tokens: set[str], requested_ty
     score = 0
     for alias in requested_types:
         if phrase_in_text(alias, search_text):
-            score += 35 if alias in SPECIFIC_PHONE_ALIASES else 55
+            score += 55
     for token in query_tokens:
         if phrase_in_text(token, search_text):
             score += 18
@@ -419,7 +435,7 @@ def inventory_product_score(
         elif phrase_in_text(alias, brand):
             score += 60
         elif phrase_in_text(alias, search_text):
-            score += 35 if alias in SPECIFIC_PHONE_ALIASES else 55
+            score += 55
 
     for token in query_tokens:
         if phrase_in_text(token, name):
@@ -438,27 +454,52 @@ def stock_score(product: Product) -> int:
 
 
 def requested_product_type_aliases(normalized_query: str) -> set[str]:
-    if any(phrase_in_text(alias, normalized_query) for alias in {"iphone", "iphones", "ios"}):
-        return {"iphone", "iphones", "ios"}
-    if any(phrase_in_text(alias, normalized_query) for alias in {"galaxy", "samsung galaxy"}):
-        return {"galaxy", "samsung", "android"}
+    """Generic product-type nouns the query names.
+
+    Only ordinary category nouns belong here. Product lines and model names are
+    NOT listed: they differ per tenant, so they are learned from the connected
+    catalog's own product names (see `catalog_type_vocabulary`) rather than being
+    written into Hub code, which would only ever fit one store.
+    """
     if any(phrase_in_text(alias, normalized_query) for alias in PHONE_ALIASES):
-        return PHONE_ALIASES | SPECIFIC_PHONE_ALIASES
+        return set(PHONE_ALIASES)
     return set()
 
 
-def requested_catalog_brands(normalized_query: str, products: list[Product]) -> list[str]:
+MIN_BRAND_ALIAS_LENGTH = 3
+
+
+def brand_alias_index(products: list[Product]) -> dict[str, str]:
+    """Map every name a shopper might use for a brand to that brand.
+
+    Shoppers name product lines, not brands ("the iPhone", "a Galaxy"). Which
+    words those are differs per tenant, so they are learned here instead of being
+    listed in Hub code: a token appearing in the product names of exactly ONE
+    brand is that brand's line. A token shared by several brands is ambiguous and
+    is deliberately left unmapped rather than guessed at.
+    """
     alias_to_brand: dict[str, str] = {}
+    brands_by_line_token: dict[str, set[str]] = {}
     for product in products:
         brand = normalize_lookup_text(product.get("brand") or product.get("vendor") or "")
         if not brand or len(brand) < 2:
             continue
         alias_to_brand[brand] = brand
-        if brand == "apple":
-            alias_to_brand["iphone"] = brand
-            alias_to_brand["ios"] = brand
-        elif brand == "samsung":
-            alias_to_brand["galaxy"] = brand
+        for token in normalize_lookup_text(product.get("name") or product.get("title") or "").split():
+            if len(token) < MIN_BRAND_ALIAS_LENGTH or token.isdigit():
+                continue
+            if token in GENERIC_MODIFIERS or token in GENERIC_TAXONOMY_TERMS or token in BUILTIN_TYPE_NOUNS:
+                continue
+            brands_by_line_token.setdefault(token, set()).add(brand)
+
+    for token, owning_brands in brands_by_line_token.items():
+        if len(owning_brands) == 1 and token not in alias_to_brand:
+            alias_to_brand[token] = next(iter(owning_brands))
+    return alias_to_brand
+
+
+def requested_catalog_brands(normalized_query: str, products: list[Product]) -> list[str]:
+    alias_to_brand = brand_alias_index(products)
 
     matches: list[tuple[int, str]] = []
     for alias, brand in alias_to_brand.items():

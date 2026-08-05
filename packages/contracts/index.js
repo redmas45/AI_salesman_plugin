@@ -81,6 +81,7 @@ export const ACTION_PARAMS = Object.freeze({
   PAGE: "page",
   PRODUCT_ID: "product_id",
   PRODUCT_IDS: "product_ids",
+  PRODUCT_NAME: "product_name",
   QUANTITY: "quantity",
   REASON: "reason",
   SEARCH_QUERY: "search_query",

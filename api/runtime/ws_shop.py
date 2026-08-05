@@ -185,6 +185,8 @@ class WebSocketShopSession:
         worker_task = loop.run_in_executor(None, worker)
         transcript = ""
         response_text = ""
+        spoken_text = ""
+        success_text = ""
         ui_actions: list[dict[str, Any]] = []
         latency_ms: dict[str, Any] = {}
         status = WS_STATUS_OK
@@ -217,6 +219,8 @@ class WebSocketShopSession:
 
             if event_name == ORCHESTRATOR_EVENT_AUDIO:
                 response_text = str(data.get("response_text") or response_text)
+                spoken_text = str(data.get("spoken_text") or spoken_text)
+                success_text = str(data.get("success_text") or success_text)
                 latency_ms = data.get("latency_ms") or latency_ms
                 if response_text and not response_sent:
                     response_sent = True
@@ -240,6 +244,8 @@ class WebSocketShopSession:
             {
                 "type": WS_TYPE_DONE,
                 "response_text": response_text,
+                "spoken_text": spoken_text,
+                "success_text": success_text,
                 "ui_actions": ui_actions,
                 "history": self.history,
                 "latency_ms": latency_ms,

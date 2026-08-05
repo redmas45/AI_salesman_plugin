@@ -13,14 +13,47 @@ import config
 
 from agent.orchestration.orchestrator_streaming import stream_final_result
 from agent.orchestration.turn_plan import TurnOperation
+from agent.responses.action_confirmation import confirmed_action_success_text
+from agent.responses.action_identity import attach_host_product_identity
 from agent.responses.spoken_text import concise_spoken_text
+from agent.responses.turn_finalization import ensure_action_texts, products_by_id
 from agent.runtime_helpers.grounding_validator import enforce_grounded_constraints
 
 ACTION_NAVIGATE_TO = "NAVIGATE_TO"
+ACTION_SHOW_PRODUCTS = "SHOW_PRODUCTS"
 NAVIGATION_INTENT = "navigate"
+
+# A section route renders the host's own product listing. Sending a second
+# SHOW_PRODUCTS action after it can move the host back to a generic search page.
+SECTION_ROUTE_MARKERS = ("category/", "category=", "section/", "section=")
 
 
 PAGE_RELATIVE_INTENTS = frozenset({"product_detail", "product_compare"})
+
+
+def _is_section_navigation(action: Any) -> bool:
+    if not isinstance(action, dict):
+        return False
+    if str(action.get("action") or "").upper() != ACTION_NAVIGATE_TO:
+        return False
+    params = action.get("params") or action.get("parameters") or {}
+    if not isinstance(params, dict):
+        return False
+    page = str(params.get("page") or "").strip().lower()
+    return any(marker in page for marker in SECTION_ROUTE_MARKERS)
+
+
+def _remove_redundant_section_display(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Let an explicit section navigation be the final host action."""
+    if not any(_is_section_navigation(action) for action in actions):
+        return actions
+    if not any(str(action.get("action") or "").upper() == ACTION_SHOW_PRODUCTS for action in actions):
+        return actions
+    return [
+        action
+        for action in actions
+        if str(action.get("action") or "").upper() != ACTION_SHOW_PRODUCTS
+    ]
 
 
 def strip_unrequested_navigation(
@@ -48,12 +81,13 @@ def strip_unrequested_navigation(
     keep_navigation = resolved_intent == NAVIGATION_INTENT or (
         navigation_requested and resolved_intent not in PAGE_RELATIVE_INTENTS
     )
+    valid_actions = [action for action in actions if isinstance(action, dict)]
     if keep_navigation:
-        return [action for action in actions if isinstance(action, dict)]
+        return _remove_redundant_section_display(valid_actions)
     return [
         action
-        for action in actions
-        if isinstance(action, dict) and str(action.get("action") or "").upper() != ACTION_NAVIGATE_TO
+        for action in valid_actions
+        if str(action.get("action") or "").upper() != ACTION_NAVIGATE_TO
     ]
 
 
@@ -238,7 +272,11 @@ def run_pipeline(
         planned_response = enforce_grounded_constraints(
             planned_response, retrieved_products, price_constraints
         )
-        return planned_response
+        attach_host_product_identity(planned_response.get("ui_actions"), products_by_id(retrieved_products))
+        # Name the confirmed outcome from the resolved records, so a verified
+        # add-to-cart or navigation reads "<product> is now in your cart" instead
+        # of the tentative promise the flow planner emits.
+        return ensure_action_texts(planned_response, retrieved_products)
 
     runtime.logger.info(
         "PIPELINE | RAG returned %d products (price_filter=%s)",
@@ -303,6 +341,9 @@ def run_pipeline(
     final_actions = strip_unrequested_navigation(
         final_actions, validated.get("intent"), navigation_requested=navigation_requested
     )
+    # The host website owns its own product ids, so carry the resolved record's
+    # exact name too - it is the only identity both catalogs always share.
+    attach_host_product_identity(final_actions, products_by_id(retrieved_products))
     validated["response_text"] = runtime._align_response_with_action_filter(validated["response_text"], filter_report)
     validated["response_text"] = runtime._align_response_with_enriched_action_params(validated["response_text"], final_actions)
     validated["response_text"] = runtime._neutralize_pending_action_claims(validated["response_text"], final_actions)
@@ -343,6 +384,11 @@ def run_pipeline(
     # unchanged, so gpt-5-mini's rich answer is kept - only the spoken audio is
     # shortened, which is the single largest per-turn latency saving.
     spoken_text = concise_spoken_text(validated["response_text"], final_actions)
+    # What Maya says once the widget has verified the action, so a de-claimed
+    # "I'll try to ..." promise becomes a completed outcome instead of the final word.
+    success_text = confirmed_action_success_text(
+        validated["response_text"], final_actions, products_by_id(retrieved_products)
+    )
     audio_b64, tts_ms = runtime._synthesize_audio_b64(spoken_text, skip_tts)
     if tts_ms is not None:
         timings["tts_ms"] = tts_ms
@@ -362,6 +408,7 @@ def run_pipeline(
         "transcript": transcript,
         "response_text": validated["response_text"],
         "spoken_text": spoken_text,
+        "success_text": success_text,
         "intent": validated.get("intent", "unknown"),
         "confidence": validated.get("confidence", 0.0),
         "answer_scope": validated.get("answer_scope", ""),
@@ -568,6 +615,8 @@ def run_stream_pipeline(
         planned_response = enforce_grounded_constraints(
             planned_response, retrieved_products, price_constraints
         )
+        attach_host_product_identity(planned_response.get("ui_actions"), products_by_id(retrieved_products))
+        ensure_action_texts(planned_response, retrieved_products)
         yield from stream_final_result(planned_response)
         return
 
@@ -618,6 +667,9 @@ def run_stream_pipeline(
     final_actions = strip_unrequested_navigation(
         final_actions, validated.get("intent"), navigation_requested=navigation_requested
     )
+    # The host website owns its own product ids, so carry the resolved record's
+    # exact name too - it is the only identity both catalogs always share.
+    attach_host_product_identity(final_actions, products_by_id(retrieved_products))
     validated["response_text"] = runtime._align_response_with_action_filter(validated["response_text"], filter_report)
     validated["response_text"] = runtime._align_response_with_enriched_action_params(validated["response_text"], final_actions)
     validated["response_text"] = runtime._neutralize_pending_action_claims(validated["response_text"], final_actions)
@@ -659,6 +711,9 @@ def run_stream_pipeline(
 
     # Speak a concise lead-in, not the full rich answer (see the sync path).
     spoken_text = concise_spoken_text(validated["response_text"], final_actions)
+    success_text = confirmed_action_success_text(
+        validated["response_text"], final_actions, products_by_id(retrieved_products)
+    )
     audio_b64, tts_ms = runtime._synthesize_audio_b64(spoken_text, skip_tts)
     if tts_ms is not None:
         timings["tts_ms"] = tts_ms
@@ -670,6 +725,7 @@ def run_stream_pipeline(
         "data": {
             "response_text": validated["response_text"],
             "spoken_text": spoken_text,
+            "success_text": success_text,
             "audio_b64": audio_b64,
             "latency_ms": timings,
             "retrieval": retrieval_evidence,

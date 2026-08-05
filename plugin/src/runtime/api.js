@@ -257,18 +257,21 @@ class HttpTransport {
     // The full rich answer is displayed; a concise `spoken_text` is what is read
     // aloud (much faster TTS). Both are gated on the same confirmation, so a
     // failed action still replaces speech with the recovery message.
-    const displayText = confirmedResponseText(data.response_text || "", actions, actionResults);
+    const responseText = data.response_text || "";
+    const displayText = confirmedResponseText(responseText, actions, actionResults, data.success_text || "");
     if (displayText) callbacks.onAssistantMessage?.(displayText, actions);
     callbacks.onStatusChange?.(STATUS.READY);
 
-    const confirmed = displayText === (data.response_text || "");
-    const speechText = confirmed ? (data.spoken_text || data.response_text || "") : displayText;
-    // Audio is only released once the text it narrates has been confirmed, so the
-    // customer never hears a claim the screen contradicts.
-    if (data.audio_b64 && confirmed) {
-      playAudioBase64(data.audio_b64, speechText);
-    } else if (speechText) {
-      speakTextFallback(speechText);
+    // The pre-generated server audio narrates the full answer, so it may only play
+    // when the displayed text is still that full answer. A confirmed outcome or a
+    // recovery line replaces both the text and the speech, and is spoken directly.
+    const unchanged = displayText === responseText;
+    if (unchanged && data.audio_b64) {
+      playAudioBase64(data.audio_b64, data.spoken_text || responseText);
+    } else if (unchanged) {
+      speakTextFallback(data.spoken_text || responseText);
+    } else if (displayText) {
+      speakTextFallback(displayText);
     }
 
     callbacks.onComplete?.(data);
@@ -545,15 +548,19 @@ class VoiceWebSocketTransport {
         callbacks.onActionResults?.(actionResults);
       }
 
-      const displayText = confirmedResponseText(finalText, actions, actionResults);
+      const displayText = confirmedResponseText(finalText, actions, actionResults, msg.success_text || "");
       callbacks.onAssistantMessage?.(displayText, actions, { streamed: true });
       callbacks.onStatusChange?.(STATUS.READY);
-      const confirmed = displayText === finalText;
-      const speechText = confirmed ? (msg.spoken_text || finalText) : displayText;
-      if (this.receivedAudio && confirmed) {
+      // Streamed audio narrates the full answer, so it may only play when the
+      // displayed text is still that full answer; a confirmed or recovery line is
+      // spoken directly instead.
+      const unchanged = displayText === finalText;
+      if (this.receivedAudio && unchanged) {
         for (const chunk of this.pendingAudioChunks) this.audioQueue.push(chunk);
-      } else if (speechText) {
-        speakTextFallback(speechText);
+      } else if (unchanged) {
+        speakTextFallback(msg.spoken_text || finalText);
+      } else if (displayText) {
+        speakTextFallback(displayText);
       }
       callbacks.onComplete?.(msg);
       emitRuntimeEvent({
@@ -694,21 +701,31 @@ function audioFilenameForBlob(blob) {
 const ACTION_CLAIM_RE =
   /\b(opened|opening|taking you|took you|navigat|sorted|sorting|filtered|filtering|showing|shown|displayed|added to (?:your )?cart|here (?:it |they )?(?:is|are))\b/i;
 
+// Tentative promises the server emits after de-claiming an optimistic action
+// sentence ("I'll try to add ...", "I'm about to open ..."). These depend on the
+// outcome exactly like a claim: on failure they must not stay as the final word,
+// and on success they should become the confirmed outcome.
+const ACTION_PROMISE_RE =
+  /\b(?:i(?:'ll| will)\s+try\s+to|i'?m\s+(?:going\s+to|about\s+to)|let me)\b/i;
+
 const ACTION_RECOVERY_TEXT =
   "I could not complete that on the page. The site may not have responded - please try again, or do it manually.";
 
 /**
  * Return the text that is actually true after the actions settled.
  *
- * When a turn made no claim about the page, or every action succeeded, the
- * original wording stands. When an action that the wording depends on failed,
- * the claim is replaced by a specific recovery message rather than a success
- * sentence the screen contradicts.
+ * A turn whose wording depends on a browser action - either an outright claim,
+ * a tentative promise, or one the server flagged by sending a `successText` - is
+ * resolved from the observed outcome: the confirmed `successText` when every
+ * action verified, or the recovery message when one did not. A turn that makes no
+ * such claim keeps its original wording untouched.
  */
-export function confirmedResponseText(responseText, actions, actionResults) {
+export function confirmedResponseText(responseText, actions, actionResults, successText = "") {
   const text = String(responseText || "");
   if (!text || !Array.isArray(actions) || actions.length === 0) return text;
-  if (!ACTION_CLAIM_RE.test(text)) return text;
+  const confirmed = String(successText || "");
+  const outcomeDependent = Boolean(confirmed) || ACTION_CLAIM_RE.test(text) || ACTION_PROMISE_RE.test(text);
+  if (!outcomeDependent) return text;
 
   const results = Array.isArray(actionResults) ? actionResults : [];
   if (results.length !== actions.length) return ACTION_RECOVERY_TEXT;
@@ -720,7 +737,8 @@ export function confirmedResponseText(responseText, actions, actionResults) {
   const everyConfirmed = results.every(
     (result) => result?.status === "succeeded" && result?.verified !== false,
   );
-  return everyConfirmed ? text : ACTION_RECOVERY_TEXT;
+  if (!everyConfirmed) return ACTION_RECOVERY_TEXT;
+  return confirmed || text;
 }
 
 /** Read a JSON body without letting a malformed payload mask the real status. */

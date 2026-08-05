@@ -5,8 +5,14 @@ from __future__ import annotations
 from collections.abc import Generator
 from typing import Any
 
+from agent.responses.turn_finalization import ensure_action_texts
+
 
 def stream_final_result(result: dict[str, Any]) -> Generator[dict[str, Any], None, None]:
+    # Every early-return branch funnels through here, so this is the safety net that
+    # guarantees the concise spoken lead-in and the confirmed outcome text reach the
+    # widget even when the producing branch did not compute them.
+    ensure_action_texts(result)
     ui_actions = result.get("ui_actions", [])
     response_text = result.get("response_text", "")
     answer_scope = str(result.get("answer_scope") or "")
@@ -18,6 +24,8 @@ def stream_final_result(result: dict[str, Any]) -> Generator[dict[str, Any], Non
         "event": "audio",
         "data": {
             "response_text": response_text,
+            "spoken_text": result.get("spoken_text", ""),
+            "success_text": result.get("success_text", ""),
             "audio_b64": result.get("audio_b64", ""),
             "latency_ms": latency_ms,
             "retrieval": retrieval_evidence,

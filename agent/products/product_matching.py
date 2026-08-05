@@ -161,7 +161,7 @@ class ProductCatalogMatcher:
             return 100
 
         best = 0
-        for alias in self._product_aliases(name):
+        for alias in self._product_aliases(name, product):
             if not alias or not phrase_in_text(alias, normalized_query):
                 continue
             token_count = len(alias.split())
@@ -169,11 +169,20 @@ class ProductCatalogMatcher:
             best = max(best, score)
         return best
 
-    def _product_aliases(self, normalized_name: str) -> list[str]:
+    def _product_aliases(self, normalized_name: str, product: dict | None = None) -> list[str]:
+        """Shorter names the customer may use for this record.
+
+        Shoppers usually drop the brand ("the Daily Phone", not "NOVA Daily
+        Phone"), so a leading brand prefix is optional. The prefix to strip comes
+        from the record's OWN brand field - a list of brand words in Hub code
+        would only ever match the store it was written for.
+        """
         tokens = normalized_name.split()
         aliases = {normalized_name}
-        brand_tokens = {"nova", "acme", "ai", "kart"}
-        while tokens and tokens[0] in brand_tokens:
+        brand_tokens = normalize_lookup_text(
+            (product or {}).get("brand") or (product or {}).get("vendor") or ""
+        ).split()
+        while tokens and brand_tokens and tokens[0] in brand_tokens:
             tokens = tokens[1:]
             if tokens:
                 aliases.add(" ".join(tokens))

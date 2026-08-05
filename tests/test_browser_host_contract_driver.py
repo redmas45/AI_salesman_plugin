@@ -192,10 +192,14 @@ async def test_real_navigation_reaches_the_target_route_and_verifies(driver_prob
         assert result["self_verified"] is True
         assert result["evidence"]["expected"] == "/shop"
         assert page.url.endswith("/shop"), page.url
-        # The destination actually rendered product cards (the listing loads them
-        # asynchronously), not just a URL change.
-        await page.wait_for_selector('[data-aihub-role="add-to-cart"]')
-        assert await page.locator('[data-aihub-role="add-to-cart"]').count() >= 1
+        # The destination actually rendered ITS OWN product cards, not just a URL
+        # change. The previous page's cards are still mounted for a moment after the
+        # route changes, so the count is taken once the listing itself reports that
+        # it has finished loading - otherwise a stale card satisfies the wait and the
+        # real listing is never checked.
+        await page.wait_for_selector('[data-aihub-role="search-results"][data-results-loading="false"]')
+        await page.wait_for_selector('[data-aihub-role="search-results"] [data-aihub-role="add-to-cart"]')
+        assert await page.locator('[data-aihub-role="search-results"] [data-aihub-role="add-to-cart"]').count() >= 1
         await browser.close()
 
 

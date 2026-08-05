@@ -33,7 +33,7 @@ def exports(
         session_summary: str = "",
         session_id: str = "",
     ) -> dict[str, Any]:
-        return orchestrator_pipeline.run_pipeline(
+        result = orchestrator_pipeline.run_pipeline(
             runtime_provider(),
             site_id=site_id,
             audio_bytes=audio_bytes,
@@ -45,6 +45,10 @@ def exports(
             session_summary=session_summary,
             session_id=session_id,
         )
+        # Safety net: every early-return branch (greeting, inventory, cached, sort,
+        # navigation) leaves the turn with the spoken lead-in and confirmed outcome
+        # text present, so the HTTP contract never drops them to empty.
+        return orchestrator_pipeline.ensure_action_texts(result)
 
     def run_stream(
         site_id: str,

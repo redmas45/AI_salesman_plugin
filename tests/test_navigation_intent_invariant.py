@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from agent.orchestration.orchestrator_pipeline import strip_unrequested_navigation  # noqa: E402
 
 NAVIGATE = {"action": "NAVIGATE_TO", "params": {"page": "/shop"}}
+SECTION_NAVIGATE = {"action": "NAVIGATE_TO", "params": {"page": "category/electronics"}}
 SHOW = {"action": "SHOW_PRODUCTS", "params": {"product_ids": ["1"]}}
 
 
@@ -66,6 +67,14 @@ def test_explicit_navigation_survives_a_mixed_turn(production_env):
         [SHOW, NAVIGATE], "product_search", navigation_requested=True
     )
     assert kept == [SHOW, NAVIGATE]
+
+
+def test_section_navigation_drops_redundant_product_display(production_env):
+    """A section page must remain the final host state, not generic search."""
+    kept = strip_unrequested_navigation(
+        [SECTION_NAVIGATE, SHOW], "product_search", navigation_requested=True
+    )
+    assert kept == [SECTION_NAVIGATE]
 
 
 def test_accidental_navigation_is_still_removed_from_a_mixed_turn(production_env):

@@ -65,7 +65,12 @@ def test_run_recovers_explicit_add_to_cart_when_llm_misses_action(monkeypatch):
 
     assert result["intent"] == "add_to_cart"
     assert result["response_text"] == "I'll try to add NOVA Daily Phone to your cart now."
-    assert result["ui_actions"] == [{"action": "ADD_TO_CART", "params": {"product_id": "1"}}]
+    # The action also carries the resolved record's exact name: the host website
+    # owns its own product ids, so the name is what lets the browser find this
+    # product's real control when the two catalogs key it differently.
+    assert result["ui_actions"] == [
+        {"action": "ADD_TO_CART", "params": {"product_id": "1", "product_name": "NOVA Daily Phone"}}
+    ]
 
 
 def test_run_recovers_phone_search_from_catalog_when_vector_retrieval_misses(monkeypatch):

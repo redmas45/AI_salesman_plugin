@@ -82,9 +82,13 @@ def test_inventory_type_missing_uses_real_categories_without_llm(monkeypatch):
 def test_inventory_type_cleans_other_phone_modifier(monkeypatch):
     from agent import orchestrator
 
+    # Both records carry the catalog's own product-type metadata, exactly as a
+    # real storefront publishes it. The Hub learns "this is a phone" from that
+    # metadata; it must not need a built-in list of brand or model names to know
+    # what an iPhone is, because such a list only ever fits one store.
     products = [
         {"id": "1", "name": "OPPO Active Android Budget 9", "category_name": "Electronics", "tags": ["phone", "android"], "stock": 4},
-        {"id": "2", "name": "iPhone 17", "brand": "Apple", "category_name": "Electronics", "stock": 8},
+        {"id": "2", "name": "iPhone 17", "brand": "Apple", "category_name": "Electronics", "subcategory": "Smartphones", "tags": ["phone", "smartphone"], "stock": 8},
     ]
 
     monkeypatch.setattr(orchestrator, "get_all_products", lambda site_id, limit=1000: products)
@@ -107,7 +111,9 @@ def test_inventory_type_cleans_other_phone_modifier(monkeypatch):
     actions = next(event for event in events if event["event"] == "actions")
 
     assert "I found 2 phones in stock" in response["data"]["response_text"]
-    assert actions["data"]["ui_actions"][0]["params"]["product_ids"] == ["1", "2"]
+    # Both phones are returned. Their relative ranking depends on how richly each
+    # record is described in the catalog and is not what this test pins.
+    assert sorted(actions["data"]["ui_actions"][0]["params"]["product_ids"]) == ["1", "2"]
     assert actions["data"]["ui_actions"][0]["params"]["search_query"] == "phone"
 
 

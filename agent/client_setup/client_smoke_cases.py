@@ -61,16 +61,19 @@ def assistant_smoke_cases(
 def fallback_assistant_smoke_cases(vertical_key: str) -> list[dict[str, Any]]:
     cases_by_vertical: dict[str, list[dict[str, Any]]] = {
         "ecommerce": [
+            # Deliberately brand-free: this fallback runs for every ecommerce
+            # client, so naming brands here would fail any store that does not
+            # happen to sell them. Brand-specific checks come from the client's
+            # own catalog, never from this list.
             smoke_case(
-                "compare_apple_samsung_phone",
-                "Compare Apple and Samsung phones.",
+                "compare_two_products",
+                "Compare two of your most popular products.",
                 ["SHOW_COMPARISON"],
-                required_terms=["apple", "samsung"],
             ),
-            smoke_case("sort_phones_low_to_high", "Sort phones low to high.", ["SORT_PRODUCTS"]),
+            smoke_case("sort_products_low_to_high", "Sort these products from low to high price.", ["SORT_PRODUCTS"]),
             smoke_case(
-                "recommend_phone_accessory",
-                "Recommend a phone and tell me what accessory I should buy with it.",
+                "recommend_product_accessory",
+                "Recommend a product and tell me what accessory I should buy with it.",
                 ["SHOW_PRODUCTS"],
                 expected_terms=["accessory", "case"],
             ),
