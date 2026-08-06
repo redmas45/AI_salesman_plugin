@@ -16,7 +16,7 @@ import {
 /**
  * Drive the host's own search box so the customer's real page moves.
  *
- * Ordinary discovery ("do you have Samsung phones?") is a website action, not an
+ * Ordinary discovery ("do you have flagship phones?") is a website action, not an
  * overlay: the shopper should end up on the store's real results, able to keep
  * browsing after the assistant stops talking. This fills the published input,
  * submits the published form, and then proves from the DOM that the results the
@@ -32,7 +32,7 @@ function locationReflectsQuery(query) {
   }
 }
 
-// A phrase built from several words ("samsung phone") is matched literally by many
+// A phrase built from several words ("flagship phone") is matched literally by many
 // storefronts, so a discovery query can land on one lonely result while the
 // assistant is describing a dozen. When that happens the broadest meaningful word
 // is retried once, so the page ends up showing the range being talked about.

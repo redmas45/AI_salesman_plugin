@@ -6,6 +6,7 @@ import {
   clean,
   failed,
   findRoleAll,
+  hostPublishesCheckout,
   hostPublishesNav,
   normalizeKey,
   normalizePath,
@@ -25,6 +26,7 @@ import {
  */
 
 const NAV_STAGE = "host_navigate";
+const CHECKOUT_STAGE = "host_checkout";
 const READY_SELECTOR = "main, [data-aihub-role='search-results'], [data-product-id]";
 
 /**
@@ -118,4 +120,27 @@ export async function runHostNavigate(target) {
   const ready = await waitFor(() => (document.querySelector(READY_SELECTOR) ? true : null), SETTLE_TIMEOUT_MS);
   if (!ready) return failed(NAV_STAGE, "page_not_ready", evidence);
   return succeeded(NAV_STAGE, evidence);
+}
+
+/** Open the host's real checkout control and verify the checkout route changed. */
+export async function runHostCheckout() {
+  if (!hostPublishesCheckout()) return null;
+  const control = findRoleAll(AIHUB_ROLE.checkout)[0];
+  if (!control) return null;
+
+  const before = `${window.location.pathname}${window.location.search}`;
+  const expected = sameOriginPath(control.getAttribute("href") || "/checkout");
+  activateElement(control);
+  const reached = await waitFor(
+    () => (expected && routeSatisfies(expected) ? true : null),
+    SETTLE_TIMEOUT_MS,
+  );
+  const current = `${window.location.pathname}${window.location.search}`;
+  const evidence = { expected: normalizePath(expected || "/checkout"), route: current };
+  if (reached) return succeeded(CHECKOUT_STAGE, evidence);
+  return failed(
+    CHECKOUT_STAGE,
+    current === before ? "route_unchanged" : "wrong_route",
+    evidence,
+  );
 }

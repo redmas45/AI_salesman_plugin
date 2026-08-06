@@ -480,3 +480,50 @@ def test_newer_validation_clears_action_health_block(monkeypatch) -> None:
     assert health["actions"]["REQUEST_ESTIMATE"]["status"] == "validated"
     assert health["blocked_actions"] == []
 
+
+def test_browser_validation_keeps_supported_action_observed_on_another_page(monkeypatch) -> None:
+    stored = {
+        "actions": {"ADD_TO_CART": {"type": "click", "selector": "button.add"}},
+    }
+    monkeypatch.setattr(client_db, "_client_vertical_config", lambda site: dict(stored))
+    monkeypatch.setattr(client_db, "_write_client_vertical_config", lambda site, config: stored.update(config))
+    monkeypatch.setattr(client_db, "get_client_detail", lambda site: {"site_id": site, "vertical_config": stored})
+    _mock_durable_action_events(monkeypatch)
+
+    client_db.save_adapter_validation_report(
+        "builder_demo",
+        {
+            "origin": "https://builder.example",
+            "url": "https://builder.example/products/phone",
+            "validated_at": "2026-01-01T00:01:00Z",
+            "actions": {
+                "ADD_TO_CART": {
+                    "type": "click",
+                    "status": "ok",
+                    "supported": True,
+                    "confidence": 0.9,
+                }
+            },
+        },
+    )
+    client_db.save_adapter_validation_report(
+        "builder_demo",
+        {
+            "origin": "https://builder.example",
+            "url": "https://builder.example/",
+            "validated_at": "2026-01-01T00:02:00Z",
+            "actions": {
+                "ADD_TO_CART": {
+                    "type": "click",
+                    "status": "missing",
+                    "supported": False,
+                    "confidence": 0.25,
+                }
+            },
+        },
+    )
+
+    validation = stored["validation"]
+    assert validation["actions"]["ADD_TO_CART"]["supported"] is True
+    assert validation["summary"] == {"total": 1, "supported": 1, "needs_repair": 0, "repair_suggestions": 0}
+    assert validation["url"] == "https://builder.example/"

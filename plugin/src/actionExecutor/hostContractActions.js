@@ -1,11 +1,13 @@
 import { ACTIONS, ACTION_PARAMS } from "../core/constants";
 import {
   hostPublishesCart,
+  hostPublishesCheckout,
   hostPublishesClearCart,
   hostPublishesNav,
   hostPublishesProducts,
   hostPublishesSearch,
   runHostAddToCart,
+  runHostCheckout,
   runHostClearCart,
   runHostNavigate,
   runHostProductDetail,
@@ -22,7 +24,7 @@ import {
  * executors handle it, so a host without the contract is never regressed.
  *
  * Ordinary discovery is deliberately included: a shopper asking "do you have
- * Samsung phones?" wants the store's own results page, not a placard summarising
+ * flagship phones?" wants the store's own results page, not a placard summarising
  * it. Comparison is deliberately excluded - a side-by-side placard is the useful
  * form for that one case, and it stays the only product action that opens one.
  */
@@ -61,6 +63,7 @@ export function canExecuteHostContractAction(action) {
   if (name === ACTIONS.ADD_TO_CART) {
     return (hostPublishesCart() || hostPublishesProducts()) && hasRecordIdentity(action);
   }
+  if (name === ACTIONS.CHECKOUT) return hostPublishesCheckout();
   if (name === ACTIONS.CLEAR_CART) return hostPublishesClearCart();
   if (DETAIL_ACTIONS.has(name)) {
     return (hostPublishesProducts() || hostPublishesSearch()) && hasRecordIdentity(action);
@@ -74,6 +77,7 @@ export async function executeHostContractAction(action) {
   const name = action.action;
   const params = actionParams(action);
   if (name === ACTIONS.ADD_TO_CART) return runHostAddToCart(params);
+  if (name === ACTIONS.CHECKOUT) return runHostCheckout();
   if (name === ACTIONS.CLEAR_CART) return runHostClearCart();
   if (DETAIL_ACTIONS.has(name)) return runHostProductDetail(params);
   if (SEARCH_ACTIONS.has(name)) {

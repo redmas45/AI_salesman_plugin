@@ -184,6 +184,39 @@ def validated_adapter_validation(raw_report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def merge_adapter_validation(previous_validation: Any, raw_report: Any) -> dict[str, Any]:
+    """Merge page observations without letting a missing control erase proof."""
+    current = validated_adapter_validation(raw_report)
+    if not isinstance(previous_validation, dict):
+        return current
+
+    previous = validated_adapter_validation(previous_validation)
+    merged_actions = dict(previous["actions"])
+    for action_name, evidence in current["actions"].items():
+        existing = merged_actions.get(action_name)
+        if existing is None or _validation_evidence_score(evidence) >= _validation_evidence_score(existing):
+            merged_actions[action_name] = evidence
+
+    return {
+        "source": current["source"] or previous["source"],
+        "origin": current["origin"] or previous["origin"],
+        "url": current["url"] or previous["url"],
+        "validated_at": current["validated_at"] or previous["validated_at"],
+        "summary": validation_summary(merged_actions),
+        "actions": merged_actions,
+    }
+
+
+def _validation_evidence_score(evidence: dict[str, Any]) -> tuple[int, int, float, int]:
+    status = safe_action_text(evidence.get("status")).lower()
+    return (
+        int(bool(evidence.get("supported"))),
+        int(bool(evidence.get("repair"))),
+        safe_confidence(evidence.get("confidence"), 0.0),
+        int(status in {"ok", "page_scoped", "repair_suggested"}),
+    )
+
+
 def validated_action_evidence(raw_evidence: Any) -> dict[str, Any]:
     evidence = raw_evidence if isinstance(raw_evidence, dict) else {}
     clean_evidence = {

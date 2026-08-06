@@ -7,6 +7,11 @@ const ACTION_REPORT_PATH = "/v1/widget/action-report";
 const VALIDATED_PAGES = "__aihubAdapterValidatedPages";
 const VALIDATION_WAIT_MS = 3000;
 const VALIDATION_POLL_MS = 150;
+const HOST_ACTION_ROLES = Object.freeze({
+  ADD_TO_CART: "add-to-cart",
+  CHECKOUT: "checkout",
+});
+const ASSISTANT_UI_SELECTOR = '[id^="mayabot"], [data-aihub-widget]';
 
 function clean(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -51,6 +56,14 @@ function findClickableByLabels(labels) {
     if (labels.some((label) => text.includes(label))) return element;
   }
   return null;
+}
+
+function findHostActionRole(actionName) {
+  const role = HOST_ACTION_ROLES[String(actionName || "").toUpperCase()];
+  if (!role) return null;
+  return queryElementsDeep(`[data-aihub-role="${role}"]`).find(
+    (element) => !element.closest?.(ASSISTANT_UI_SELECTOR),
+  ) || null;
 }
 
 function findFormByLabels(labels) {
@@ -127,6 +140,16 @@ function validateClick(actionName, actionConfig) {
   const configured = queryElement(actionConfig.selector);
   if (configured) {
     return supportedEvidence("click", actionConfig.selector, "Configured click selector exists in the live DOM.");
+  }
+
+  const hostContractElement = findHostActionRole(actionName);
+  if (hostContractElement) {
+    const role = HOST_ACTION_ROLES[String(actionName || "").toUpperCase()];
+    return supportedEvidence(
+      "click",
+      `[data-aihub-role="${role}"]`,
+      "Stable host action role exists in the live DOM; configured selector was stale.",
+    );
   }
 
   const labels = labelsForAction(actionName, actionConfig);

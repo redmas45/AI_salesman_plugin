@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from agent.adapters.adapter_repair import build_action_repair_proposals
+from db.client_domain.actions.client_action_configs import merge_adapter_validation
 
 
 @dataclass(frozen=True)
@@ -217,7 +218,7 @@ def save_adapter_validation_report(
     """Persist browser runtime validation and apply high-confidence repairs."""
     clean_site_id = deps.safe_site_id(site_id)
     vertical_config = deps.client_vertical_config(clean_site_id)
-    validation = deps.validated_adapter_validation(report)
+    validation = merge_adapter_validation(vertical_config.get("validation"), report)
     vertical_config["validation"] = validation
     deps.apply_validation_repairs(vertical_config, validation)
     deps.refresh_action_health(
