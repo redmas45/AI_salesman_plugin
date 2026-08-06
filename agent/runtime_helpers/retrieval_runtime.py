@@ -11,6 +11,7 @@ from typing import Any, Callable
 from agent.products.product_matching import ProductCatalogMatcher
 from agent.products.product_matching_lexical import products_matching_query_facets
 from agent.products.product_response import normalize_lookup_text
+from agent.retrieval.referent_reference import refers_to_shown_records
 from api.contracts.models import (
     ACTION_COMPARE_ENTITIES,
     ACTION_NAVIGATE_TO,
@@ -377,15 +378,14 @@ def needs_history_product_context(normalized_query: str, query_terms: list[str])
 
 
 def is_referential_product_followup(text: str) -> bool:
-    return bool(
-        re.search(
-            r"\b(those|these|them|compared|shortlisted|the other|the cheaper|the cheapest|"
-            r"the better|better value|best one|best option|which option|which one|that one|"
-            r"this one|open it|add it|pick it)\b",
-            text,
-        )
-        or re.search(r"\b(?:open|view|add|buy|choose|pick)\s+that\s+[a-z][a-z0-9-]{2,}\b", text)
-    )
+    """True when the turn's subject is a record the customer was already shown.
+
+    The rules live in one module so ordinals ("the first one"), bare
+    demonstratives ("add this to the cart") and scope-changing superlatives
+    ("the cheapest item in the electronics section") are judged the same way
+    everywhere they are consulted.
+    """
+    return refers_to_shown_records(text)
 
 
 def history_message_is_context_free(text: str, terms: list[str]) -> bool:

@@ -5,30 +5,16 @@ from __future__ import annotations
 import re
 from typing import Any
 
-ORDINAL_INDEXES = {
-    "first": 0,
-    "1st": 0,
-    "option one": 0,
-    "second": 1,
-    "2nd": 1,
-    "option two": 1,
-    "third": 2,
-    "3rd": 2,
-    "option three": 2,
-    "fourth": 3,
-    "4th": 3,
-    "option four": 3,
-}
+from agent.retrieval.referent_reference import ordinal_position
 
 
 def ordinal_index(text: str) -> int | None:
-    for token, index in ORDINAL_INDEXES.items():
-        if re.search(rf"\b{re.escape(token)}\b", text):
-            return index
-    match = re.search(r"\boption\s+([1-4])\b", text)
-    if match:
-        return int(match.group(1)) - 1
-    return None
+    """Which displayed record an ordinal selects, if the turn selects one.
+
+    Delegates to the shared referent rules so "the first one" and "first I want
+    to browse" are told apart the same way in every part of the pipeline.
+    """
+    return ordinal_position(text)
 
 
 def normalize_text(value: Any) -> str:

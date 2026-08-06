@@ -16,6 +16,10 @@ from agent.products.product_response_text import (
     plain_text,
 )
 
+# How many records a spoken answer reads out. Anything beyond this is summarized
+# as a count rather than listed, so the answer stays listenable.
+SEARCH_RESULT_BULLET_LIMIT = 3
+
 
 class ProductSearchQueryCleaner:
     """Build short host-site search queries from noisy speech transcripts."""
@@ -268,18 +272,31 @@ class ProductCatalogFormatter:
         ]
         return "Here are source-backed options to consider:\n" + "\n".join(bullets)
 
-    def search_text(self, products: list[dict]) -> str:
-        shown = products[:3]
-        prefix = (
-            "I found this matching product:"
-            if len(products) == 1
-            else f"I found {len(products)} matching products:"
-        )
+    def search_text(self, products: list[dict], matching_total: int | None = None) -> str:
+        """Describe a result set without contradicting what is on screen.
+
+        ``products`` are the records the customer's cards will show, so the
+        claimed count is theirs. ``matching_total`` is how many records matched
+        in all; when more matched than are displayed the gap is stated rather
+        than left for the customer to notice, which is what made "I found 5"
+        read as a contradiction against a page showing a different number.
+
+        The bullets are a spoken sample of the displayed set, never the claim.
+        """
+        displayed_count = len(products)
+        total = max(int(matching_total), displayed_count) if matching_total else displayed_count
+        sample = products[:SEARCH_RESULT_BULLET_LIMIT]
+        if total == 1:
+            prefix = "I found this matching product:"
+        elif total > displayed_count:
+            prefix = f"I found {total} matching products. I'm showing {displayed_count} here:"
+        else:
+            prefix = f"I found {total} matching products:"
         bullets = [
             f"- {self.display_name(product)}: {' '.join(self.search_fact_parts(product)) or 'catalog item'}"
-            for product in shown
+            for product in sample
         ]
-        if len(products) > len(shown):
+        if total > len(sample):
             bullets.append("I can show more options too.")
         return prefix + "\n" + "\n".join(bullets)
 
@@ -446,7 +463,13 @@ class ProductDisplayGrounder:
 
         if str(response.get("intent") or "") not in {"product_detail", "product_compare"}:
             response["intent"] = "product_search"
-        response_text = self._formatter.search_text(selected)
+        # The display action may carry fewer records than matched this turn. The
+        # customer sees the displayed ones, so the answer counts those and says
+        # how many matched in all rather than leaving the gap unexplained.
+        response_text = self._formatter.search_text(
+            selected,
+            matching_total=len(retrieved_products),
+        )
         if self._wants_accessory_recommendation(transcript):
             response_text = self._formatter.with_accessory_recommendation(response_text, selected)
         response["response_text"] = response_text

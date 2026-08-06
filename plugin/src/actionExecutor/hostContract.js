@@ -18,6 +18,7 @@ export {
   AIHUB_NAV_ATTR,
   AIHUB_ROLE,
   hostPublishesCart,
+  hostPublishesClearCart,
   hostPublishesNav,
   hostPublishesProducts,
   hostPublishesSearch,
@@ -27,5 +28,5 @@ export {
   resolveProductCard,
 } from "./hostContractDom";
 export { runHostSearch } from "./hostContractSearch";
-export { runHostAddToCart, runHostProductDetail } from "./hostContractProducts";
+export { runHostAddToCart, runHostClearCart, runHostProductDetail } from "./hostContractProducts";
 export { runHostNavigate } from "./hostContractNav";

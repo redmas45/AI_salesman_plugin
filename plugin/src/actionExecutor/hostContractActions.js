@@ -1,10 +1,12 @@
 import { ACTIONS, ACTION_PARAMS } from "../core/constants";
 import {
   hostPublishesCart,
+  hostPublishesClearCart,
   hostPublishesNav,
   hostPublishesProducts,
   hostPublishesSearch,
   runHostAddToCart,
+  runHostClearCart,
   runHostNavigate,
   runHostProductDetail,
   runHostSearch,
@@ -59,6 +61,7 @@ export function canExecuteHostContractAction(action) {
   if (name === ACTIONS.ADD_TO_CART) {
     return (hostPublishesCart() || hostPublishesProducts()) && hasRecordIdentity(action);
   }
+  if (name === ACTIONS.CLEAR_CART) return hostPublishesClearCart();
   if (DETAIL_ACTIONS.has(name)) {
     return (hostPublishesProducts() || hostPublishesSearch()) && hasRecordIdentity(action);
   }
@@ -71,6 +74,7 @@ export async function executeHostContractAction(action) {
   const name = action.action;
   const params = actionParams(action);
   if (name === ACTIONS.ADD_TO_CART) return runHostAddToCart(params);
+  if (name === ACTIONS.CLEAR_CART) return runHostClearCart();
   if (DETAIL_ACTIONS.has(name)) return runHostProductDetail(params);
   if (SEARCH_ACTIONS.has(name)) {
     const query = searchQuery(action);

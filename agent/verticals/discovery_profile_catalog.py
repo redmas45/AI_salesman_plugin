@@ -42,6 +42,7 @@ ECOMMERCE_PROFILE = VerticalDiscoveryProfile(
     },
     action_labels={
         "ADD_TO_CART": ("add to cart", "add cart", "add to bag", "buy now"),
+        "CLEAR_CART": ("clear cart", "empty cart", "remove all from cart", "remove everything from cart"),
         "CHECKOUT": ("checkout", "continue to payment", "place order"),
         "FILTER_PRODUCTS": ("search", "filter", "find products"),
     },

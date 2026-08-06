@@ -120,9 +120,21 @@ def neutralize_pending_action_claims(response_text: str, actions: list[dict[str,
     )
 
     def replacement(match: re.Match[str]) -> str:
+        if _states_a_result_count(response_text, match.end()):
+            return match.group(0)
         return f"I'll try to {verb_bases[match.group(1).lower()]}"
 
     return pattern.sub(replacement, response_text, count=1)
+
+
+# "I'm showing 3 here" counts the answer's own records; it does not claim the
+# website did anything, so turning it into "I'll try to show 3" both misreports
+# the answer and re-introduces the tentative wording action truth removed.
+_RESULT_COUNT_RE = re.compile(r"\s*\d+\s+(?:here|of\s+them|options?|results?)\b", re.IGNORECASE)
+
+
+def _states_a_result_count(response_text: str, verb_end: int) -> bool:
+    return bool(_RESULT_COUNT_RE.match(response_text[verb_end:]))
 
 
 def align_response_when_actions_removed(

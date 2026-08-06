@@ -18,6 +18,7 @@ result falls back honestly to that brand rather than padding with ineligible ite
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from agent.products.product_response_text import normalize_lookup_text, numeric_value
@@ -55,6 +56,99 @@ def _in_stock(product: Product) -> bool:
 
 def product_brand(product: Product) -> str:
     return normalize_lookup_text(product.get("brand") or product.get("vendor") or "")
+
+
+# The narrowest published grouping wins, so two phones compare as phones even
+# though they share the broader "electronics" category with a charger. These are
+# typed catalog fields, not retail words, so a travel or policy record groups the
+# same way.
+FAMILY_FIELDS = ("subcategory", "product_type", "category_name", "category", "type")
+_EXPLICIT_FAMILY_FIELDS = ("subcategory", "product_type", "category_name")
+_CATEGORY_PATH_PATTERN = re.compile(
+    r"\bcategory\s+path\s*:\s*(.+?)(?=\.\s+(?:specifications|highlights)\s*:|$)",
+    re.IGNORECASE,
+)
+
+
+def _family_leaf(value: Any) -> str:
+    text = str(value or "").strip()
+    return text.split(">")[-1].strip() if text else ""
+
+
+def _description_family(product: Product) -> str:
+    description = str(product.get("description") or product.get("summary") or "")
+    match = _CATEGORY_PATH_PATTERN.search(description)
+    return _family_leaf(match.group(1)) if match else ""
+
+
+def product_family(product: Product) -> str:
+    """The narrowest published grouping this record belongs to."""
+    for field in _EXPLICIT_FAMILY_FIELDS:
+        family = _family_leaf(product.get(field))
+        if family:
+            return family
+
+    # API ingestion preserves a source subcategory in the normalized description
+    # because the database contract does not persist a separate subcategory field.
+    # Prefer it over the broad top-level category so a phone is not compared with
+    # a charger merely because both are classified as electronics.
+    description_family = _description_family(product)
+    if description_family:
+        return description_family
+
+    for field in ("category", "type"):
+        family = _family_leaf(product.get(field))
+        if family:
+            return family
+    return ""
+
+
+def _same_family(first: Product, second: Product) -> bool:
+    """Unknown grouping never blocks a comparison; it only fails to justify one."""
+    left = normalize_lookup_text(product_family(first))
+    right = normalize_lookup_text(product_family(second))
+    return not left or not right or left == right
+
+
+def comparison_family_conflict(
+    products: list[Product],
+    *,
+    brands: tuple[str, ...] = (),
+) -> tuple[str, ...] | None:
+    """Report the families a brand-only request would otherwise compare across.
+
+    Returns the sorted family names when the best candidate for each requested
+    brand belongs to a different kind of thing, and ``None`` when the request is
+    answerable. Comparing a phone with a charger because both brands matched is
+    never a useful answer, so the caller asks which kind was meant.
+    """
+    if len(brands) < 2:
+        return None
+    best_by_brand: dict[str, Product] = {}
+    for product in products:
+        brand = product_brand(product)
+        if brand and brand not in best_by_brand:
+            best_by_brand[brand] = product
+    if len(best_by_brand) < 2:
+        return None
+    families = {
+        normalize_lookup_text(product_family(product)): product_family(product)
+        for product in best_by_brand.values()
+    }
+    if "" in families or len(families) < 2:
+        return None
+    return tuple(sorted(families.values()))
+
+
+def _records_were_named(products: list[Product], count: int) -> bool:
+    """True when enough records carry retrieval's own exact-match marker.
+
+    A record is marked when the request pinned it down by name and type rather
+    than by brand alone, which is precisely the case where comparing across
+    families is what the customer asked for.
+    """
+    matched = sum(1 for product in products if product.get("_exact_name_match"))
+    return matched >= min(count, 2)
 
 
 def _brand_ok(product: Product, brands: tuple[str, ...]) -> bool:
@@ -113,11 +207,18 @@ def select_comparison_products(
     price_constraints: dict[str, float] | None = None,
     exclusions: tuple[str, ...] = (),
     require_in_stock: bool = True,
+    records_named_explicitly: bool = False,
 ) -> list[Product]:
     """Return exactly ``requested_count`` eligible products when that many exist.
 
     Ranking order from the caller is preserved; brand diversity only reorders
-    among products that already passed every hard constraint.
+    among products that already passed every hard constraint, and never at the
+    cost of comparing two different kinds of thing.
+
+    ``records_named_explicitly`` marks a request that named each record itself
+    ("compare the Everyday Laptop and the Gaming Laptop"). Naming both is consent
+    to compare them, so the family rule does not apply. When the caller does not
+    say, it is inferred from the records' own exact-match marker.
     """
     count = requested_count or DEFAULT_COMPARISON_COUNT
     count = max(1, min(int(count), MAX_COMPARISON_COUNT))
@@ -138,11 +239,17 @@ def select_comparison_products(
     if len(brands) == 1:
         return eligible[:count]
 
+    named_explicitly = records_named_explicitly or _records_were_named(eligible, count)
+    anchor = eligible[0]
     selected: list[Product] = []
     used_brands: set[str] = set()
     for product in eligible:
         if len(selected) >= count:
             break
+        # The best-ranked record sets the kind of thing under discussion. A
+        # brand match alone is not a reason to compare a phone with a charger.
+        if not named_explicitly and not _same_family(anchor, product):
+            continue
         brand = product_brand(product)
         if brand and brand in used_brands:
             continue
@@ -156,6 +263,8 @@ def select_comparison_products(
         for product in eligible:
             if len(selected) >= count:
                 break
+            if not named_explicitly and not _same_family(anchor, product):
+                continue
             if product not in selected:
                 selected.append(product)
 

@@ -11,6 +11,7 @@ from agent.products.product_response import (
     numeric_value,
     phrase_in_text,
 )
+from agent.retrieval.referent_reference import ordinal_position
 from api.contracts.models import ACTION_ADD_TO_CART, PRODUCT_ID_PARAM, QUANTITY_PARAM
 
 
@@ -178,24 +179,12 @@ def product_recommendation_rank(
 
 
 def ordinal_index(text: str) -> int | None:
-    ordinals = {
-        "first": 0,
-        "1st": 0,
-        "option 1": 0,
-        "second": 1,
-        "2nd": 1,
-        "option 2": 1,
-        "third": 2,
-        "3rd": 2,
-        "option 3": 2,
-        "fourth": 3,
-        "4th": 3,
-        "option 4": 3,
-    }
-    for token, index in ordinals.items():
-        if phrase_in_text(token, text):
-            return index
-    return None
+    """Which displayed record an ordinal selects, if the turn selects one.
+
+    Delegates to the shared referent rules so a bare "first" inside an unrelated
+    sentence no longer silently picks the first candidate.
+    """
+    return ordinal_position(text)
 
 
 def cart_quantity(text: str) -> int:

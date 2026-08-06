@@ -8,10 +8,12 @@ from typing import Any
 from agent.responses import cart_responses
 from agent.products.comparison_selection import (
     DEFAULT_COMPARISON_COUNT,
+    comparison_family_conflict,
     product_brand,
     select_comparison_products,
 )
 from agent.products.product_response import (
+    SEARCH_RESULT_BULLET_LIMIT,
     ProductCatalogFormatter,
     ProductDisplayGrounder,
     ProductSearchQueryCleaner,
@@ -114,6 +116,43 @@ def _select_comparison_candidates(
     )
 
 
+def _requested_comparison_brands(
+    transcript: str,
+    products: list[dict],
+    requested_ids: list[Any] | None,
+) -> tuple[str, ...]:
+    ordered = _ordered_comparison_candidates(products, requested_ids)
+    catalog_brands = tuple(dict.fromkeys(product_brand(item) for item in ordered if product_brand(item)))
+    constraints = extract_ecommerce_constraints(transcript, catalog_brands=catalog_brands)
+    requested_products = ordered[: len(requested_ids or [])]
+    operand_brands = _brands_named_by_product_operand(transcript, requested_products)
+    return tuple(dict.fromkeys((*constraints.brands, *operand_brands)))
+
+
+def comparison_family_clarification(
+    transcript: str,
+    products: list[dict],
+    requested_ids: list[Any] | None = None,
+) -> str:
+    """One question when a brand-only comparison spans unrelated kinds of thing.
+
+    "Compare Samsung versus Apple" is under-specified: the best match for each
+    brand may be a phone and a charger, which is not a comparison anyone asked
+    for. Guessing produced the reported nonsense pairing, so the turn asks
+    instead. The options come from the catalog's own groupings, never a list
+    written into the Hub.
+    """
+    ordered = _ordered_comparison_candidates(products, requested_ids)
+    if any(product.get("_exact_name_match") for product in ordered):
+        return ""
+    brands = _requested_comparison_brands(transcript, products, requested_ids)
+    families = comparison_family_conflict(ordered, brands=brands)
+    if not families:
+        return ""
+    options = " or ".join([", ".join(families[:-1]), families[-1]] if len(families) > 2 else families)
+    return f"Which type should I compare: {options}?"
+
+
 def _apply_selected_products(action: dict[str, Any], selected: list[dict]) -> bool:
     product_ids = [str(product["id"]) for product in selected]
     if len(product_ids) >= 2:
@@ -132,6 +171,16 @@ def promote_comparison_action(
     retrieved_products: list[dict] | None = None,
 ) -> None:
     if not wants_comparison(transcript):
+        return
+
+    # A comparison whose operands are not the same kind of thing is asked about
+    # rather than guessed at, so the customer never sees a phone contrasted with
+    # a charger because both brands happened to match.
+    clarification = comparison_family_clarification(transcript, retrieved_products or [])
+    if clarification:
+        response["intent"] = "clarify"
+        response["response_text"] = clarification
+        response["ui_actions"] = []
         return
 
     actions = response.get("ui_actions", [])
@@ -378,12 +427,21 @@ def prevent_false_no_matching_product_claim(
     product_ids = [str(product.get("id")) for product in selected if product.get("id")]
     if not product_ids:
         return
-    names = [str(product.get("name") or product.get("title") or "").strip() for product in selected[:3]]
-    shown_names = ", ".join(name for name in names if name)
+    named = [
+        str(product.get("name") or product.get("title") or "").strip()
+        for product in selected[:SEARCH_RESULT_BULLET_LIMIT]
+    ]
+    named = [name for name in named if name]
+    shown_names = ", ".join(named)
+    total = len(retrieved_products)
     response["intent"] = "product_search"
     response["confidence"] = max(float(response.get("confidence") or 0.0), 0.92)
-    response["response_text"] = f"I found {len(retrieved_products)} matching products"
-    if shown_names:
+    # Naming three of twenty while claiming twenty reads as a contradiction
+    # against what the customer can see, so the gap is stated, not implied.
+    response["response_text"] = f"I found {total} matching products"
+    if shown_names and len(named) < total:
+        response["response_text"] += f". I'm showing {len(named)} here: {shown_names}"
+    elif shown_names:
         response["response_text"] += f": {shown_names}"
     response["response_text"] += "."
     response["ui_actions"] = [

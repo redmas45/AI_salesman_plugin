@@ -12,6 +12,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent.actions.registry import get_action
+from agent.flows.cart_intent import (
+    INTENT_CLEAR_CART,
+    INTENT_REMOVE_FROM_CART,
+    cart_intent,
+    mentions_cart,
+)
 from agent.flows.flow_planner_text import normalize_text, ordinal_index
 from agent.products.product_response import ProductCatalogFormatter
 from agent.responses.cart_responses import cart_target_product
@@ -23,6 +29,8 @@ FLOW_STATE_READY = "ready"
 FLOW_STATE_HANDOFF = "handoff"
 
 COMMERCE_ITEM_ACTIONS = ("ADD_TO_CART",)
+CLEAR_CART_ACTION = "CLEAR_CART"
+REMOVE_FROM_CART_ACTION = "REMOVE_FROM_CART"
 CHECKOUT_ACTIONS = ("CHECKOUT", "CHECKOUT_HANDOFF")
 DETAIL_ACTIONS = ("OPEN_ENTITY_DETAIL", "SHOW_PRODUCT_DETAIL")
 CONTACT_ACTIONS = (
@@ -125,6 +133,13 @@ def plan_universal_flow(
         return None
 
     target = _resolved_target(text, retrieved_items)
+    if intent == INTENT_CLEAR_CART:
+        return _clear_cart_plan(allowed_actions)
+
+    if intent == INTENT_REMOVE_FROM_CART:
+        target = target or cart_target_product(text, retrieved_items, PRODUCT_FORMATTER)
+        return _remove_from_cart_plan(target, allowed_actions)
+
     if intent in {"add_to_cart", "buy"} and ecommerce_runtime:
         target = target or cart_target_product(text, retrieved_items, PRODUCT_FORMATTER)
         return _commerce_plan(intent, text, target, retrieved_items, allowed_actions)
@@ -176,6 +191,51 @@ def plan_universal_flow(
         ).to_response()
 
     return None
+
+
+def _clear_cart_plan(allowed_actions: set[str]) -> dict[str, Any] | None:
+    """Empty the cart, or say plainly that this site cannot."""
+    if CLEAR_CART_ACTION not in allowed_actions:
+        return FlowPlan(
+            response_text="I cannot clear the cart on this website yet.",
+            intent=INTENT_CLEAR_CART,
+            confidence=0.72,
+            ui_actions=[],
+            flow_state=FLOW_STATE_HANDOFF,
+        ).to_response()
+    return FlowPlan(
+        response_text="I'll try to clear your cart now.",
+        intent=INTENT_CLEAR_CART,
+        confidence=0.92,
+        ui_actions=[{"action": CLEAR_CART_ACTION, "params": {}}],
+        flow_state=FLOW_STATE_READY,
+    ).to_response()
+
+
+def _remove_from_cart_plan(
+    target: dict[str, Any] | None,
+    allowed_actions: set[str],
+) -> dict[str, Any] | None:
+    """Take one named item out of the cart.
+
+    Without a resolved record the turn falls through to the normal pipeline
+    rather than emitting a removal that names nothing.
+    """
+    if REMOVE_FROM_CART_ACTION not in allowed_actions or not target:
+        return None
+    title = _item_title(target)
+    return FlowPlan(
+        response_text=f"I'll try to remove {title} from your cart now.",
+        intent=INTENT_REMOVE_FROM_CART,
+        confidence=0.9,
+        ui_actions=[
+            {
+                "action": REMOVE_FROM_CART_ACTION,
+                "params": {"product_id": str(target.get("id")), "product_name": title},
+            }
+        ],
+        flow_state=FLOW_STATE_READY,
+    ).to_response()
 
 
 def _commerce_plan(
@@ -278,10 +338,13 @@ def _flow_intent(text: str, ecommerce_runtime: bool) -> str:
         return ""
     if _is_buying_guidance_question(text):
         return ""
-    if re.search(r"\b(add|put|place)\b.{0,40}\b(cart|basket|bag|tray)\b", text):
-        return "add_to_cart"
-    if re.search(r"\b(checkout|check out|cart|basket|bag)\b", text):
-        return "checkout"
+    # Cart requests are resolved by one deterministic precedence rule, so
+    # emptying a cart can never be reinterpreted as paying for it.
+    resolved_cart_intent = cart_intent(text)
+    if resolved_cart_intent:
+        return resolved_cart_intent
+    if mentions_cart(text):
+        return ""
     if re.search(r"\b(call me|callback|call back|contact|talk to|agent|advisor|sales)\b", text):
         return "contact"
     if re.search(r"\b(quote|estimate|premium|rate|calculator|calculate)\b", text):

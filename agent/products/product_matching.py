@@ -297,8 +297,15 @@ class ProductCatalogMatcher:
         except self._recoverable_errors as exc:
             self._logger.warning("PIPELINE | History tag product bulk lookup failed: %s", exc)
             return []
+        # The tag records the order the customer saw, and "the first one" means
+        # the first of those. A bulk lookup returns rows in the database's order,
+        # so restoring the requested sequence is what keeps an ordinal honest.
+        by_id = {str(product.get("id")): product for product in tagged_products}
         mentioned: list[dict[str, Any]] = []
-        for product in tagged_products:
+        for tagged_id in tagged_ids:
+            product = by_id.get(str(tagged_id))
+            if product is None:
+                continue
             product_copy = dict(product)
             product_copy["_semantic_score"] = 0.95
             mentioned.append(product_copy)

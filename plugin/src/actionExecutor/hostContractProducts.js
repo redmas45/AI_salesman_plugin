@@ -10,6 +10,7 @@ import {
   findRole,
   findRoleAll,
   hostPublishesCart,
+  hostPublishesClearCart,
   hostPublishesProducts,
   hostPublishesSearch,
   isHostElement,
@@ -34,6 +35,7 @@ import { runHostSearch } from "./hostContractSearch";
  */
 
 const CART_STAGE = "host_add_to_cart";
+const CLEAR_CART_STAGE = "host_clear_cart";
 const DETAIL_STAGE = "host_product_detail";
 
 function readCartCount() {
@@ -135,6 +137,29 @@ export async function runHostAddToCart(params) {
     ...evidence,
     line_item_present: hostProductId ? cartLineIds().includes(hostProductId) : true,
   });
+}
+
+/** Activate the host's own clear control and prove that its cart is empty. */
+export async function runHostClearCart() {
+  if (!hostPublishesClearCart()) return null;
+  const control = findRole(AIHUB_ROLE.clearCart);
+  if (!control) return failed(CLEAR_CART_STAGE, "clear_control_missing");
+  if (isDisabled(control)) return failed(CLEAR_CART_STAGE, "clear_control_disabled");
+
+  const beforeCount = readCartCount();
+  if (beforeCount == null) {
+    return failed(CLEAR_CART_STAGE, "cart_state_unobservable");
+  }
+  if (beforeCount === 0) {
+    return succeeded(CLEAR_CART_STAGE, { cart_before: 0, cart_after: 0 });
+  }
+
+  activateElement(control);
+  const cleared = await waitFor(() => (readCartCount() === 0 ? true : null), SETTLE_TIMEOUT_MS);
+  const evidence = { cart_before: beforeCount, cart_after: readCartCount() };
+  return cleared
+    ? succeeded(CLEAR_CART_STAGE, evidence)
+    : failed(CLEAR_CART_STAGE, "cart_not_empty", evidence);
 }
 
 /** The record's own link, as published by the host - never a guessed route. */

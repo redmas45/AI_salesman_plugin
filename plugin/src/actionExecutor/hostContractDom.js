@@ -16,6 +16,7 @@ export const AIHUB_ROLE = Object.freeze({
   searchSubmit: "search-submit",
   searchResults: "search-results",
   addToCart: "add-to-cart",
+  clearCart: "clear-cart",
   cartButton: "cart-button",
   cartLineItem: "cart-line-item",
   navLink: "nav-link",
@@ -84,6 +85,10 @@ export function hostPublishesSearch() {
 
 export function hostPublishesCart() {
   return Boolean(findRole(AIHUB_ROLE.addToCart));
+}
+
+export function hostPublishesClearCart() {
+  return Boolean(findRole(AIHUB_ROLE.clearCart));
 }
 
 export function hostPublishesNav() {
