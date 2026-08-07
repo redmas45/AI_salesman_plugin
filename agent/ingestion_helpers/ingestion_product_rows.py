@@ -111,6 +111,7 @@ def normalize_product_row(
         first(row.get("description"), row.get("summary"), row.get("body"), default=name)
     )
     category = clean_text(first(row.get("category"), row.get("type"), row.get("group"), default=fallback_category))
+    subcategory = published_subcategory(row)
     brand = clean_text(first(row.get("brand"), row.get("vendor"), row.get("maker"), default="Unknown Brand"))
 
     raw_id = first(row.get("id"), row.get("product_id"), row.get("_id"), default=None)
@@ -147,6 +148,7 @@ def normalize_product_row(
         "name": name,
         "brand": brand or "Unknown Brand",
         "category": category or fallback_category,
+        "subcategory": subcategory,
         "description": description or name,
         "price": price,
         "original_price": original_price,
@@ -159,6 +161,26 @@ def normalize_product_row(
         "image_url": image,
         "is_active": is_active,
     }
+
+
+def published_subcategory(row: dict[str, Any]) -> str | None:
+    """The leaf of the narrowest grouping the source publishes for this record.
+
+    Catalogues publish a path ("Electronics > Smartphones > Android Budget") or a
+    plain label. The whole path is kept, because a customer may name any level of
+    it: "electronics", "phones", or "android budget" all identify the same
+    records, and keeping only the leaf loses the level people usually say.
+    """
+    raw = first(
+        row.get("subcategory"),
+        row.get("sub_category"),
+        row.get("product_type"),
+        row.get("category_path"),
+        default=None,
+    )
+    segments = [clean_text(part) for part in str(raw or "").split(">")]
+    path = " > ".join(part for part in segments if part)
+    return path or None
 
 
 def derive_category_from_url(url: str) -> str:

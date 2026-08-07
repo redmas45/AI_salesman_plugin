@@ -1,3 +1,59 @@
+// WCAG 2.1 minimum contrast for body text. Below this the widget's own status
+// line becomes unreadable on a pale host accent.
+const MIN_TEXT_CONTRAST_RATIO = 4.5;
+
+function parseColor(value) {
+  const text = String(value || "").trim();
+  const hex = text.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    const digits = hex[1].length === 3 ? hex[1].replace(/./g, (c) => c + c) : hex[1];
+    return [0, 2, 4].map((index) => parseInt(digits.slice(index, index + 2), 16));
+  }
+  const parts = text.match(/rgba?\(([^)]+)\)/i);
+  if (!parts) return null;
+  const numbers = parts[1].split(",").map((part) => parseFloat(part));
+  return numbers.length >= 3 && numbers.slice(0, 3).every((n) => !Number.isNaN(n))
+    ? numbers.slice(0, 3)
+    : null;
+}
+
+function relativeLuminance(rgb) {
+  const channels = rgb.map((value) => {
+    const scaled = value / 255;
+    return scaled <= 0.03928 ? scaled / 12.92 : ((scaled + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+function contrastRatio(first, second) {
+  const [lighter, darker] = [relativeLuminance(first), relativeLuminance(second)].sort((a, b) => b - a);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+/**
+ * An accent safe to render text in, on the widget's own surface.
+ *
+ * The host's brand colour is used when it is legible. When it is not - a pale
+ * theme colour on a pale panel - it is darkened (or lightened in dark mode)
+ * until it passes, and falls back to the body text colour if it never does.
+ */
+export function readableAccent(primaryColor, textColor, isDark) {
+  const surface = isDark ? [24, 24, 27] : [255, 255, 255];
+  const accent = parseColor(primaryColor);
+  if (!accent) return textColor;
+  if (contrastRatio(accent, surface) >= MIN_TEXT_CONTRAST_RATIO) return primaryColor;
+  for (let step = 1; step <= 10; step += 1) {
+    const factor = step / 10;
+    const adjusted = accent.map((channel) =>
+      Math.round(isDark ? channel + (255 - channel) * factor : channel * (1 - factor)),
+    );
+    if (contrastRatio(adjusted, surface) >= MIN_TEXT_CONTRAST_RATIO) {
+      return `rgb(${adjusted.join(", ")})`;
+    }
+  }
+  return textColor;
+}
+
 export function injectStyles() {
   // Auto-detect client website's primary color
   let primaryColor = "#5d5fef"; // Premium vibrant indigo fallback
@@ -22,10 +78,17 @@ export function injectStyles() {
   const userMsgBg = isDark ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.05)";
   const botMsgBg = isDark ? "rgba(0, 0, 0, 0.25)" : "#ffffff";
 
+  // The accent is borrowed from the host site, so it can be any colour at all.
+  // A host publishing a near-white theme colour rendered "Listening..." as
+  // white text on the widget's white panel. Text always uses an accent proven
+  // readable against the surface it sits on.
+  const accentTextColor = readableAccent(primaryColor, textColor, isDark);
+
   const style = document.createElement("style");
   style.textContent = `
     :root {
       --mayabot-primary: ${primaryColor};
+      --mayabot-accent-text: ${accentTextColor};
       --mayabot-surface: ${surfaceColor};
       --mayabot-border: ${surfaceBorder};
       --mayabot-text: ${textColor};
@@ -46,12 +109,13 @@ export function injectStyles() {
       width: auto;
       max-width: calc(100vw - 32px);
       -webkit-font-smoothing: antialiased;
-      contain: layout style;
+      contain: style;
       isolation: isolate;
     }
 
     #mayabot-btn {
       position: relative;
+      z-index: 1;
       /* Keep touch activation immediate and prevent browser zoom/highlight from
          competing with the orb's single-click voice control. */
       touch-action: manipulation;
@@ -128,14 +192,29 @@ export function injectStyles() {
       100% { inset: -16px; opacity: 0; }
     }
 
+    /* Docked to the right edge for the full height of the window, so a long
+       comparison reads as a column beside the page instead of a box floating
+       over the middle of it. */
     #mayabot-chat {
-      position: absolute;
-      bottom: 96px;
+      position: fixed;
+      top: 0;
+      bottom: 0;
       left: auto;
       right: 0;
-      transform: translateY(20px) scale(0.95);
-      width: min(400px, calc(100vw - 32px));
-      max-height: min(600px, calc(100vh - 140px));
+      height: 100vh;
+      height: 100dvh;
+      transform: translateX(24px);
+      /* A fifth of the window, bounded so it stays readable on a small screen
+         and does not sprawl on a wide one. */
+      width: 20vw;
+      min-width: 260px;
+      max-width: 380px;
+      max-height: none;
+      overflow: hidden;
+      overscroll-behavior: contain;
+      /* Room for the orb and its toggle, which stay clickable above the panel. */
+      padding-bottom: 112px;
+      border-radius: 20px 0 0 20px;
       background: var(--mayabot-surface);
       backdrop-filter: blur(24px) saturate(180%);
       -webkit-backdrop-filter: blur(24px) saturate(180%);
@@ -156,7 +235,7 @@ export function injectStyles() {
       opacity: 1;
       pointer-events: all;
       visibility: visible;
-      transform: translateY(0) scale(1);
+      transform: translateX(0);
       transition-delay: 0s;
     }
 
@@ -179,7 +258,7 @@ export function injectStyles() {
     .mayabot-kicker {
       display: block;
       margin-bottom: 4px;
-      color: var(--mayabot-primary);
+      color: var(--mayabot-accent-text);
       font-size: 11px;
       font-weight: 700;
       text-transform: uppercase;
@@ -238,6 +317,59 @@ export function injectStyles() {
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
     }
 
+    #mayabot-msgs {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-right: 4px;
+    }
+
+    /* A small control directly above the orb, matching the direction the panel
+       opens: collapsed leaves only the microphone, expanded shows the
+       conversation so far. Centred on the 64px orb, clear of it by 8px. */
+    #mayabot-toggle {
+      position: absolute;
+      right: 18px;
+      bottom: 72px;
+      z-index: 2;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border-radius: 50%;
+      border: 1px solid var(--mayabot-border);
+      background: #ffffff;
+      color: var(--mayabot-text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+      transition: transform 0.25s ease, background-color 0.2s ease;
+    }
+
+    #mayabot-toggle svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    #mayabot-toggle:hover {
+      background: var(--mayabot-bot-bg);
+    }
+
+    #mayabot-toggle:focus-visible {
+      outline: 2px solid var(--mayabot-accent-text);
+      outline-offset: 2px;
+    }
+
+    /* Points up to open the column, down to close it. */
+    #mayabot-toggle[aria-expanded="true"] svg {
+      transform: rotate(180deg);
+    }
+
     #mayabot-status {
       font-size: 12px;
       color: var(--mayabot-text);
@@ -250,7 +382,7 @@ export function injectStyles() {
     }
 
     #mayabot-status.listening {
-      color: var(--mayabot-primary);
+      color: var(--mayabot-accent-text);
       opacity: 1;
       animation: mayabotTextPulse 1.5s infinite ease-in-out;
     }
@@ -281,8 +413,10 @@ export function injectStyles() {
         height: 56px;
       }
       #mayabot-chat {
-        bottom: 84px;
-        width: calc(100vw - 32px);
+        width: 100vw;
+        min-width: 0;
+        max-width: none;
+        border-radius: 0;
       }
     }
 

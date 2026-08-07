@@ -217,6 +217,7 @@ def _usage_rows(range_key: str, site_id: str = "", limit: int = DEFAULT_USAGE_LI
             SELECT
                 site_id, session_id, transport, status, intent, action_count,
                 input_tokens, output_tokens, latency_ms, transcript, response_text,
+                request_id, turn_id, diagnostics,
                 created_at::TEXT AS created_at
             FROM hub_usage_events
             {where_clause}
@@ -229,7 +230,8 @@ def _usage_rows(range_key: str, site_id: str = "", limit: int = DEFAULT_USAGE_LI
 
 
 def _conversation_turn(row: dict[str, Any], action_events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    return {
+    diagnostics = row.get("diagnostics") if isinstance(row.get("diagnostics"), dict) else {}
+    turn = {
         "created_at": row["created_at"],
         "transport": row["transport"],
         "status": row["status"],
@@ -240,7 +242,29 @@ def _conversation_turn(row: dict[str, Any], action_events: list[dict[str, Any]] 
         "response_text": row["response_text"],
         "action_count": int(row["action_count"] or 0),
         "action_events": action_events or [],
+        "request_id": str(row.get("request_id") or ""),
+        "turn_id": str(row.get("turn_id") or ""),
     }
+    # Flattened so the CRM reads one shape whether a turn predates structured
+    # diagnostics or not. Absent keys stay absent rather than becoming nulls.
+    for key in (
+        "confidence",
+        "answer_scope",
+        "spoken_text",
+        "selected_ids",
+        "selected_names",
+        "retrieved_ids",
+        "matching_total",
+        "displayed_count",
+        "requested_count",
+        "constraints",
+        "planned_actions",
+        "cache",
+        "model",
+    ):
+        if key in diagnostics:
+            turn[key] = diagnostics[key]
+    return turn
 
 
 def _action_events_by_site(site_ids: set[str]) -> dict[str, list[dict[str, Any]]]:
@@ -265,20 +289,41 @@ def _action_events_by_site(site_ids: set[str]) -> dict[str, list[dict[str, Any]]
 
 
 def _matching_action_events(row: dict[str, Any], events_by_site: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """The browser outcomes this turn caused.
+
+    A turn recorded with a ``turn_id`` is joined to its actions exactly. Only
+    rows written before that column existed fall back to the timestamp window,
+    which is a guess: two turns seconds apart can claim each other's actions.
+    Events matched that way are labelled ``correlation: "time_window"`` so a
+    reviewer is never shown an inferred pairing as though it were certain.
+    """
     if int(row.get("action_count") or 0) <= 0:
         return []
+    site_events = events_by_site.get(str(row.get("site_id") or ""), [])
+
+    turn_id = str(row.get("turn_id") or "")
+    if turn_id:
+        exact = [event for event in site_events if str(event.get("turn_id") or "") == turn_id]
+        return [
+            {**event, "correlation": "turn_id"}
+            for event in _latest_action_events_by_request(exact)[:MAX_TURN_ACTION_EVENTS]
+        ]
+
     row_epoch = _timestamp_epoch(row.get("created_at"))
     if row_epoch <= 0:
         return []
     matched: list[dict[str, Any]] = []
-    for event in events_by_site.get(str(row.get("site_id") or ""), []):
+    for event in site_events:
         event_epoch = _timestamp_epoch(event.get("occurred_at"))
         if event_epoch <= 0:
             continue
         delta = event_epoch - row_epoch
         if -ACTION_EVENT_MATCH_GRACE_SECONDS <= delta <= ACTION_EVENT_MATCH_WINDOW_SECONDS:
             matched.append(event)
-    return _latest_action_events_by_request(matched)[:MAX_TURN_ACTION_EVENTS]
+    return [
+        {**event, "correlation": "time_window"}
+        for event in _latest_action_events_by_request(matched)[:MAX_TURN_ACTION_EVENTS]
+    ]
 
 
 def _latest_action_events_by_request(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -309,12 +354,48 @@ def _conversation_action_event(event: dict[str, Any]) -> dict[str, Any]:
         "requested_url": str(event.get("requested_url") or ""),
         "final_url": str(event.get("final_url") or event.get("url") or ""),
         "url_changed": bool(evidence.get("url_changed")),
-        "evidence": {
-            key: value
-            for key, value in evidence.items()
-            if key in {"target_page", "product_id", "entity_id", "product_count", "entity_count", "path_changed", "title"}
-        },
+        # Promoted out of the evidence blob because these four answer the
+        # question the log exists for: what was asked for, and what appeared.
+        "query": str(evidence.get("query") or ""),
+        "result_count": evidence.get("result_count"),
+        "requested_ids": _evidence_ids(evidence.get("requested_ids")),
+        "rendered_ids": _evidence_ids(evidence.get("rendered_ids")),
+        "evidence": {key: value for key, value in evidence.items() if key in _KEPT_EVIDENCE_KEYS},
     }
+
+
+# Safe, non-identifying facts about what the browser did. The list used to stop
+# short of the search fields, so a log could show that a search "succeeded"
+# without showing what was searched for or what came back.
+_KEPT_EVIDENCE_KEYS = frozenset(
+    {
+        "target_page",
+        "product_id",
+        "entity_id",
+        "product_count",
+        "entity_count",
+        "path_changed",
+        "title",
+        "query",
+        "attempted_queries",
+        "result_count",
+        "requested_ids",
+        "requested_count",
+        "rendered_ids",
+        "rendered_product_count",
+        "visible_requested_count",
+        "cart_count",
+        "checkout_reachable",
+    }
+)
+
+MAX_EVIDENCE_IDS = 50
+
+
+def _evidence_ids(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value[:MAX_EVIDENCE_IDS] if item is not None and str(item)]
 
 
 def _timestamp_epoch(value: Any) -> float:

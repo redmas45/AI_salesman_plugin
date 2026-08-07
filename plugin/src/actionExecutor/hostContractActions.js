@@ -30,10 +30,36 @@ import {
  */
 
 const SEARCH_ACTIONS = new Set([ACTIONS.FILTER_PRODUCTS, ACTIONS.SHOW_PRODUCTS]);
+
+/** The records an action says it is displaying, as identities to verify. */
+function requestedRecords(action) {
+  const params = action?.params || {};
+  const ids = params[ACTION_PARAMS.PRODUCT_IDS] || params[ACTION_PARAMS.ENTITY_IDS] || [];
+  const identities = (Array.isArray(ids) ? ids : []).map((id) => ({ id: String(id || ""), name: "" }));
+  const single = params[ACTION_PARAMS.PRODUCT_NAME];
+  if (!identities.length && single) identities.push({ id: "", name: String(single) });
+  return identities;
+}
 const DETAIL_ACTIONS = new Set([ACTIONS.SHOW_PRODUCT_DETAIL]);
 
 function actionParams(action) {
   return action.parameters || action.params || {};
+}
+
+// The turn's resolved hard constraints, as a flat map of canonical filter keys to
+// scalar values (e.g. {max_price: 20000, brand: "Acme"}). The Hub speaks only
+// these canonical names; the host maps each to its own URL/control syntax. Nested,
+// non-scalar, or empty values are dropped so nothing malformed reaches the page.
+function requestedFilters(action) {
+  const raw = actionParams(action).filters;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const filters = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === null || value === undefined || value === "") continue;
+    if (typeof value === "object") continue;
+    filters[String(key)] = String(value);
+  }
+  return filters;
 }
 
 function searchQuery(action) {
@@ -84,7 +110,16 @@ export async function executeHostContractAction(action) {
     const query = searchQuery(action);
     // Discovery: the shopper wants to see the range being described, so a query
     // the storefront matched too literally is broadened once.
-    return query ? runHostSearch(query, { broadenIfSparse: true }) : null;
+    // The ids and names the answer named travel with the query, so the executor
+    // can prove those records are the ones on screen rather than merely proving
+    // the page is not empty.
+    return query
+      ? runHostSearch(query, {
+          broadenIfSparse: true,
+          requested: requestedRecords(action),
+          filters: requestedFilters(action),
+        })
+      : null;
   }
   if (name === ACTIONS.NAVIGATE_TO) {
     const target = navTarget(action);

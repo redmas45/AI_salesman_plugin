@@ -146,7 +146,10 @@ def test_run_recovers_phone_search_from_catalog_when_vector_retrieval_misses(mon
     assert "NOVA Daily Phone" in result["response_text"]
     assert result["ui_actions"][0]["action"] == "SHOW_PRODUCTS"
     assert set(result["ui_actions"][0]["params"]["product_ids"]) == {"phone-1", "phone-2"}
-    assert result["ui_actions"][0]["params"]["search_query"] == "phone"
+    # These records publish the family "Phones", so that is what the host is
+    # asked for. Measured locally on 2026-08-07, q=phones and q=phone return the
+    # identical 33-record set, so the published spelling costs nothing.
+    assert result["ui_actions"][0]["params"]["search_query"] == "phones"
     assert result["retrieval"]["retrieved_count"] == 2
     assert result["retrieval"]["issue"] == "ok"
 
@@ -308,10 +311,17 @@ def test_run_recovers_source_backed_product_fact_answer_when_llm_misses_display_
     assert "NOVA Daily Phone" in result["response_text"]
     assert "Reliable everyday smartphone" in result["response_text"]
     assert "Price: 499" in result["response_text"]
+    # The turn names the NOVA brand, which grounds against the record's own brand
+    # vocabulary, so the display action carries it as a typed hard-constraint
+    # filter a host contract can map onto the storefront URL.
     assert result["ui_actions"] == [
         {
             "action": "SHOW_PRODUCTS",
-            "params": {"product_ids": ["phone-1"], "search_query": "nova daily phone"},
+            "params": {
+                "product_ids": ["phone-1"],
+                "search_query": "nova daily phone",
+                "filters": {"brand": "nova"},
+            },
         }
     ]
 

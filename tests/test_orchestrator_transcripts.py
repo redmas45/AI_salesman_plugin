@@ -319,7 +319,11 @@ def test_recommendation_response_does_not_ask_which_one_to_add(monkeypatch):
 
     assert validated["intent"] == "product_search"
     assert validated["ui_actions"][0]["action"] == "SHOW_PRODUCTS"
-    assert validated["ui_actions"][0]["params"]["search_query"] == "phone"
+    # The published family wins over the spoken word. Measured against the local
+    # storefront on 2026-08-07: q=smartphones returns all 53 smartphones, while
+    # the customer's own "phone" returns 33 and drops 20 of them, so only the
+    # published value is guaranteed to keep these records on the page.
+    assert validated["ui_actions"][0]["params"]["search_query"] == "smartphones"
     assert "Which one should I add" not in validated["response_text"]
 
 

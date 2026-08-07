@@ -12,9 +12,14 @@ export function initWidget() {
         </div>
         <span class="mayabot-live-dot" aria-hidden="true"></span>
       </div>
-      <div id="mayabot-msgs" style="max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;"></div>
+      <div id="mayabot-msgs"></div>
       <div id="mayabot-status">Ready</div>
     </div>
+    <button id="mayabot-toggle" type="button" aria-expanded="false" aria-controls="mayabot-chat" aria-label="Show conversation" title="Show conversation">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="18 15 12 9 6 15"/>
+      </svg>
+    </button>
     <button id="mayabot-btn" aria-label="Talk to Maya">
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
@@ -28,16 +33,66 @@ export function initWidget() {
   container.querySelector(".mayabot-kicker").textContent = config.brandName;
   container.querySelector(".mayabot-title").textContent = config.assistantTitle;
 
-  return {
+  const elements = {
     btn: document.getElementById("mayabot-btn"),
     chat: document.getElementById("mayabot-chat"),
     msgs: document.getElementById("mayabot-msgs"),
-    status: document.getElementById("mayabot-status")
+    status: document.getElementById("mayabot-status"),
+    toggle: document.getElementById("mayabot-toggle")
   };
+  wireConversationToggle(elements);
+  return elements;
+}
+
+/**
+ * The panel is a place to read the conversation back, so the customer controls
+ * whether it is open. Collapsed leaves only the microphone; expanded shows every
+ * earlier turn. A collapse is remembered so an incoming reply does not reopen a
+ * panel the customer just closed.
+ */
+function wireConversationToggle(elements) {
+  const { chat, toggle } = elements;
+  if (!chat || !toggle) return;
+
+  toggle.addEventListener("click", () => {
+    setConversationOpen(elements, !chat.classList.contains("visible"), { explicit: true });
+  });
+
+  // Escape means "stop what is happening". While a turn is recording, thinking
+  // or speaking, that is the turn - the orb's own Escape handler cancels it, and
+  // collapsing here would hide the status line reporting the outcome. Only once
+  // the orb is idle does Escape mean "close this panel". The two are never the
+  // same gesture.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !chat.classList.contains("visible")) return;
+    if (isTurnInFlight(elements)) return;
+    setConversationOpen(elements, false, { explicit: true });
+    toggle.focus();
+  });
+}
+
+/** The orb publishes its own state, so the panel never has to guess. */
+function isTurnInFlight(elements) {
+  const state = elements.btn?.getAttribute("data-orb-state") || "idle";
+  return state !== "idle";
+}
+
+export function setConversationOpen(elements, open, { explicit = false } = {}) {
+  const { chat, toggle } = elements;
+  if (!chat) return;
+  if (explicit) chat.dataset.userCollapsed = open ? "false" : "true";
+  chat.classList.toggle("visible", open);
+  if (!toggle) return;
+  toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  const label = open ? "Hide conversation" : "Show conversation";
+  toggle.setAttribute("aria-label", label);
+  toggle.setAttribute("title", label);
 }
 
 export function addMessage(elements, text, role) {
-  elements.chat.classList.add("visible");
+  if (elements.chat.dataset.userCollapsed !== "true") {
+    setConversationOpen(elements, true);
+  }
   const div = document.createElement("div");
   div.className = `mayabot-msg ${role}`;
   div.innerText = text;

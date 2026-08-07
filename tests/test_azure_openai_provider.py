@@ -17,6 +17,10 @@ def test_azure_client_uses_validated_v1_configuration(monkeypatch):
         "https://example.openai.azure.com/openai/v1/",
     )
     monkeypatch.setattr(azure_openai.config, "AZURE_OPENAI_TIMEOUT_SECONDS", 25.0)
+    # Tenacity is the single retry authority at the call site, so the SDK is
+    # created with its own retries disabled (a stalled completion must not compound
+    # SDK retries on top of tenacity into a multi-minute hang).
+    monkeypatch.setattr(azure_openai.config, "AZURE_OPENAI_MAX_RETRIES", 0)
     monkeypatch.setattr(azure_openai, "OpenAI", fake_openai)
     azure_openai.reset_azure_openai_client()
 
@@ -26,6 +30,7 @@ def test_azure_client_uses_validated_v1_configuration(monkeypatch):
         "api_key": "test-key",
         "base_url": "https://example.openai.azure.com/openai/v1/",
         "timeout": 25.0,
+        "max_retries": 0,
     }
     azure_openai.reset_azure_openai_client()
 

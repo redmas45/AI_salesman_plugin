@@ -31,6 +31,41 @@ SECTION_ROUTE_MARKERS = ("category/", "category=", "section/", "section=")
 PAGE_RELATIVE_INTENTS = frozenset({"product_detail", "product_compare"})
 
 
+def _annotate_turn_matching_total(
+    runtime: Any,
+    response: dict[str, Any],
+    site_id: str,
+    transcript: str,
+    retrieved_products: list[dict[str, Any]],
+    price_constraints: dict[str, Any] | None,
+) -> None:
+    """Record a deterministic constrained catalog count for the answer composer.
+
+    Only runs when the turn resolved at least one hard constraint, so a
+    no-constraint turn triggers no catalog scan and keeps its existing behaviour.
+    The catalog is read through the deterministic ordered scan (not the RANDOM()
+    retrieval sample) so the count measures the catalog, not a window.
+    """
+    from agent.products.matching_total import annotate_matching_total
+
+    def load_catalog() -> list[dict[str, Any]]:
+        try:
+            return list(runtime._load_catalog_scan(site_id))
+        except runtime.PIPELINE_RECOVERABLE_ERRORS as exc:
+            runtime.logger.warning(
+                "PIPELINE | matching-total catalog scan failed for %s: %s", site_id, exc
+            )
+            return []
+
+    annotate_matching_total(
+        response,
+        transcript,
+        retrieved_products,
+        price_constraints,
+        load_catalog,
+    )
+
+
 def _is_section_navigation(action: Any) -> bool:
     if not isinstance(action, dict):
         return False
@@ -312,6 +347,11 @@ def run_pipeline(
     runtime._persist_preference_actions(site_id, llm_response.get("ui_actions", []))
 
     timings["llm_ms"] = runtime._ms(t)
+
+    if ecommerce_runtime:
+        _annotate_turn_matching_total(
+            runtime, llm_response, site_id, safe_transcript, retrieved_products, price_constraints
+        )
 
     # Stage 5: Output Guardrails
     t = time.perf_counter()
@@ -638,6 +678,11 @@ def run_stream_pipeline(
     llm_response = runtime._normalize_llm_response(llm_response, retrieved_products)
     runtime._persist_preference_actions(site_id, llm_response.get("ui_actions", []))
     timings["llm_ms"] = runtime._ms(t)
+
+    if ecommerce_runtime:
+        _annotate_turn_matching_total(
+            runtime, llm_response, site_id, safe_transcript, retrieved_products, price_constraints
+        )
 
     # Stage 5: Output Guardrails
     t = time.perf_counter()

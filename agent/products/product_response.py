@@ -272,7 +272,12 @@ class ProductCatalogFormatter:
         ]
         return "Here are source-backed options to consider:\n" + "\n".join(bullets)
 
-    def search_text(self, products: list[dict], matching_total: int | None = None) -> str:
+    def search_text(
+        self,
+        products: list[dict],
+        matching_total: int | None = None,
+        matching_total_is_lower_bound: bool = False,
+    ) -> str:
         """Describe a result set without contradicting what is on screen.
 
         ``products`` are the records the customer's cards will show, so the
@@ -280,18 +285,23 @@ class ProductCatalogFormatter:
         in all; when more matched than are displayed the gap is stated rather
         than left for the customer to notice, which is what made "I found 5"
         read as a contradiction against a page showing a different number.
+        ``matching_total_is_lower_bound`` is True when the count came from a
+        capped scan, so it is rendered "N+" rather than asserted as an exact
+        total (rule 14 cap-honesty).
 
         The bullets are a spoken sample of the displayed set, never the claim.
         """
         displayed_count = len(products)
         total = max(int(matching_total), displayed_count) if matching_total else displayed_count
+        bounded = bool(matching_total_is_lower_bound) and total > displayed_count
+        total_label = f"{total}+" if bounded else str(total)
         sample = products[:SEARCH_RESULT_BULLET_LIMIT]
         if total == 1:
             prefix = "I found this matching product:"
         elif total > displayed_count:
-            prefix = f"I found {total} matching products. I'm showing {displayed_count} here:"
+            prefix = f"I found {total_label} matching products. I'm showing {displayed_count} here:"
         else:
-            prefix = f"I found {total} matching products:"
+            prefix = f"I found {total_label} matching products:"
         bullets = [
             f"- {self.display_name(product)}: {' '.join(self.search_fact_parts(product)) or 'catalog item'}"
             for product in sample
@@ -465,10 +475,18 @@ class ProductDisplayGrounder:
             response["intent"] = "product_search"
         # The display action may carry fewer records than matched this turn. The
         # customer sees the displayed ones, so the answer counts those and says
-        # how many matched in all rather than leaving the gap unexplained.
+        # how many matched in all rather than leaving the gap unexplained. The
+        # matched total prefers a deterministic constrained catalog count when one
+        # was recorded upstream; without it, the retrieved size is used (today's
+        # behaviour for turns that carry no hard constraint). Read inline to avoid
+        # a circular import back through catalog_operations.
+        matching_total = response.get("matching_total")
+        if not isinstance(matching_total, int) or isinstance(matching_total, bool):
+            matching_total = len(retrieved_products)
         response_text = self._formatter.search_text(
             selected,
-            matching_total=len(retrieved_products),
+            matching_total=matching_total,
+            matching_total_is_lower_bound=bool(response.get("matching_total_is_lower_bound")),
         )
         if self._wants_accessory_recommendation(transcript):
             response_text = self._formatter.with_accessory_recommendation(response_text, selected)

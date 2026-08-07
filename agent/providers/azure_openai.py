@@ -38,6 +38,9 @@ def get_azure_openai_client() -> OpenAI:
             api_key=_required_setting("AZURE_OPENAI_API_KEY", config.AZURE_OPENAI_API_KEY),
             base_url=validate_azure_openai_base_url(config.AZURE_OPENAI_BASE_URL),
             timeout=config.AZURE_OPENAI_TIMEOUT_SECONDS,
+            # Tenacity owns retries at the call site; the SDK must not re-retry on
+            # top of it, or a stalled completion compounds into a multi-minute hang.
+            max_retries=config.AZURE_OPENAI_MAX_RETRIES,
         )
     return _client
 

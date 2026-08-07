@@ -16,8 +16,40 @@ const SUMMARY_MAX_ASKS = 6;
 const SUMMARY_MAX_IDS = 12;
 const PRODUCT_ID_TAG = /\[PRODUCT_IDS:\s*([^\]]+)\]/g;
 
-export function createConversationMemory() {
-  const history = [];
+// A conversation belongs to the session, not to the page it started on. The host
+// reloads on every search, product page and cart visit, so without this the
+// customer's own words - and everything Maya had established - were gone the
+// moment she acted on them.
+const STORAGE_PREFIX = "mayabot_conversation:";
+
+function storageKey(sessionKey) {
+  return `${STORAGE_PREFIX}${sessionKey || "default"}`;
+}
+
+function loadHistory(sessionKey) {
+  try {
+    const raw = window.sessionStorage.getItem(storageKey(sessionKey));
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((entry) => entry && typeof entry.role === "string" && typeof entry.content === "string")
+      .slice(-MAX_RETAINED_MESSAGES);
+  } catch (_err) {
+    // A corrupt or unavailable store must never stop the widget from booting.
+    return [];
+  }
+}
+
+function saveHistory(sessionKey, history) {
+  try {
+    window.sessionStorage.setItem(storageKey(sessionKey), JSON.stringify(history));
+  } catch (_err) {
+    // Private browsing and quota limits are not errors worth surfacing here.
+  }
+}
+
+export function createConversationMemory(sessionKey = "") {
+  const history = loadHistory(sessionKey);
 
   function rememberConversation(role, content) {
     const cleanContent = String(content || "").trim();
@@ -26,6 +58,7 @@ export function createConversationMemory() {
     if (history.length > MAX_RETAINED_MESSAGES) {
       history.shift();
     }
+    saveHistory(sessionKey, history);
   }
 
   return {
@@ -46,6 +79,7 @@ export function createConversationMemory() {
     /** Forget everything: conversation turns, action outcomes, and referents. */
     clear() {
       history.length = 0;
+      saveHistory(sessionKey, history);
     },
     rememberUserMessage(text) {
       rememberConversation("user", text);

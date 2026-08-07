@@ -90,8 +90,13 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
     assert "export * from \"./catalog/productResolver\"" in product_resolver_facade
     assert "let processingTurn = false" in widget_entry
     assert "if (processingTurn) return" in widget_entry
-    assert "elements.btn.disabled = true" in widget_entry
-    assert "elements.btn.disabled = false" in widget_entry
+    # Re-entrancy is prevented by the processingTurn guard above, NOT by disabling
+    # the orb. The orb must stay clickable while a turn is in flight so a click can
+    # stop it (routed to cancelActiveTurn by turnInFlight). Disabling the button
+    # made the stop gesture impossible - the click could not land until the turn
+    # had already finished, so a cancelled turn's answer still rendered.
+    assert "elements.btn.disabled = true" not in widget_entry
+    assert "if (turnInFlight()) {" in widget_entry
     assert "BROWSER_ACTION_RESULTS" in conversation_source
     # Action results are still routed into conversation memory, now behind the
     # turn-token guard so a superseded turn's results cannot be recorded.
@@ -138,7 +143,12 @@ def test_widget_action_executor_is_modular_and_shared() -> None:
     assert "new SpeechSynthesisUtterance" not in api_source
     assert "FEMALE_VOICE_HINTS.some" in speech_source
     assert ")) || null;" in speech_source
-    assert "contain: layout style;" in styles_source
+    # Style containment is kept for isolation, but NOT layout containment: a
+    # layout-contained widget becomes the containing block for fixed-position
+    # descendants, which would pin the docked conversation panel to the orb's
+    # box instead of the viewport.
+    assert "contain: style;" in styles_source
+    assert "contain: layout" not in styles_source
     assert "transition: all" not in styles_source
     assert "mayabotPulseRecord" not in styles_source
     assert "retryBlocked()" in api_source

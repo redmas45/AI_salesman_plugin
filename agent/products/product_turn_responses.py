@@ -6,10 +6,17 @@ import re
 from typing import Any
 
 from agent.responses import cart_responses
+from agent.nlu.frame import RANK_MIN, parse_frame
+from agent.nlu.schema import build_schema
+from agent.products.display_filters import host_display_filters
+from agent.products.display_request import canonical_host_query
+from agent.products.matching_total import response_matching_total
+from agent.products.tier_ranking import frame_requests_tier, top_record_per_brand
 from agent.products.comparison_selection import (
     DEFAULT_COMPARISON_COUNT,
     comparison_family_conflict,
     product_brand,
+    product_family,
     select_comparison_products,
 )
 from agent.products.product_response import (
@@ -46,6 +53,10 @@ from api.contracts.models import (
     PRODUCT_ID_PARAM,
 )
 from agent.retrieval.query_constraints import extract_ecommerce_constraints
+
+# A fallback query built from the customer's own nouns stays short for the
+# same reason a canonical one does: a long literal string matches nothing.
+MAX_SPOKEN_NOUN_TERMS = 3
 
 _COMPARISON_OPERAND_STOPWORDS = frozenset(
     {"one", "two", "three", "four", "both", "first", "second", "third", "last"}
@@ -107,6 +118,19 @@ def _select_comparison_candidates(
     requested_products = _ordered_comparison_candidates(products, requested_ids)[: len(requested_ids or [])]
     operand_brands = _brands_named_by_product_operand(transcript, requested_products)
     requested_brands = tuple(dict.fromkeys((*constraints.brands, *operand_brands)))
+
+    # "Compare <brand> premium versus <brand> premium" ranks over a tier scale:
+    # it wants the top of each brand's range, not each brand's best text match.
+    frame = parse_frame(transcript, build_schema(ordered))
+    if frame_requests_tier(frame) and len(requested_brands) >= 2:
+        selected, _basis = top_record_per_brand(
+            ordered,
+            requested_brands,
+            direction=RANK_MIN if frame.rank.direction == RANK_MIN else "max",
+        )
+        if len(selected) >= 2:
+            return selected[: comparison_product_limit(transcript)]
+
     return select_comparison_products(
         ordered,
         requested_count=comparison_product_limit(transcript),
@@ -361,7 +385,13 @@ def ensure_product_search_display_action(
             },
         }
     ]
-    response["response_text"] = product_search_fallback_text(retrieved_products, formatter)
+    resolved_total, total_bounded = response_matching_total(response, retrieved_products)
+    response["response_text"] = product_search_fallback_text(
+        retrieved_products,
+        formatter,
+        matching_total=resolved_total,
+        matching_total_is_lower_bound=total_bounded,
+    )
 
 
 def coerce_recommendation_to_product_search(
@@ -399,7 +429,13 @@ def coerce_recommendation_to_product_search(
                 },
             }
         ]
-        response["response_text"] = product_search_fallback_text(retrieved_products, formatter)
+    resolved_total, total_bounded = response_matching_total(response, retrieved_products)
+    response["response_text"] = product_search_fallback_text(
+        retrieved_products,
+        formatter,
+        matching_total=resolved_total,
+        matching_total_is_lower_bound=total_bounded,
+    )
 
 
 def is_recommendation_request(text: str) -> bool:
@@ -433,12 +469,16 @@ def prevent_false_no_matching_product_claim(
     ]
     named = [name for name in named if name]
     shown_names = ", ".join(named)
-    total = len(retrieved_products)
+    # Prefer the deterministic constrained count when recorded; never claim fewer
+    # than are named on screen.
+    resolved_total, total_bounded = response_matching_total(response, retrieved_products)
+    total = max(resolved_total, len(named))
+    total_label = f"{total}+" if total_bounded and total > len(named) else str(total)
     response["intent"] = "product_search"
     response["confidence"] = max(float(response.get("confidence") or 0.0), 0.92)
     # Naming three of twenty while claiming twenty reads as a contradiction
     # against what the customer can see, so the gap is stated, not implied.
-    response["response_text"] = f"I found {total} matching products"
+    response["response_text"] = f"I found {total_label} matching products"
     if shown_names and len(named) < total:
         response["response_text"] += f". I'm showing {len(named)} here: {shown_names}"
     elif shown_names:
@@ -491,17 +531,63 @@ def ensure_product_display_search_queries(
             continue
         if action_name == ACTION_SHOW_PRODUCTS:
             params = action.get("params") if isinstance(action.get("params"), dict) else {}
-            action_products = products_selected_by_ids(params.get(PRODUCT_IDS_PARAM), retrieved_products)
-            search_query = normalized_product_action_search_query(
-                params.get("search_query"),
-                transcript,
-                action_products or retrieved_products,
-                query_cleaner,
+            action_records = (
+                products_selected_by_ids(params.get(PRODUCT_IDS_PARAM), retrieved_products)
+                or retrieved_products
             )
             action["params"] = {
                 **params,
-                "search_query": search_query,
+                "search_query": host_search_query_for_display(
+                    transcript,
+                    action_records,
+                    query_cleaner,
+                    fallback_query=params.get("search_query"),
+                    detail_turn=str(response.get("intent") or "").lower() == "product_detail",
+                ),
             }
+            # Carry the turn's resolved hard constraints as a typed filter set so a
+            # host contract can map them onto the storefront URL. Injected in the
+            # same place, the same way as search_query - after the output guardrail
+            # has stripped SHOW_PRODUCTS params to product_ids only. Added ONLY when
+            # something grounded resolves, so the no-filter path stays byte-for-byte
+            # unchanged.
+            display_filters = host_display_filters(transcript, action_records)
+            if display_filters:
+                action["params"]["filters"] = display_filters
+
+
+def host_search_query_for_display(
+    transcript: str,
+    display_records: list[dict],
+    query_cleaner: ProductSearchQueryCleaner,
+    *,
+    fallback_query: Any = None,
+    detail_turn: bool = False,
+) -> str:
+    """The query the host's own search box receives for a display action.
+
+    Built from what the turn resolved to - brand and product family - never by
+    truncating cleaned speech. Cleaning "show me the top 3 best phones from the
+    Alpha" kept its first four surviving words and searched the storefront for
+    "top 3 phone from", which rendered nothing while the answer named three real
+    records.
+
+    The brand and family vocabularies come from the records themselves, so the
+    rule holds for any vertical without naming one.
+    """
+    records = [record for record in display_records or [] if isinstance(record, dict)]
+    if not records:
+        # Nothing to check a word against and no identity to fall back on - a
+        # cached answer replayed without its rows reaches here. The query it
+        # carries was already built by this same hierarchy when the turn first
+        # ran, so it is passed through untouched: re-cleaning it would make a
+        # replay disagree with the answer it is replaying.
+        return str(fallback_query or "").strip()
+    frame = parse_frame(transcript, build_schema(records))
+    return canonical_host_query(frame, records, detail_turn=detail_turn)
+
+
+
 
 def promote_explicit_product_detail_action(
     actions: list[Any],
@@ -658,8 +744,17 @@ def products_selected_by_display_action(
     return grounder.products_selected_by_display_action(action, retrieved_products)
 
 
-def product_search_fallback_text(products: list[dict], formatter: ProductCatalogFormatter) -> str:
-    return formatter.search_text(products)
+def product_search_fallback_text(
+    products: list[dict],
+    formatter: ProductCatalogFormatter,
+    matching_total: int | None = None,
+    matching_total_is_lower_bound: bool = False,
+) -> str:
+    return formatter.search_text(
+        products,
+        matching_total=matching_total,
+        matching_total_is_lower_bound=matching_total_is_lower_bound,
+    )
 
 
 def display_search_query(

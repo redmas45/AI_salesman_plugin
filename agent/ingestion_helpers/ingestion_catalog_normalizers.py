@@ -347,6 +347,7 @@ def normalize_api_catalog_product(raw: dict[str, Any], api_url: str) -> dict[str
             "name": first(raw.get("name"), raw.get("title"), raw.get("handle")),
             "description": enriched_product_description(raw, first(raw.get("name"), raw.get("title"))),
             "category": category,
+            "subcategory": first(raw.get("subcategory"), raw.get("sub_category"), raw.get("product_type")),
             "brand": first(raw.get("brand"), raw.get("vendor"), "Unknown Brand"),
             "price": first(raw.get("price"), raw.get("amount"), raw.get("cost"), 0),
             "original_price": first(raw.get("original_price"), raw.get("compare_at_price"), raw.get("price"), 0),

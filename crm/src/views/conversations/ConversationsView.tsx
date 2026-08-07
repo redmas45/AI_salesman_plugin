@@ -1,14 +1,14 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { Activity, Check, ChevronDown, Copy, Search, X } from 'lucide-react';
+import { Check, ChevronDown, Copy, FileText, Search, X } from 'lucide-react';
 import type { ActionExecutionEvent, ConversationsResponse } from '../../types';
-import type { ClientWorkspaceTabId } from '../../verticals/types';
 import { Button, IconButton } from '../../components/ui/Button';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { StatusPill } from '../../components/ui/Badge';
 import { RangeControl } from '../../components/shared/RangeControl';
 import { PaginationControl } from '../../components/shared/controls/PaginationControl';
 import { number, shortTime } from '../../utils/format';
-import { RuntimeDiagnosticActions, RuntimeDiagnosticsTimeline } from './RuntimeDiagnostics';
+import { RuntimeDiagnosticsTimeline } from './RuntimeDiagnostics';
+import { FullLogPanel } from './FullLogPanel';
 
 const CONVERSATION_PAGE_SIZE = 6;
 
@@ -16,7 +16,6 @@ export interface ConversationsViewProps {
   conversations: ConversationsResponse | null;
   range: string;
   onRangeChange: (range: string) => void;
-  onOpenClient: (siteId: string, initialTab?: ClientWorkspaceTabId) => void;
 }
 
 type ConversationReviewFilter = 'all' | 'needs_review' | 'healthy';
@@ -25,7 +24,6 @@ export function ConversationsView({
   conversations,
   range,
   onRangeChange,
-  onOpenClient,
 }: ConversationsViewProps) {
   const [query, setQuery] = useState('');
   const [reviewFilter, setReviewFilter] = useState<ConversationReviewFilter>('all');
@@ -121,11 +119,7 @@ export function ConversationsView({
       ) : (
         <div className="grid gap-4">
           {pageSessions.map((session) => (
-            <CrmConversationCard
-              key={`${session.site_id}-${session.session_id}`}
-              session={session}
-              onOpenClient={onOpenClient}
-            />
+            <CrmConversationCard key={`${session.site_id}-${session.session_id}`} session={session} />
           ))}
           <PaginationControl
             page={page}
@@ -310,16 +304,10 @@ function CopyConversationButton({ session }: { session: ConversationSession }) {
   );
 }
 
-function CrmConversationCard({
-  session,
-  onOpenClient,
-}: {
-  session: ConversationSession;
-  onOpenClient: (siteId: string, initialTab?: ClientWorkspaceTabId) => void;
-}) {
+function CrmConversationCard({ session }: { session: ConversationSession }) {
   const [open, setOpen] = useState(false);
+  const [fullLogOpen, setFullLogOpen] = useState(false);
   const turns = open ? session.turns : session.turns.slice(0, 1);
-  const latestTurn = session.turns[0];
   const needsReview = sessionNeedsReview(session);
   return (
     <article className={`convo-card ${needsReview ? 'needs-review' : ''}`}>
@@ -338,22 +326,24 @@ function CrmConversationCard({
           <ChevronDown size={16} />
         </span>
       </button>
+      {/* Exactly two controls: copy the conversation, or open the full record.
+          Diagnostics, JSON export and client activity moved into the full log,
+          which is where someone investigating a session actually needs them. */}
       <div className="convo-card-actions">
+        <CopyConversationButton session={session} />
         <Button
           variant="secondary"
           size="sm"
           type="button"
-          icon={Activity}
-          onClick={() => onOpenClient(session.site_id, 'activity')}
+          icon={FileText}
+          aria-haspopup="dialog"
+          aria-expanded={fullLogOpen}
+          onClick={() => setFullLogOpen(true)}
         >
-          Open client activity
+          Full log
         </Button>
-        <CopyConversationButton session={session} />
-        <RuntimeDiagnosticActions session={session} />
-        <span>
-          Latest intent: <strong>{latestTurn?.intent || 'unknown'}</strong>
-        </span>
       </div>
+      <FullLogPanel session={session} open={fullLogOpen} onClose={() => setFullLogOpen(false)} />
       <div className="convo-turns">
         {turns.map((turn, index) => (
           <div key={`${turn.created_at}-${turn.transcript}-${index}`} className="grid gap-3">

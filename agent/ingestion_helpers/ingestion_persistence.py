@@ -237,15 +237,16 @@ def _upsert_product(conn: Any, product_id: int, product: dict[str, Any], categor
     return conn.execute(
         """
         INSERT INTO products
-          (id, variant_id, name, brand, category_id, description, price,
+          (id, variant_id, name, brand, category_id, subcategory, description, price,
            original_price, color, size_options, tags, rating, review_count, stock,
            image_url, is_active, embedding)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
         ON CONFLICT (id) DO UPDATE SET
           variant_id = EXCLUDED.variant_id,
           name = EXCLUDED.name,
           brand = EXCLUDED.brand,
           category_id = EXCLUDED.category_id,
+          subcategory = EXCLUDED.subcategory,
           description = EXCLUDED.description,
           price = EXCLUDED.price,
           original_price = EXCLUDED.original_price,
@@ -261,6 +262,7 @@ def _upsert_product(conn: Any, product_id: int, product: dict[str, Any], categor
             WHEN products.name IS DISTINCT FROM EXCLUDED.name
               OR products.brand IS DISTINCT FROM EXCLUDED.brand
               OR products.category_id IS DISTINCT FROM EXCLUDED.category_id
+              OR products.subcategory IS DISTINCT FROM EXCLUDED.subcategory
               OR products.description IS DISTINCT FROM EXCLUDED.description
               OR products.price IS DISTINCT FROM EXCLUDED.price
               OR products.original_price IS DISTINCT FROM EXCLUDED.original_price
@@ -275,6 +277,7 @@ def _upsert_product(conn: Any, product_id: int, product: dict[str, Any], categor
            OR products.name IS DISTINCT FROM EXCLUDED.name
            OR products.brand IS DISTINCT FROM EXCLUDED.brand
            OR products.category_id IS DISTINCT FROM EXCLUDED.category_id
+           OR products.subcategory IS DISTINCT FROM EXCLUDED.subcategory
            OR products.description IS DISTINCT FROM EXCLUDED.description
            OR products.price IS DISTINCT FROM EXCLUDED.price
            OR products.original_price IS DISTINCT FROM EXCLUDED.original_price
@@ -294,6 +297,7 @@ def _upsert_product(conn: Any, product_id: int, product: dict[str, Any], categor
             product["name"],
             product["brand"],
             category_id,
+            product.get("subcategory"),
             product["description"],
             float(product["price"]),
             float(product["original_price"]),

@@ -71,14 +71,46 @@ _CATEGORY_PATH_PATTERN = re.compile(
 
 
 def _family_leaf(value: Any) -> str:
+    levels = _family_levels(value)
+    return levels[-1] if levels else ""
+
+
+def _family_levels(value: Any) -> tuple[str, ...]:
+    """Every level of a published grouping, broadest first."""
     text = str(value or "").strip()
-    return text.split(">")[-1].strip() if text else ""
+    return tuple(part.strip() for part in text.split(">") if part.strip()) if text else ()
+
+
+def family_path(product: Product) -> tuple[str, ...]:
+    """The full published grouping path for a record, broadest level first.
+
+    A catalogue may file a phone under "Electronics > Smartphones > Android
+    Budget". Comparing only leaves would call two phone tiers different kinds of
+    thing; comparing whole paths keeps them comparable.
+    """
+    for field in _EXPLICIT_FAMILY_FIELDS:
+        levels = _family_levels(product.get(field))
+        if levels:
+            return levels
+    description_levels = _family_levels(_description_family_path(product))
+    if description_levels:
+        return description_levels
+    for field in ("category", "type"):
+        levels = _family_levels(product.get(field))
+        if levels:
+            return levels
+    return ()
+
+
+def _description_family_path(product: Product) -> str:
+    """The category path some ingestion paths record in the description text."""
+    description = str(product.get("description") or product.get("summary") or "")
+    match = _CATEGORY_PATH_PATTERN.search(description)
+    return match.group(1) if match else ""
 
 
 def _description_family(product: Product) -> str:
-    description = str(product.get("description") or product.get("summary") or "")
-    match = _CATEGORY_PATH_PATTERN.search(description)
-    return _family_leaf(match.group(1)) if match else ""
+    return _family_leaf(_description_family_path(product))
 
 
 def product_family(product: Product) -> str:
@@ -104,10 +136,27 @@ def product_family(product: Product) -> str:
 
 
 def _same_family(first: Product, second: Product) -> bool:
-    """Unknown grouping never blocks a comparison; it only fails to justify one."""
-    left = normalize_lookup_text(product_family(first))
-    right = normalize_lookup_text(product_family(second))
-    return not left or not right or left == right
+    """Comparable when the published paths meet anywhere below the root.
+
+    Two phones filed under "Android Budget" and "Android Mid-range" are the same
+    kind of thing because both sit under "Smartphones"; comparing only the leaves
+    would refuse a comparison the customer plainly asked for. An unknown grouping
+    never blocks a comparison; it only fails to justify one.
+    """
+    left = _discriminating_levels(family_path(first))
+    right = _discriminating_levels(family_path(second))
+    return not left or not right or bool(left & right)
+
+
+def _discriminating_levels(path: tuple[str, ...]) -> set[str]:
+    """The levels that actually distinguish records.
+
+    The broadest level is dropped when a finer one exists: a phone and a charger
+    both sit under "Electronics", so agreeing there says nothing about whether
+    they are the same kind of thing.
+    """
+    levels = path[1:] if len(path) > 1 else path
+    return {normalize_lookup_text(part) for part in levels if part}
 
 
 def comparison_family_conflict(
@@ -131,13 +180,13 @@ def comparison_family_conflict(
             best_by_brand[brand] = product
     if len(best_by_brand) < 2:
         return None
-    families = {
-        normalize_lookup_text(product_family(product)): product_family(product)
-        for product in best_by_brand.values()
-    }
-    if "" in families or len(families) < 2:
+    records = list(best_by_brand.values())
+    if any(not family_path(record) for record in records):
         return None
-    return tuple(sorted(families.values()))
+    if all(_same_family(records[0], record) for record in records[1:]):
+        return None
+    # Name the level that actually differs, so the question is answerable.
+    return tuple(sorted({product_family(record) for record in records}))
 
 
 def _records_were_named(products: list[Product], count: int) -> bool:

@@ -20,6 +20,7 @@ import psycopg
 from agent.orchestration import orchestrator_facade as orchestrator
 from agent.prompts.page_context import sanitize_page_context
 from api.runtime.action_truth import annotate_ui_actions, new_action_turn_id
+from api.runtime.runtime_payloads import TURN_DEADLINE_RESPONSE_TEXT
 from api.runtime.turn_logging import print_turn_summary, turn_timer
 from db.admin_domain import admin_facade as admin_db
 from db.runtime.session_memory import get_session_summary, update_session_summary
@@ -192,9 +193,21 @@ class WebSocketShopSession:
         status = WS_STATUS_OK
         error_message = ""
         response_sent = False
+        timed_out = False
 
+        # A single turn is bounded: a stalled pipeline must not leave the browser
+        # waiting on a stream that never yields a done frame.
+        deadline = loop.time() + config.TURN_DEADLINE_SECONDS
         while True:
-            event = await queue.get()
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                timed_out = True
+                break
             if event is None:
                 break
 
@@ -238,7 +251,16 @@ class WebSocketShopSession:
                 error_message = str(data.get("error") or PIPELINE_ERROR_MESSAGE)
                 await self.send({"type": WS_TYPE_ERROR, "message": error_message})
 
-        await worker_task
+        if timed_out:
+            # The worker thread is left to finish and be discarded (Python threads
+            # are not forcibly killable); the turn ends now with one honest line so
+            # the browser is never stranded on a stream that stopped yielding.
+            status = WS_STATUS_ERROR
+            if not response_text:
+                response_text = TURN_DEADLINE_RESPONSE_TEXT
+                spoken_text = TURN_DEADLINE_RESPONSE_TEXT
+        else:
+            await worker_task
         self.update_history(transcript, response_text)
         await self.send(
             {

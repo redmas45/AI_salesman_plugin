@@ -31,13 +31,22 @@ function boot() {
   let clearTimer = null;
   let autoGreetTimer = null;
   let isRecording = false;
+  // Collapsing the panel hides the conversation; it does not destroy it. Only an
+  // explicit session reset erases what was said, because a customer who reopens
+  // the panel is usually checking what Maya told them a moment ago.
   function scheduleVisibleReset(delayMs = DEFAULT_VISIBLE_RESET_DELAY_MS) {
     if (clearTimer) window.clearTimeout(clearTimer);
     clearTimer = window.setTimeout(() => {
-      elements.msgs.innerHTML = "";
       elements.chat.classList.remove("visible");
       clearTimer = null;
     }, delayMs);
+  }
+
+  // Kept bounded so a long session cannot grow the panel without limit.
+  const MAX_VISIBLE_MESSAGES = 40;
+  function trimConversation() {
+    const nodes = elements.msgs.children;
+    while (nodes.length > MAX_VISIBLE_MESSAGES) elements.msgs.removeChild(nodes[0]);
   }
 
   function handleStatusChange(statusStr, detail = "") {
@@ -52,8 +61,9 @@ function boot() {
         window.clearTimeout(clearTimer);
         clearTimer = null;
       }
-      elements.msgs.innerHTML = "";
+      trimConversation();
       elements.chat.classList.add("visible");
+      elements.msgs.scrollTop = elements.msgs.scrollHeight;
       elements.status.innerText = "Listening...";
       elements.status.classList.add("listening");
     } else if (statusStr === STATUS.PROCESSING) {
@@ -69,7 +79,33 @@ function boot() {
     }
   }
 
-  const conversationMemory = createConversationMemory();
+  const conversationMemory = createConversationMemory(`${config.siteId}:${config.sessionId}`);
+  // The host reloads on every search, product page and cart visit. Replaying the
+  // stored conversation keeps the panel showing what was actually said in this
+  // session, rather than an empty box after Maya acts on her own answer.
+  restoreConversationToPanel();
+
+  function restoreConversationToPanel() {
+    for (const entry of conversationMemory.history) {
+      if (entry.role === "user") {
+        addMessage(elements, entry.content, "user");
+        continue;
+      }
+      if (entry.role !== "assistant") continue;
+      // Action-result rows carry no prose, so they leave nothing to show.
+      const text = displayableAssistantText(entry.content);
+      if (text) addMessage(elements, text, "ai");
+    }
+    if (conversationMemory.history.length) elements.msgs.scrollTop = elements.msgs.scrollHeight;
+  }
+
+  // Machine-readable tags are carried in memory for the model, never shown.
+  function displayableAssistantText(content) {
+    return String(content || "")
+      .replace(/\s*\[PRODUCT_IDS:[^\]]*\]/g, "")
+      .replace(/\s*\[BROWSER_ACTION_RESULTS:[^\]]*\]/g, "")
+      .trim();
+  }
   let activeStreamNode = null;
   let activeStreamText = "";
   let processingTurn = false;
@@ -84,7 +120,12 @@ function boot() {
     processingTurn = true;
     const myToken = ++turnToken;
     const isCurrent = () => myToken === turnToken;
-    elements.btn.disabled = true;
+    // The orb must stay clickable while the turn is in flight: a click during
+    // processing is how the customer stops it (routed to cancelActiveTurn by the
+    // turnInFlight guard). Disabling the button here made the stop gesture
+    // impossible - the click could not land until the turn had already finished
+    // on its own, so a cancelled turn's answer still rendered. Re-entrancy is
+    // prevented by the processingTurn guard above, not by disabling the control.
     activeStreamNode = null;
     activeStreamText = "";
     try {
@@ -129,7 +170,6 @@ function boot() {
     } finally {
       if (isCurrent()) {
         processingTurn = false;
-        elements.btn.disabled = false;
       }
       activeStreamNode = null;
       activeStreamText = "";
@@ -140,11 +180,13 @@ function boot() {
   // in-flight request as a cancellation (never a connection error), stop any
   // playback, and return to Ready. The page is never navigated or reloaded.
   function cancelActiveTurn() {
+    // Invalidate the generation BEFORE aborting, so any late continuation of the
+    // aborted turn (a resolved fetch, a streamed done) sees a stale token and
+    // renders nothing.
     turnToken += 1;
     resetTransport("user_cancel");
     stopPlayback();
     processingTurn = false;
-    elements.btn.disabled = false;
     activeStreamNode = null;
     activeStreamText = "";
     emitRuntimeEvent({ event_type: "voice_turn_cancelled", stage: "orb_gesture", status: "cancelled" });
@@ -180,8 +222,8 @@ function boot() {
       title: "Click once to send - Escape to cancel",
     },
     processing: {
-      label: "Maya is working on your request. Please wait.",
-      title: "Request in progress",
+      label: "Maya is working on your request. Click or press Escape to stop.",
+      title: "Click to stop",
     },
     speaking: {
       label: "Maya is speaking. Click to stop, or press Escape to stop.",

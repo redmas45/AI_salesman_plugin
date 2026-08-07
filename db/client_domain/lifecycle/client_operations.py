@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+from psycopg.types.json import Json
+
 import config
+from db.analytics.turn_diagnostics import sanitize
 from db.client_domain.core.client_identity import safe_session_id, safe_site_id
 from db.core.schema import _connect, init_admin_schema
 from db.settings.settings_manager import _public_hub_origin
@@ -95,6 +100,9 @@ def record_usage_event(
     intent: str,
     action_count: int,
     latency_ms: float,
+    request_id: str = "",
+    turn_id: str = "",
+    diagnostics: dict[str, Any] | None = None,
 ) -> None:
     """Store one customer turn for CRM usage reporting."""
     init_admin_schema()
@@ -113,9 +121,10 @@ def record_usage_event(
             INSERT INTO hub_usage_events
                 (
                     site_id, session_id, transport, status, input_tokens, output_tokens,
-                    latency_ms, intent, action_count, transcript, response_text
+                    latency_ms, intent, action_count, transcript, response_text,
+                    request_id, turn_id, diagnostics
                 )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 clean_site_id,
@@ -129,6 +138,9 @@ def record_usage_event(
                 max(int(action_count), 0),
                 str(transcript or "")[: config.MAX_TRANSCRIPT_CHARS],
                 str(response_text or "")[: config.MAX_RESPONSE_CHARS],
+                str(request_id or "")[:120],
+                str(turn_id or "")[:120],
+                Json(sanitize(diagnostics)) if diagnostics else None,
             ),
         )
         conn.execute(

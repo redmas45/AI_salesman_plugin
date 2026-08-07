@@ -24,6 +24,15 @@ AZURE_OPENAI_CHAT_DEPLOYMENT: str = os.getenv(
 ).strip()
 AZURE_OPENAI_REASONING_EFFORT: str = os.getenv("AZURE_OPENAI_REASONING_EFFORT", "none").strip().lower()
 AZURE_OPENAI_TIMEOUT_SECONDS: float = float(os.getenv("AZURE_OPENAI_TIMEOUT_SECONDS", "30") or 30)
+# The SDK retries transient failures on its own; the app also wraps the call in a
+# tenacity retry. Left at the SDK default (2), a single stalled completion becomes
+# tenacity(2) x SDK(3) x timeout, which is how one absurd turn hung well past a
+# minute. Tenacity is the single retry authority, so the SDK does not re-retry.
+AZURE_OPENAI_MAX_RETRIES: int = int(os.getenv("AZURE_OPENAI_MAX_RETRIES", "0") or 0)
+# Hard ceiling on one assistant turn. STT + retrieval + a bounded LLM call + TTS
+# complete in a few seconds when healthy; this only fires on a pathological stall
+# so the browser always gets one useful response instead of an endless "Analyzing".
+TURN_DEADLINE_SECONDS: float = float(os.getenv("TURN_DEADLINE_SECONDS", "45") or 45)
 AZURE_SPEECH_TTS_VOICE: str = os.getenv(
     "AZURE_SPEECH_TTS_VOICE",
     "en-IN-NeerjaNeural",

@@ -12,6 +12,8 @@ __pycache__
 *.pid
 logs
 tmp
+tmp_pytest
+.pytest-tmp
 .local
 scripts
 tests

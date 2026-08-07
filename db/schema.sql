@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS catalog_sync_runs (
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- The narrowest grouping a catalogue publishes for a record - "Smartphones"
+-- inside "Electronics". Kept as a typed field because it is the word a shopper
+-- actually says; folding it into free-text tags lost the difference between a
+-- phone and a charger, so a request for phones could be answered with chargers.
+ALTER TABLE products ADD COLUMN IF NOT EXISTS subcategory TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
 CREATE INDEX IF NOT EXISTS idx_products_price ON products(price);
 CREATE INDEX IF NOT EXISTS idx_products_color ON products(color);

@@ -293,6 +293,17 @@ ALTER TABLE hub_usage_events
     ADD COLUMN IF NOT EXISTS transcript TEXT NOT NULL DEFAULT '';
 ALTER TABLE hub_usage_events
     ADD COLUMN IF NOT EXISTS response_text TEXT NOT NULL DEFAULT '';
+-- A turn and the browser outcomes it caused are joined by these ids. Before they
+-- existed the CRM guessed the pairing from a timestamp window, which attached
+-- one turn's actions to a neighbouring turn whenever two arrived close together.
+ALTER TABLE hub_usage_events
+    ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE hub_usage_events
+    ADD COLUMN IF NOT EXISTS turn_id TEXT NOT NULL DEFAULT '';
+-- What the turn decided: selected ids, counts, planned actions, cache and model.
+-- Stored as one bounded, redacted document; see db/analytics/turn_diagnostics.py.
+ALTER TABLE hub_usage_events
+    ADD COLUMN IF NOT EXISTS diagnostics JSONB;
 ALTER TABLE hub_conversation_sessions
     ADD COLUMN IF NOT EXISTS summary_text TEXT NOT NULL DEFAULT '';
 ALTER TABLE hub_conversation_sessions

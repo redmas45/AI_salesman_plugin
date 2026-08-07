@@ -1,5 +1,6 @@
 """FastAPI application for the AI Hub runtime API."""
 
+import asyncio
 import binascii
 import json
 import logging
@@ -364,19 +365,48 @@ async def shop(
     # calls). Awaiting it inline on the event loop froze the whole worker for the
     # length of a turn, so concurrent widget requests queued until the reverse
     # proxy timed them out - which reaches the browser as an opaque failure.
+    #
+    # It is also bounded by a hard deadline: an absurd or degenerate request once
+    # stalled the pipeline past a minute, leaving the widget stuck on "Analyzing"
+    # with no answer. On overrun the customer gets one honest clarification instead
+    # of an endless busy state. The worker thread is detached (Python threads are
+    # not forcibly killable) and its late result is simply discarded.
     try:
-        result = await run_in_threadpool(
-            orchestrator.run,
-            site_id=site_id,
-            audio_bytes=payload.audio_bytes,
-            text_input=text,
-            audio_filename=payload.audio_filename,
-            skip_tts=skip_tts,
-            conversation_history=payload.conversation_history,
-            page_context=payload.page_context,
-            session_summary=session_summary,
-            session_id=session_id,
+        result = await asyncio.wait_for(
+            run_in_threadpool(
+                orchestrator.run,
+                site_id=site_id,
+                audio_bytes=payload.audio_bytes,
+                text_input=text,
+                audio_filename=payload.audio_filename,
+                skip_tts=skip_tts,
+                conversation_history=payload.conversation_history,
+                page_context=payload.page_context,
+                session_summary=session_summary,
+                session_id=session_id,
+            ),
+            timeout=config.TURN_DEADLINE_SECONDS,
         )
+    except asyncio.TimeoutError:
+        elapsed_ms = (turn_timer() - started_at) * 1000
+        background_tasks.add_task(
+            admin_db.record_runtime_event_safely,
+            site_id,
+            {
+                "source": "backend",
+                "session_id": session_id,
+                "request_id": request_id,
+                "component": "voice_pipeline",
+                "stage": "orchestration",
+                "event_type": "voice_turn_failed",
+                "severity": "error",
+                "status": "failed",
+                "message_code": "turn_deadline_exceeded",
+                "duration_ms": elapsed_ms,
+                "metadata": {"transport": "legacy-http", "deadline_s": config.TURN_DEADLINE_SECONDS},
+            },
+        )
+        return ShopResponse(**runtime_payloads.turn_deadline_result(elapsed_ms=elapsed_ms))
     except Exception as exc:
         await run_in_threadpool(
             admin_db.record_runtime_event_safely,

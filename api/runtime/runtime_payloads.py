@@ -14,6 +14,7 @@ from fastapi import HTTPException, UploadFile, status
 
 import config
 from agent.prompts.page_context import parse_page_context
+from db.analytics.turn_diagnostics import build_turn_diagnostics, turn_id_of
 
 DEFAULT_AUDIO_FILENAME = "audio.wav"
 MAX_CONVERSATION_HISTORY_TURNS = 12
@@ -156,6 +157,7 @@ def record_usage_result(
     logger: logging.Logger,
 ) -> None:
     status_text = "error" if result.get("intent") == "error" else "ok"
+    diagnostics = build_turn_diagnostics(result)
     record_usage_safely(
         site_id=site_id,
         session_id=session_id,
@@ -168,6 +170,9 @@ def record_usage_result(
         latency_ms=total_latency_ms(result.get("latency_ms") or {}),
         usage_recorder=usage_recorder,
         logger=logger,
+        request_id=str(result.get("request_id") or ""),
+        turn_id=turn_id_of(result),
+        diagnostics=diagnostics,
     )
     update_session_summary(
         site_id,
@@ -191,6 +196,9 @@ def record_usage_safely(
     latency_ms: float,
     usage_recorder: UsageRecorder,
     logger: logging.Logger,
+    request_id: str = "",
+    turn_id: str = "",
+    diagnostics: dict[str, Any] | None = None,
 ) -> None:
     try:
         usage_recorder.record_usage_event(
@@ -203,9 +211,39 @@ def record_usage_safely(
             intent=intent,
             action_count=action_count,
             latency_ms=latency_ms,
+            request_id=request_id,
+            turn_id=turn_id,
+            diagnostics=diagnostics,
         )
     except psycopg.Error as exc:
         logger.warning("CRM usage logging failed: %s", exc)
+
+
+# A turn that overruns its deadline must still answer with something useful. This
+# is a clarification, not a silent completion or an error banner: the customer is
+# invited to narrow the request rather than left staring at a busy indicator or
+# told the connection failed.
+TURN_DEADLINE_RESPONSE_TEXT = (
+    "Sorry, that took longer than expected on my side. Could you try again, or ask "
+    "about one specific thing you're looking for?"
+)
+
+
+def turn_deadline_result(transcript: str = "", elapsed_ms: float = 0.0) -> dict[str, Any]:
+    """A well-formed, honest turn result for a request that overran its deadline."""
+    return {
+        "transcript": str(transcript or ""),
+        "response_text": TURN_DEADLINE_RESPONSE_TEXT,
+        "spoken_text": TURN_DEADLINE_RESPONSE_TEXT,
+        "intent": "turn_timeout",
+        "confidence": 1.0,
+        "answer_scope": "unsupported_or_offsite",
+        "ui_actions": [],
+        # No TTS on a timeout: the customer is already waiting, so the recovery
+        # line is spoken client-side rather than paying for another provider call.
+        "audio_b64": "",
+        "latency_ms": {"total_ms": float(elapsed_ms or 0.0)},
+    }
 
 
 def total_latency_ms(latency_ms: dict[str, Any]) -> float:

@@ -51,6 +51,7 @@ deploy/certs/
 # Local worker/reviewer implementation journal
 handoff.md
 tmp_pytest/
+verify_tmp_*/
 
 # IDEs
 .idea/

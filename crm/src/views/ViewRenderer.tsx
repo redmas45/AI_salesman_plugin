@@ -96,7 +96,6 @@ export function ViewRenderer(props: ViewRendererProps) {
           conversations={props.conversations}
           range={props.range}
           onRangeChange={props.onRangeChange}
-          onOpenClient={props.onOpenClient}
         />
       );
     case 'analytics':

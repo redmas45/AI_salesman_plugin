@@ -38,10 +38,14 @@ def test_product_detail_grounding_preserves_accessory_recommendation(monkeypatch
     assert "case" in validated["response_text"].lower()
     assert "<p>" not in validated["response_text"]
     assert "</p>" not in validated["response_text"]
+    # The turn is about one record, so the host is asked for that record by name.
+    # "accessory" is mentioned but not sold as one of these rows, and the host
+    # search is conjunctive: including it would AND the very phone being
+    # discussed off its own results page.
     assert validated["ui_actions"] == [
         {
             "action": "SHOW_PRODUCTS",
-            "params": {"product_ids": ["phone-1"], "search_query": "phone accessory"},
+            "params": {"product_ids": ["phone-1"], "search_query": "oppo active android budget"},
         }
     ]
 
